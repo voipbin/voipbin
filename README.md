@@ -6,7 +6,7 @@
 
 <h1 align="center">VoIPBin</h1>
 
-<h3 align="center">The Open-Source Alternative to Twilio</h3>
+<h3 align="center">The Open-Source CPaaS Platform</h3>
 
 <p align="center">
 Build, deploy, and scale voice, messaging, and video applications — fully self-hosted, API-first, and designed for developers.
@@ -32,12 +32,6 @@ Build, deploy, and scale voice, messaging, and video applications — fully self
 
 <p align="center">
   <a href="https://admin.voipbin.net">
-    <img src="docs/images/dashboard-home.png" alt="VoIPBin Dashboard" width="800" />
-  </a>
-</p>
-
-<p align="center">
-  <a href="https://admin.voipbin.net">
     <img src="docs/images/dashboard-tour.gif" alt="VoIPBin Admin Console Tour" width="800" />
   </a>
 </p>
@@ -46,11 +40,11 @@ Build, deploy, and scale voice, messaging, and video applications — fully self
 
 ## Why VoIPBin?
 
-**CPaaS platforms like Twilio are powerful, but they come with trade-offs**: vendor lock-in, unpredictable pricing, and zero control over your infrastructure. Most open-source alternatives either stop at SIP or require gluing together a dozen unrelated projects.
+**Most CPaaS platforms come with trade-offs**: vendor lock-in, unpredictable pricing, and zero control over your infrastructure. Most open-source alternatives either stop at SIP or require gluing together a dozen unrelated projects.
 
-**VoIPBin is different.** It's a complete, production-grade CPaaS built from the ground up — 31 microservices running on Kubernetes, with the same programmable APIs you'd expect from Twilio, but fully open-source and self-hostable.
+**VoIPBin is different.** It's a complete, production-grade CPaaS built from the ground up — 31 microservices running on Kubernetes, with modern programmable APIs, fully open-source and self-hostable.
 
-> _"Twilio meets self-hosting."_ — Run your own CPaaS with full API control.
+> _"Own your communications stack."_ — Run your own CPaaS with full API control.
 
 ### What makes VoIPBin unique:
 
