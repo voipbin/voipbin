@@ -23,9 +23,9 @@ Build, deploy, and scale voice, messaging, and video applications — fully self
 <p align="center">
   <a href="https://admin.voipbin.net"><img src="https://img.shields.io/badge/Live-admin.voipbin.net-success?logo=statuspage&logoColor=white" alt="Live Demo" /></a>
   <a href="https://github.com/voipbin/voipbin/stargazers"><img src="https://img.shields.io/github/stars/voipbin/voipbin?style=social" alt="GitHub Stars" /></a>
-  <a href="https://github.com/voipbin/monorepo/actions"><img src="https://img.shields.io/github/actions/workflow/status/voipbin/monorepo/ci.yml?label=build" alt="Build Status" /></a>
+  <a href="https://circleci.com/gh/voipbin/monorepo"><img src="https://img.shields.io/circleci/build/github/voipbin/monorepo?label=build" alt="Build Status" /></a>
   <a href="https://github.com/voipbin/voipbin/blob/main/LICENSE"><img src="https://img.shields.io/github/license/voipbin/voipbin?color=blue" alt="License" /></a>
-  <a href="https://github.com/voipbin/monorepo"><img src="https://img.shields.io/badge/microservices-31-orange" alt="Microservices" /></a>
+  <a href="https://github.com/voipbin/monorepo"><img src="https://img.shields.io/badge/microservices-34-orange" alt="Microservices" /></a>
   <a href="https://github.com/voipbin/voipbin/issues"><img src="https://img.shields.io/badge/PRs-welcome-brightgreen.svg" alt="PRs Welcome" /></a>
 </p>
 
@@ -47,7 +47,7 @@ Build, deploy, and scale voice, messaging, and video applications — fully self
 
 **Most CPaaS platforms come with trade-offs**: vendor lock-in, unpredictable pricing, and zero control over your infrastructure. Most open-source alternatives either stop at SIP or require gluing together a dozen unrelated projects.
 
-**VoIPBin is different.** It's a complete, production-grade CPaaS built from the ground up — 31 microservices running on Kubernetes, with modern programmable APIs, fully open-source and self-hostable.
+**VoIPBin is different.** It's a complete, production-grade CPaaS built from the ground up — 34 microservices running on Kubernetes, with modern programmable APIs, fully open-source and self-hostable.
 
 > _"Own your communications stack."_ — Run your own CPaaS with full API control.
 
@@ -274,7 +274,7 @@ The `init` wizard guides you through: GCP project, region, cluster type, TLS, do
 ```
 Stage 1: Terraform          Stage 2: Ansible          Stage 3: Kubernetes
 ─────────────────           ────────────────          ───────────────────
-VPC, GKE, Cloud SQL         Kamailio VMs              31 Backend Services
+VPC, GKE, Cloud SQL         Kamailio VMs              34 Backend Services
 Firewall, DNS, LB           RTPEngine VMs             3 Asterisk Instances
 NAT, KMS, Storage           Docker + Config           3 Frontend Apps
                                                       Redis, RabbitMQ, etc.
@@ -295,7 +295,7 @@ NAT, KMS, Storage           Docker + Config           3 Frontend Apps
 
 | Layer | Components |
 |---|---|
-| **Backend** | 31 Go microservices (call, flow, AI, queue, campaign, billing, etc.) |
+| **Backend** | 34 Go microservices (call, flow, AI, queue, campaign, billing, etc.) |
 | **VoIP** | Asterisk (call, conference, registrar) + Kamailio + RTPEngine |
 | **Frontend** | Admin Console, Agent App (talk), Meeting App |
 | **Infrastructure** | Redis, RabbitMQ, ClickHouse, Cloud SQL (MySQL), Cloud SQL Proxy |
@@ -317,7 +317,7 @@ NAT, KMS, Storage           Docker + Config           3 Frontend Apps
 
 ## 🏗️ Architecture
 
-VoIPBin is built as a distributed system of **31 Go microservices**, communicating via message queues and REST APIs, all orchestrated on Kubernetes.
+VoIPBin is built as a distributed system of **34 Go microservices**, communicating via message queues and REST APIs, all orchestrated on Kubernetes.
 
 ```
 ┌─────────────────────────────────────────────────────────┐
@@ -348,7 +348,7 @@ VoIPBin is built as a distributed system of **31 Go microservices**, communicati
 │  │ Manager  │ │ Manager  │ │ Manager  │ │ Manager  │  │
 │  └──────────┘ └──────────┘ └──────────┘ └──────────┘  │
 │                                                         │
-│         ... and 19 more microservices                  │
+│         ... and 22 more microservices                  │
 └────────────────────────┬────────────────────────────────┘
                          │
 ┌────────────────────────▼────────────────────────────────┐
@@ -367,7 +367,7 @@ VoIPBin is built as a distributed system of **31 Go microservices**, communicati
 |---|---|---|
 | **[voipbin/voipbin](https://github.com/voipbin/voipbin)** | 📍 You are here — project overview and documentation | ![Stars](https://img.shields.io/github/stars/voipbin/voipbin?style=flat-square) |
 | **[voipbin/install](https://github.com/voipbin/install)** | Self-install guide and deployment scripts | ![Stars](https://img.shields.io/github/stars/voipbin/install?style=flat-square) |
-| **[voipbin/monorepo](https://github.com/voipbin/monorepo)** | Backend microservices (31 Go services) | ![Stars](https://img.shields.io/github/stars/voipbin/monorepo?style=flat-square) |
+| **[voipbin/monorepo](https://github.com/voipbin/monorepo)** | Backend microservices (34 Go services) | ![Stars](https://img.shields.io/github/stars/voipbin/monorepo?style=flat-square) |
 | **[voipbin/voipbin-go](https://github.com/voipbin/voipbin-go)** | Go SDK for VoIPBin API | ![Stars](https://img.shields.io/github/stars/voipbin/voipbin-go?style=flat-square) |
 | **[voipbin/mcp](https://github.com/voipbin/mcp)** | MCP (Model Context Protocol) server | ![Stars](https://img.shields.io/github/stars/voipbin/mcp?style=flat-square) |
 | **[voipbin/sandbox](https://github.com/voipbin/sandbox)** | Sandbox & examples | ![Stars](https://img.shields.io/github/stars/voipbin/sandbox?style=flat-square) |
