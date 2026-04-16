@@ -6,7 +6,7 @@
 
 <h1 align="center">VoIPBin</h1>
 
-<h3 align="center">The Open-Source Alternative to Twilio</h3>
+<h3 align="center">The Open-Source CPaaS Platform</h3>
 
 <p align="center">
 Build, deploy, and scale voice, messaging, and video applications — fully self-hosted, API-first, and designed for developers.
@@ -21,6 +21,7 @@ Build, deploy, and scale voice, messaging, and video applications — fully self
 </p>
 
 <p align="center">
+  <a href="https://admin.voipbin.net"><img src="https://img.shields.io/badge/Live-admin.voipbin.net-success?logo=statuspage&logoColor=white" alt="Live Demo" /></a>
   <a href="https://github.com/voipbin/voipbin/stargazers"><img src="https://img.shields.io/github/stars/voipbin/voipbin?style=social" alt="GitHub Stars" /></a>
   <a href="https://github.com/voipbin/monorepo/actions"><img src="https://img.shields.io/github/actions/workflow/status/voipbin/monorepo/ci.yml?label=build" alt="Build Status" /></a>
   <a href="https://github.com/voipbin/voipbin/blob/main/LICENSE"><img src="https://img.shields.io/github/license/voipbin/voipbin?color=blue" alt="License" /></a>
@@ -28,13 +29,11 @@ Build, deploy, and scale voice, messaging, and video applications — fully self
   <a href="https://github.com/voipbin/voipbin/issues"><img src="https://img.shields.io/badge/PRs-welcome-brightgreen.svg" alt="PRs Welcome" /></a>
 </p>
 
-<br />
-
 <p align="center">
-  <a href="https://admin.voipbin.net">
-    <img src="docs/images/dashboard-home.png" alt="VoIPBin Dashboard" width="800" />
-  </a>
+  <b>🟢 Live production instance:</b> <a href="https://admin.voipbin.net">admin.voipbin.net</a> — Try it now with the built-in <b>guest account</b> (no signup required)
 </p>
+
+<br />
 
 <p align="center">
   <a href="https://admin.voipbin.net">
@@ -46,11 +45,11 @@ Build, deploy, and scale voice, messaging, and video applications — fully self
 
 ## Why VoIPBin?
 
-**CPaaS platforms like Twilio are powerful, but they come with trade-offs**: vendor lock-in, unpredictable pricing, and zero control over your infrastructure. Most open-source alternatives either stop at SIP or require gluing together a dozen unrelated projects.
+**Most CPaaS platforms come with trade-offs**: vendor lock-in, unpredictable pricing, and zero control over your infrastructure. Most open-source alternatives either stop at SIP or require gluing together a dozen unrelated projects.
 
-**VoIPBin is different.** It's a complete, production-grade CPaaS built from the ground up — 31 microservices running on Kubernetes, with the same programmable APIs you'd expect from Twilio, but fully open-source and self-hostable.
+**VoIPBin is different.** It's a complete, production-grade CPaaS built from the ground up — 31 microservices running on Kubernetes, with modern programmable APIs, fully open-source and self-hostable.
 
-> _"Twilio meets self-hosting."_ — Run your own CPaaS with full API control.
+> _"Own your communications stack."_ — Run your own CPaaS with full API control.
 
 ### What makes VoIPBin unique:
 
@@ -427,22 +426,6 @@ See the [monorepo](https://github.com/voipbin/monorepo) for development setup in
 - 🌐 Website: [voipbin.net](https://voipbin.net)
 - 📧 Email: [sungtae@voipbin.net](mailto:sungtae@voipbin.net)
 - 🐙 GitHub: [@voipbin](https://github.com/voipbin)
-
----
-
-## ⭐ Star History
-
-If you find VoIPBin useful, please consider giving us a star! It helps others discover the project.
-
-<p align="center">
-  <a href="https://star-history.com/#voipbin/voipbin&Date">
-    <picture>
-      <source media="(prefers-color-scheme: dark)" srcset="https://api.star-history.com/svg?repos=voipbin/voipbin&type=Date&theme=dark" />
-      <source media="(prefers-color-scheme: light)" srcset="https://api.star-history.com/svg?repos=voipbin/voipbin&type=Date" />
-      <img alt="Star History Chart" src="https://api.star-history.com/svg?repos=voipbin/voipbin&type=Date" width="600" />
-    </picture>
-  </a>
-</p>
 
 ---
 
