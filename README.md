@@ -424,7 +424,7 @@ See the [monorepo](https://github.com/voipbin/monorepo) for development setup in
 ## 📫 Contact
 
 - 🌐 Website: [voipbin.net](https://voipbin.net)
-- 📧 Email: [sungtae@voipbin.net](mailto:sungtae@voipbin.net)
+- 📧 Email: [support@voipbin.net](mailto:support@voipbin.net)
 - 🐙 GitHub: [@voipbin](https://github.com/voipbin)
 
 ---
