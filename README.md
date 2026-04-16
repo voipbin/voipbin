@@ -21,11 +21,16 @@ Build, deploy, and scale voice, messaging, and video applications — fully self
 </p>
 
 <p align="center">
+  <a href="https://admin.voipbin.net"><img src="https://img.shields.io/badge/Live-admin.voipbin.net-success?logo=statuspage&logoColor=white" alt="Live Demo" /></a>
   <a href="https://github.com/voipbin/voipbin/stargazers"><img src="https://img.shields.io/github/stars/voipbin/voipbin?style=social" alt="GitHub Stars" /></a>
   <a href="https://github.com/voipbin/monorepo/actions"><img src="https://img.shields.io/github/actions/workflow/status/voipbin/monorepo/ci.yml?label=build" alt="Build Status" /></a>
   <a href="https://github.com/voipbin/voipbin/blob/main/LICENSE"><img src="https://img.shields.io/github/license/voipbin/voipbin?color=blue" alt="License" /></a>
   <a href="https://github.com/voipbin/monorepo"><img src="https://img.shields.io/badge/microservices-31-orange" alt="Microservices" /></a>
   <a href="https://github.com/voipbin/voipbin/issues"><img src="https://img.shields.io/badge/PRs-welcome-brightgreen.svg" alt="PRs Welcome" /></a>
+</p>
+
+<p align="center">
+  <b>🟢 Live production instance:</b> <a href="https://admin.voipbin.net">admin.voipbin.net</a> — Try it now with the built-in <b>guest account</b> (no signup required)
 </p>
 
 <br />
@@ -421,22 +426,6 @@ See the [monorepo](https://github.com/voipbin/monorepo) for development setup in
 - 🌐 Website: [voipbin.net](https://voipbin.net)
 - 📧 Email: [sungtae@voipbin.net](mailto:sungtae@voipbin.net)
 - 🐙 GitHub: [@voipbin](https://github.com/voipbin)
-
----
-
-## ⭐ Star History
-
-If you find VoIPBin useful, please consider giving us a star! It helps others discover the project.
-
-<p align="center">
-  <a href="https://star-history.com/#voipbin/voipbin&Date">
-    <picture>
-      <source media="(prefers-color-scheme: dark)" srcset="https://api.star-history.com/svg?repos=voipbin/voipbin&type=Date&theme=dark" />
-      <source media="(prefers-color-scheme: light)" srcset="https://api.star-history.com/svg?repos=voipbin/voipbin&type=Date" />
-      <img alt="Star History Chart" src="https://api.star-history.com/svg?repos=voipbin/voipbin&type=Date" width="600" />
-    </picture>
-  </a>
-</p>
 
 ---
 
