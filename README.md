@@ -6,18 +6,19 @@
 
 <h1 align="center">VoIPBin</h1>
 
-<h3 align="center">The Open-Source CPaaS Platform</h3>
+<h3 align="center">The Open-Source CPaaS Platform — Built for Enterprises, Open for Everyone</h3>
 
 <p align="center">
-Build, deploy, and scale voice, messaging, and video applications — fully self-hosted, API-first, and designed for developers.
+A complete, production-grade Communications Platform as a Service: <b>Voice</b>, <b>SMS</b>, <b>Video</b>, <b>AI</b>, <b>Team Messaging</b>, and <b>Conferencing</b> — fully self-hostable, API-first, and running in production today.
 </p>
 
 <p align="center">
   <a href="https://voipbin.net">Website</a> •
   <a href="https://api.voipbin.net/docs/">API Docs</a> •
   <a href="https://admin.voipbin.net">Admin Console</a> •
-  <a href="https://youtu.be/9VKu_QMFzko">Demo Video</a> •
-  <a href="https://github.com/voipbin/voipbin/issues">Community</a>
+  <a href="https://talk.voipbin.net">Talk</a> •
+  <a href="https://meet.voipbin.net">Meet</a> •
+  <a href="https://youtu.be/9VKu_QMFzko">Demo Video</a>
 </p>
 
 <p align="center">
@@ -47,22 +48,26 @@ Build, deploy, and scale voice, messaging, and video applications — fully self
 
 **Most CPaaS platforms come with trade-offs**: vendor lock-in, unpredictable pricing, and zero control over your infrastructure. Most open-source alternatives either stop at SIP or require gluing together a dozen unrelated projects.
 
-**VoIPBin is different.** It's a complete, production-grade CPaaS built from the ground up — 34 microservices running on Kubernetes, with modern programmable APIs, fully open-source and self-hostable.
+**VoIPBin is different.** It's the **only production-grade, self-hostable, all-in-one CPaaS** — voice, messaging, video, AI, team collaboration, and conferencing in a single coherent platform. 34 Go microservices running on Kubernetes, backed by Asterisk, Kamailio, and RTPEngine, fully open-sourced under MIT.
 
-> _"Own your communications stack."_ — Run your own CPaaS with full API control.
+> _"Own your communications stack."_ — Run your own CPaaS with full API control and zero vendor lock-in.
 
-### What makes VoIPBin unique:
+### What makes VoIPBin enterprise-ready:
 
-- 🏗️ **Production-ready** — Already running live with real traffic at [voipbin.net](https://voipbin.net)
-- 🔓 **Truly open-source** — MIT Licensed, no "open-core" bait-and-switch
-- 🧩 **Complete platform** — Voice, SMS, Video, AI, Queues, Campaigns — not just a SIP server
-- 🤖 **AI-native** — Built-in AI assistants, real-time transcription, and intelligent call flows
-- 🏢 **Multi-tenant** — Full customer isolation, billing, and access control out of the box
-- ☸️ **Cloud-native** — Kubernetes-first architecture, scales horizontally
+- 🏭 **Running in production today** — Serving real traffic at [voipbin.net](https://voipbin.net), not a weekend prototype
+- 🔓 **Truly open-source** — MIT Licensed, no "open-core" bait-and-switch, every component is in the repo
+- 🧩 **Complete platform, not a toolkit** — Voice, SMS, Video, AI, Queues, Campaigns, Team Messaging, Meetings — all integrated
+- 🤖 **AI-native** — Built-in AI assistants, real-time transcription, post-call summarization, intelligent routing
+- 🏢 **Multi-tenant by design** — Full customer isolation, billing, quotas, and access control out of the box
+- ☸️ **Cloud-native & horizontally scalable** — Kubernetes-first, stateless services, message-queue backbone
+- 📞 **Carrier-grade voice** — Asterisk + Kamailio + RTPEngine with SRTP, OPUS, PCMU/PCMA, WebRTC
+- 🛡️ **Data sovereignty** — Deploy on your own infrastructure. No data leaves your cloud.
 
 ---
 
-## ✨ Features
+## ✨ Features — A Unified CPaaS, Not a Collection of Parts
+
+Everything your communications stack needs, built to work together out of the box.
 
 <table>
 <tr>
@@ -74,6 +79,7 @@ Build, deploy, and scale voice, messaging, and video applications — fully self
 - **Call Recording** — Record, transcribe, and summarize conversations
 - **Conferencing** — Secure real-time audio/video with moderation tools
 - **Extension Management** — SIP/WebRTC registration and routing
+- **Carrier-grade media** — SRTP, OPUS, PCMU/PCMA codecs
 
 </td>
 <td width="50%">
@@ -83,6 +89,8 @@ Build, deploy, and scale voice, messaging, and video applications — fully self
 - **Chat & Web Messaging** — Real-time customer-agent communication
 - **Email Integration** — Multichannel notification support
 - **Webhook & HTTP** — Trigger actions and integrate with external services
+- **Campaign Automation** — Bulk voice/SMS campaigns via API
+- **Inbound & Outbound** — Full two-way communication support
 
 </td>
 </tr>
@@ -94,16 +102,43 @@ Build, deploy, and scale voice, messaging, and video applications — fully self
 - **Real-time Transcription** — Live speech-to-text during calls
 - **Post-call Summarization** — AI-generated call summaries
 - **Intelligent Flow Routing** — Context-aware decision making
+- **RAG-backed Assistants** — Ground AI in your knowledge base
+- **MCP Integration** — Plug VoIPBin into any AI agent via Model Context Protocol
+
+</td>
+<td width="50%">
+
+### 💼 Talk — Team Collaboration
+- **Channels & Threads** — Organized team messaging with threaded replies
+- **Rich Media Sharing** — Images, videos, files, and link previews
+- **Integrated Voice Calls** — Place and receive calls without leaving the app
+- **Agent Workspace** — Unified inbox for chats, calls, and tasks
+- **Multi-tenant Messaging** — Isolated workspaces per customer
+- **Web-based — no installs** — Works in any modern browser
+
+</td>
+</tr>
+<tr>
+<td width="50%">
+
+### 🎥 Meet — Video Conferencing
+- **Browser-based Video Calls** — No downloads, works everywhere via WebRTC
+- **HD Audio & Video** — Low-latency real-time media
+- **Screen Sharing & Presentations** — Share your screen in one click
+- **Moderation Tools** — Host controls, mute, remove participants
+- **Shareable Links** — Join meetings via simple URL
+- **Integrated with Voice** — Escalate chats into full video meetings
 
 </td>
 <td width="50%">
 
 ### 🏢 Platform & Operations
 - **Multitenancy** — Isolated configs, flows, agents per tenant
-- **Outbound Campaigns** — Bulk voice/SMS campaigns via API
 - **Billing Management** — Built-in usage tracking and billing
 - **Number Management** — Phone number provisioning and routing
-- **SRTP/OPUS/PCMU/PCMA** — Full codec and media control
+- **Role-based Access Control** — Fine-grained permissions
+- **Observability** — Metrics, logs, and tracing hooks
+- **API-first** — Everything is scriptable via REST API
 
 </td>
 </tr>
@@ -113,6 +148,8 @@ Build, deploy, and scale voice, messaging, and video applications — fully self
 
 ## 🎬 See It in Action
 
+VoIPBin ships with **three production-ready applications** — an Admin Console for operators, Talk for agents and teams, and Meet for video conferencing — all backed by the same API and microservices layer.
+
 <table>
 <tr>
 <td align="center" width="25%">
@@ -121,35 +158,95 @@ Build, deploy, and scale voice, messaging, and video applications — fully self
 </td>
 <td align="center" width="25%">
   <a href="https://admin.voipbin.net"><b>🔧 Admin Console</b></a><br/>
-  Try the demo account
+  Operator workspace
 </td>
 <td align="center" width="25%">
-  <a href="https://talk.voipbin.net"><b>📞 Agent App</b></a><br/>
-  Web-based agent demo
+  <a href="https://talk.voipbin.net"><b>💼 Talk</b></a><br/>
+  Team messaging & calls
 </td>
 <td align="center" width="25%">
-  <a href="https://meet.voipbin.net"><b>🎥 Meeting</b></a><br/>
-  Video/voice conference
+  <a href="https://meet.voipbin.net"><b>🎥 Meet</b></a><br/>
+  Video conferencing
 </td>
 </tr>
 </table>
+
+### 🔧 Admin Console — Build and Manage Your CPaaS
 
 <table>
 <tr>
 <td align="center" width="33%">
   <img src="docs/images/flow-builder.png" alt="Flow Builder" width="280" /><br/>
-  <sub>Visual Flow Builder</sub>
+  <sub><b>Visual Flow Builder</b><br/>Design voice/messaging flows with drag-and-drop</sub>
 </td>
 <td align="center" width="33%">
   <img src="docs/images/team-builder.png" alt="Team Builder" width="280" /><br/>
-  <sub>Multi-Agent Team Builder</sub>
+  <sub><b>Multi-Agent Team Builder</b><br/>Coordinate AI agents and human operators</sub>
 </td>
 <td align="center" width="33%">
   <img src="docs/images/ai-assistants.png" alt="AI Assistants" width="280" /><br/>
-  <sub>AI Assistants</sub>
+  <sub><b>AI Assistants</b><br/>Conversational AI with custom actions</sub>
 </td>
 </tr>
 </table>
+
+### 💼 Talk — The Agent & Team Workspace
+
+Talk is VoIPBin's collaboration hub — real-time team messaging with **threaded conversations**, **rich media sharing**, and **integrated voice calls**, all in one browser tab. Perfect for support teams, distributed offices, and customer-facing agents.
+
+<p align="center">
+  <a href="https://talk.voipbin.net">
+    <img src="docs/images/talk-channel.png" alt="Talk Channel View" width="820" />
+  </a>
+  <br/>
+  <sub><b>Channels</b> — Team chat with images, videos, files, and link previews</sub>
+</p>
+
+<table>
+<tr>
+<td align="center" width="50%">
+  <img src="docs/images/talk-thread.png" alt="Talk Thread" width="400" /><br/>
+  <sub><b>Threaded Replies</b><br/>Focused discussions without cluttering the main channel</sub>
+</td>
+<td align="center" width="50%">
+  <img src="docs/images/talk-calls.png" alt="Talk Calls" width="400" /><br/>
+  <sub><b>Integrated Voice Calls</b><br/>Place and receive calls directly from the workspace</sub>
+</td>
+</tr>
+<tr>
+<td align="center" width="50%">
+  <img src="docs/images/talk-agents.png" alt="Talk Agents" width="400" /><br/>
+  <sub><b>Agent Directory</b><br/>See availability, assign conversations, and collaborate</sub>
+</td>
+<td align="center" width="50%">
+  <a href="https://talk.voipbin.net"><b>Try Talk →</b></a><br/>
+  <sub>Log in with the demo account at <a href="https://talk.voipbin.net">talk.voipbin.net</a></sub>
+</td>
+</tr>
+</table>
+
+### 🎥 Meet — Browser-Based Video Conferencing
+
+Meet is VoIPBin's **WebRTC-powered video conferencing app** — HD audio and video, screen sharing, and shareable meeting links. No downloads, no plugins, no vendor lock-in.
+
+<table>
+<tr>
+<td align="center" width="50%">
+  <img src="docs/images/meet-home.png" alt="Meet Home" width="400" /><br/>
+  <sub><b>Start or Join a Meeting</b><br/>One-click meeting creation with shareable links</sub>
+</td>
+<td align="center" width="50%">
+  <img src="docs/images/meet-room.png" alt="Meet Room" width="400" /><br/>
+  <sub><b>In-Meeting Experience</b><br/>HD video, screen sharing, and moderation tools</sub>
+</td>
+</tr>
+</table>
+
+<p align="center">
+  <a href="https://meet.voipbin.net"><b>🎥 Try Meet →</b></a>
+</p>
+
+### 📹 Full Walkthrough
 
 <p align="center">
   <a href="https://youtu.be/9VKu_QMFzko">
@@ -227,13 +324,13 @@ After signing in, grab your API token from the Admin Console dashboard.
 ```bash
 # List your registered numbers
 curl -X GET https://api.voipbin.net/v1.0/numbers \
-  -H "Authorization: Bearer YOUR_API_TOKEN"
+  -H "Authorization: Bearer ***
 ```
 
 ```bash
 # Create a programmable call flow
 curl -X POST https://api.voipbin.net/v1.0/flows \
-  -H "Authorization: Bearer YOUR_API_TOKEN" \
+  -H "Authorization: Bearer *** \
   -H "Content-Type: application/json" \
   -d '{
     "name": "Hello World",
@@ -295,9 +392,9 @@ NAT, KMS, Storage           Docker + Config           3 Frontend Apps
 
 | Layer | Components |
 |---|---|
-| **Backend** | 34 Go microservices (call, flow, AI, queue, campaign, billing, etc.) |
+| **Backend** | 34 Go microservices (call, flow, AI, queue, campaign, billing, talk, etc.) |
 | **VoIP** | Asterisk (call, conference, registrar) + Kamailio + RTPEngine |
-| **Frontend** | Admin Console, Agent App (talk), Meeting App |
+| **Frontend** | Admin Console, Talk (agent app), Meet (video conferencing) |
 | **Infrastructure** | Redis, RabbitMQ, ClickHouse, Cloud SQL (MySQL), Cloud SQL Proxy |
 | **Network** | VPC, Cloud NAT, Load Balancers, Firewall Rules, TLS/SSL |
 
@@ -322,7 +419,7 @@ VoIPBin is built as a distributed system of **34 Go microservices**, communicati
 ```
 ┌─────────────────────────────────────────────────────────┐
 │                     Client Layer                         │
-│  Admin Console  •  Agent App  •  Meeting  •  SDK/API    │
+│   Admin Console  •  Talk  •  Meet  •  SDK  •  REST API  │
 └────────────────────────┬────────────────────────────────┘
                          │
 ┌────────────────────────▼────────────────────────────────┐
@@ -344,7 +441,7 @@ VoIPBin is built as a distributed system of **34 Go microservices**, communicati
 │  └──────────┘ └──────────┘ └──────────┘ └──────────┘  │
 │                                                         │
 │  ┌──────────┐ ┌──────────┐ ┌──────────┐ ┌──────────┐  │
-│  │ Billing  │ │  Number  │ │  Agent   │ │  Hook    │  │
+│  │ Billing  │ │  Number  │ │   Talk   │ │  Hook    │  │
 │  │ Manager  │ │ Manager  │ │ Manager  │ │ Manager  │  │
 │  └──────────┘ └──────────┘ └──────────┘ └──────────┘  │
 │                                                         │
@@ -390,7 +487,8 @@ VoIPBin is built as a distributed system of **34 Go microservices**, communicati
 - [x] Real-time transcription & summarization
 - [x] Multi-tenant platform with billing
 - [x] Outbound campaign engine
-- [x] Video conferencing (WebRTC)
+- [x] Team messaging with threads and media sharing (Talk)
+- [x] Video conferencing (Meet / WebRTC)
 - [x] MCP server for AI agent integration
 - [x] Terraform-based cloud deployment (GCP)
 - [ ] Docker Compose quick-start for easy local setup
@@ -418,6 +516,18 @@ git checkout -b feature/amazing-feature
 ```
 
 See the [monorepo](https://github.com/voipbin/monorepo) for development setup instructions.
+
+---
+
+## ⭐ Star VoIPBin
+
+If VoIPBin saves you from reinventing a CPaaS, help others find it by starring the repo. It genuinely helps the project grow.
+
+<p align="center">
+  <a href="https://github.com/voipbin/voipbin/stargazers">
+    <img src="https://img.shields.io/github/stars/voipbin/voipbin?style=social" alt="GitHub Stars" />
+  </a>
+</p>
 
 ---
 
