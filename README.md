@@ -153,19 +153,19 @@ VoIPBin ships with three production-ready applications — all backed by the sam
 
 The operator workspace for building call flows, managing AI assistants, configuring agents, and monitoring your entire communications stack.
 
+<a href="https://admin.voipbin.net"><b>🔧 Try Admin Console →</b></a> &nbsp;·&nbsp; <sub>Guest account available — no sign-up required</sub>
+
 <p align="center">
   <a href="https://admin.voipbin.net">
     <img src="docs/images/admin-slideshow.gif" alt="Admin Console Tour" width="820" />
   </a>
 </p>
 
-<p align="center">
-  <a href="https://admin.voipbin.net"><b>🔧 Try Admin Console →</b></a> &nbsp;·&nbsp; <sub>Guest account available — no sign-up required</sub>
-</p>
-
 ### 💼 Talk — The Agent & Team Workspace
 
 The collaboration hub for agents and teams — real-time messaging with **threaded conversations**, **rich media sharing**, and **integrated voice calls**, all in one browser tab.
+
+<a href="https://talk.voipbin.net"><b>💼 Try Talk →</b></a> &nbsp;·&nbsp; <sub>Guest account available — no sign-up required</sub>
 
 <p align="center">
   <a href="https://talk.voipbin.net">
@@ -173,22 +173,16 @@ The collaboration hub for agents and teams — real-time messaging with **thread
   </a>
 </p>
 
-<p align="center">
-  <a href="https://talk.voipbin.net"><b>💼 Try Talk →</b></a> &nbsp;·&nbsp; <sub>Guest account available — no sign-up required</sub>
-</p>
-
 ### 🎥 Meet — Browser-Based Video Conferencing
 
 WebRTC-powered video conferencing — HD audio and video, screen sharing, and shareable meeting links. No downloads, no plugins, no vendor lock-in.
+
+<a href="https://meet.voipbin.net"><b>🎥 Try Meet →</b></a> &nbsp;·&nbsp; <sub>No sign-up required — join instantly</sub>
 
 <p align="center">
   <a href="https://meet.voipbin.net">
     <img src="docs/images/meet-slideshow.gif" alt="Meet Feature Tour" width="820" />
   </a>
-</p>
-
-<p align="center">
-  <a href="https://meet.voipbin.net"><b>🎥 Try Meet →</b></a> &nbsp;·&nbsp; <sub>No sign-up required — join instantly</sub>
 </p>
 
 ---
