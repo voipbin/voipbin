@@ -147,30 +147,11 @@ Everything your communications stack needs, built to work together out of the bo
 
 ## 🎬 See It in Action
 
-VoIPBin ships with **three production-ready applications** — an Admin Console for operators, Talk for agents and teams, and Meet for video conferencing — all backed by the same API and microservices layer.
-
-<table>
-<tr>
-<td align="center" width="25%">
-  <a href="https://voipbin.net"><b>🌍 Project Site</b></a><br/>
-  Landing page
-</td>
-<td align="center" width="25%">
-  <a href="https://admin.voipbin.net"><b>🔧 Admin Console</b></a><br/>
-  Operator workspace
-</td>
-<td align="center" width="25%">
-  <a href="https://talk.voipbin.net"><b>💼 Talk</b></a><br/>
-  Team messaging & calls
-</td>
-<td align="center" width="25%">
-  <a href="https://meet.voipbin.net"><b>🎥 Meet</b></a><br/>
-  Video conferencing
-</td>
-</tr>
-</table>
+VoIPBin ships with three production-ready applications — all backed by the same API and microservices layer.
 
 ### 🔧 Admin Console — Build and Manage Your CPaaS
+
+The operator workspace for building call flows, managing AI assistants, configuring agents, and monitoring your entire communications stack.
 
 <p align="center">
   <a href="https://admin.voipbin.net">
@@ -178,9 +159,13 @@ VoIPBin ships with **three production-ready applications** — an Admin Console 
   </a>
 </p>
 
+<p align="center">
+  <a href="https://admin.voipbin.net"><b>🔧 Try Admin Console →</b></a> &nbsp;·&nbsp; <sub>Guest account available — no sign-up required</sub>
+</p>
+
 ### 💼 Talk — The Agent & Team Workspace
 
-Talk is VoIPBin's collaboration hub — real-time team messaging with **threaded conversations**, **rich media sharing**, and **integrated voice calls**, all in one browser tab. Perfect for support teams, distributed offices, and customer-facing agents.
+The collaboration hub for agents and teams — real-time messaging with **threaded conversations**, **rich media sharing**, and **integrated voice calls**, all in one browser tab.
 
 <p align="center">
   <a href="https://talk.voipbin.net">
@@ -189,12 +174,12 @@ Talk is VoIPBin's collaboration hub — real-time team messaging with **threaded
 </p>
 
 <p align="center">
-  <a href="https://talk.voipbin.net"><b>🚀 Try Talk →</b></a> &nbsp;·&nbsp; <sub>Guest account available — no sign-up required</sub>
+  <a href="https://talk.voipbin.net"><b>💼 Try Talk →</b></a> &nbsp;·&nbsp; <sub>Guest account available — no sign-up required</sub>
 </p>
 
 ### 🎥 Meet — Browser-Based Video Conferencing
 
-Meet is VoIPBin's **WebRTC-powered video conferencing app** — HD audio and video, screen sharing, and shareable meeting links. No downloads, no plugins, no vendor lock-in.
+WebRTC-powered video conferencing — HD audio and video, screen sharing, and shareable meeting links. No downloads, no plugins, no vendor lock-in.
 
 <p align="center">
   <a href="https://meet.voipbin.net">
