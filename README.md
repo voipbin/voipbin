@@ -17,7 +17,8 @@ A complete, production-grade Communications Platform as a Service: <b>Voice</b>,
   <a href="https://api.voipbin.net/docs/">API Docs</a> •
   <a href="https://admin.voipbin.net">Admin Console</a> •
   <a href="https://talk.voipbin.net">Talk</a> •
-  <a href="https://meet.voipbin.net">Meet</a>
+  <a href="https://meet.voipbin.net">Meet</a> •
+  <a href="https://discord.com/invite/waztvb63Yx">Discord</a>
 </p>
 
 <p align="center">
@@ -221,7 +222,6 @@ Use VoIPBin as a fully managed service — no infrastructure to set up, no serve
 Deploy VoIPBin on your own cloud infrastructure. Own your data, customize everything, and run it wherever you want.
 
 ✅ Complete data ownership<br/>
-✅ Currently supports GCP (AWS, Azure planned)<br/>
 ✅ Full customization & white-labeling<br/>
 ✅ No usage-based fees<br/>
 ✅ Air-gapped / private network support
@@ -387,7 +387,7 @@ VoIPBin is built as a distributed system of **34 Go microservices**, communicati
 └─────────────────────────────────────────────────────────┘
 ```
 
-> 📖 See the full [architecture documentation](https://github.com/voipbin/monorepo) for detailed service descriptions.
+> 📖 See the [monorepo](https://github.com/voipbin/monorepo) for full source code and service descriptions.
 
 ---
 
@@ -407,8 +407,8 @@ VoIPBin is built as a distributed system of **34 Go microservices**, communicati
 ## 📚 Documentation
 
 - 📘 **[API Reference](https://api.voipbin.net/docs/)** — Explore and test all VoIPBin APIs
-- 🏗️ **[Architecture Guide](https://github.com/voipbin/monorepo)** — System design and service breakdown
-- 🐍 **[Python Examples](https://github.com/voipbin/sandbox)** — Sample applications and integrations
+- 🏗️ **[Backend Microservices](https://github.com/voipbin/monorepo)** — Source code for all 34 Go services
+- 🐍 **[Examples & Sandbox](https://github.com/voipbin/sandbox)** — Sample applications and integrations
 
 ---
 
@@ -420,6 +420,7 @@ All source code lives in the individual repositories — this repo is the projec
 
 | What you want to work on | Repo |
 |---|---|
+| Documentation & general feedback | **[voipbin/voipbin](https://github.com/voipbin/voipbin/issues)** |
 | Backend microservices (Go) | **[voipbin/monorepo](https://github.com/voipbin/monorepo)** |
 | Go SDK | **[voipbin/voipbin-go](https://github.com/voipbin/voipbin-go)** |
 | MCP server | **[voipbin/mcp](https://github.com/voipbin/mcp)** |
