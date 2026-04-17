@@ -351,38 +351,38 @@ VoIPBin is built as a distributed system of **34 Go microservices**, communicati
 
 ```
 ┌─────────────────────────────────────────────────────────┐
-│                     Client Layer                         │
+│                     Client Layer                        │
 │   Admin Console  •  Talk  •  Meet  •  SDK  •  REST API  │
 └────────────────────────┬────────────────────────────────┘
                          │
 ┌────────────────────────▼────────────────────────────────┐
-│                    API Gateway                           │
-│              (bin-api-manager)                           │
+│                    API Gateway                          │
+│              (bin-api-manager)                          │
 └────────────────────────┬────────────────────────────────┘
                          │
 ┌────────────────────────▼────────────────────────────────┐
-│              Core Microservices                          │
+│              Core Microservices                         │
 │                                                         │
-│  ┌──────────┐ ┌──────────┐ ┌──────────┐ ┌──────────┐  │
-│  │   Call    │ │   Flow   │ │   AI     │ │  Queue   │  │
-│  │ Manager  │ │ Manager  │ │ Manager  │ │ Manager  │  │
-│  └──────────┘ └──────────┘ └──────────┘ └──────────┘  │
+│   ┌──────────┐ ┌──────────┐ ┌──────────┐ ┌──────────┐   │
+│   │   Call   │ │   Flow   │ │   AI     │ │  Queue   │   │
+│   │ Manager  │ │ Manager  │ │ Manager  │ │ Manager  │   │
+│   └──────────┘ └──────────┘ └──────────┘ └──────────┘   │
 │                                                         │
-│  ┌──────────┐ ┌──────────┐ ┌──────────┐ ┌──────────┐  │
-│  │ Campaign │ │Conference│ │ Message  │ │ Customer │  │
-│  │ Manager  │ │ Manager  │ │ Manager  │ │ Manager  │  │
-│  └──────────┘ └──────────┘ └──────────┘ └──────────┘  │
+│   ┌──────────┐ ┌──────────┐ ┌──────────┐ ┌──────────┐   │
+│   │ Campaign │ │Conference│ │ Message  │ │ Customer │   │
+│   │ Manager  │ │ Manager  │ │ Manager  │ │ Manager  │   │
+│   └──────────┘ └──────────┘ └──────────┘ └──────────┘   │
 │                                                         │
-│  ┌──────────┐ ┌──────────┐ ┌──────────┐ ┌──────────┐  │
-│  │ Billing  │ │  Number  │ │   Talk   │ │  Hook    │  │
-│  │ Manager  │ │ Manager  │ │ Manager  │ │ Manager  │  │
-│  └──────────┘ └──────────┘ └──────────┘ └──────────┘  │
+│   ┌──────────┐ ┌──────────┐ ┌──────────┐ ┌──────────┐   │
+│   │ Billing  │ │  Number  │ │   Talk   │ │  Hook    │   │
+│   │ Manager  │ │ Manager  │ │ Manager  │ │ Manager  │   │
+│   └──────────┘ └──────────┘ └──────────┘ └──────────┘   │
 │                                                         │
-│         ... and 22 more microservices                  │
+│         ... and 22 more microservices                   │
 └────────────────────────┬────────────────────────────────┘
                          │
 ┌────────────────────────▼────────────────────────────────┐
-│                 Media & VoIP Layer                       │
+│                 Media & VoIP Layer                      │
 │       Asterisk  •  Kamailio  •  RTPEngine               │
 └─────────────────────────────────────────────────────────┘
 ```
