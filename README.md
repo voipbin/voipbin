@@ -412,35 +412,13 @@ VoIPBin is built as a distributed system of **34 Go microservices**, communicati
 
 ---
 
-## 🗺️ Roadmap
-
-- [x] Programmable voice flows with JSON-based logic
-- [x] SMS & messaging flow engine
-- [x] AI-powered voice assistants
-- [x] Real-time transcription & summarization
-- [x] Multi-tenant platform with billing
-- [x] Outbound campaign engine
-- [x] Team messaging with threads and media sharing (Talk)
-- [x] Video conferencing (Meet / WebRTC)
-- [x] MCP server for AI agent integration
-- [x] Terraform-based cloud deployment (GCP)
-- [ ] Docker Compose quick-start for easy local setup
-- [ ] AWS & Azure support
-- [ ] Plugin/extension marketplace
-- [ ] SDKs for Python, JavaScript, Java
-- [ ] Hosted free tier at voipbin.net
-
-> 💡 Have an idea? [Open an issue](https://github.com/voipbin/voipbin/issues) — we'd love to hear from you!
-
----
-
 ## 🤝 Contributing
 
 We welcome contributions of all kinds! Whether it's fixing a bug, improving documentation, or proposing new features.
 
 ```bash
 # Fork and clone
-git clone https://github.com/YOUR_USERNAME/monorepo.git
+git clone https://github.com/YOUR_USERNAME/voipbin.git
 
 # Create a feature branch
 git checkout -b feature/amazing-feature
