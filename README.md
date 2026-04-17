@@ -18,7 +18,7 @@ A complete, production-grade Communications Platform as a Service: <b>Voice</b>,
   <a href="https://admin.voipbin.net">Admin Console</a> •
   <a href="https://talk.voipbin.net">Talk</a> •
   <a href="https://meet.voipbin.net">Meet</a> •
-  <a href="https://youtu.be/9VKu_QMFzko">Demo Video</a>
+  <a href="https://discord.com/invite/waztvb63Yx">Discord</a>
 </p>
 
 <p align="center">
@@ -148,112 +148,42 @@ Everything your communications stack needs, built to work together out of the bo
 
 ## 🎬 See It in Action
 
-VoIPBin ships with **three production-ready applications** — an Admin Console for operators, Talk for agents and teams, and Meet for video conferencing — all backed by the same API and microservices layer.
-
-<table>
-<tr>
-<td align="center" width="25%">
-  <a href="https://voipbin.net"><b>🌍 Project Site</b></a><br/>
-  Landing page
-</td>
-<td align="center" width="25%">
-  <a href="https://admin.voipbin.net"><b>🔧 Admin Console</b></a><br/>
-  Operator workspace
-</td>
-<td align="center" width="25%">
-  <a href="https://talk.voipbin.net"><b>💼 Talk</b></a><br/>
-  Team messaging & calls
-</td>
-<td align="center" width="25%">
-  <a href="https://meet.voipbin.net"><b>🎥 Meet</b></a><br/>
-  Video conferencing
-</td>
-</tr>
-</table>
+VoIPBin ships with three production-ready applications — all backed by the same API and microservices layer.
 
 ### 🔧 Admin Console — Build and Manage Your CPaaS
 
-<table>
-<tr>
-<td align="center" width="33%">
-  <img src="docs/images/flow-builder.png" alt="Flow Builder" width="280" /><br/>
-  <sub><b>Visual Flow Builder</b><br/>Design voice/messaging flows with drag-and-drop</sub>
-</td>
-<td align="center" width="33%">
-  <img src="docs/images/team-builder.png" alt="Team Builder" width="280" /><br/>
-  <sub><b>Multi-Agent Team Builder</b><br/>Coordinate AI agents and human operators</sub>
-</td>
-<td align="center" width="33%">
-  <img src="docs/images/ai-assistants.png" alt="AI Assistants" width="280" /><br/>
-  <sub><b>AI Assistants</b><br/>Conversational AI with custom actions</sub>
-</td>
-</tr>
-</table>
+The operator workspace for building call flows, managing AI assistants, configuring agents, and monitoring your entire communications stack.
+
+<a href="https://admin.voipbin.net"><b>🔧 Try Admin Console →</b></a> &nbsp;·&nbsp; <sub>Guest account available — no sign-up required</sub>
+
+<p align="center">
+  <a href="https://admin.voipbin.net">
+    <img src="docs/images/admin-slideshow.gif" alt="Admin Console Tour" width="820" />
+  </a>
+</p>
 
 ### 💼 Talk — The Agent & Team Workspace
 
-Talk is VoIPBin's collaboration hub — real-time team messaging with **threaded conversations**, **rich media sharing**, and **integrated voice calls**, all in one browser tab. Perfect for support teams, distributed offices, and customer-facing agents.
+The collaboration hub for agents and teams — real-time messaging with **threaded conversations**, **rich media sharing**, and **integrated voice calls**, all in one browser tab.
+
+<a href="https://talk.voipbin.net"><b>💼 Try Talk →</b></a> &nbsp;·&nbsp; <sub>Guest account available — no sign-up required</sub>
 
 <p align="center">
   <a href="https://talk.voipbin.net">
-    <img src="docs/images/talk-channel.png" alt="Talk Channel View" width="820" />
+    <img src="docs/images/talk-slideshow.gif" alt="Talk Feature Tour" width="820" />
   </a>
-  <br/>
-  <sub><b>Channels</b> — Team chat with images, videos, files, and link previews</sub>
 </p>
-
-<table>
-<tr>
-<td align="center" width="50%">
-  <img src="docs/images/talk-thread.png" alt="Talk Thread" width="400" /><br/>
-  <sub><b>Threaded Replies</b><br/>Focused discussions without cluttering the main channel</sub>
-</td>
-<td align="center" width="50%">
-  <img src="docs/images/talk-calls.png" alt="Talk Calls" width="400" /><br/>
-  <sub><b>Integrated Voice Calls</b><br/>Place and receive calls directly from the workspace</sub>
-</td>
-</tr>
-<tr>
-<td align="center" width="50%">
-  <img src="docs/images/talk-agents.png" alt="Talk Agents" width="400" /><br/>
-  <sub><b>Agent Directory</b><br/>See availability, assign conversations, and collaborate</sub>
-</td>
-<td align="center" width="50%">
-  <a href="https://talk.voipbin.net"><b>Try Talk →</b></a><br/>
-  <sub>Log in with the demo account at <a href="https://talk.voipbin.net">talk.voipbin.net</a></sub>
-</td>
-</tr>
-</table>
 
 ### 🎥 Meet — Browser-Based Video Conferencing
 
-Meet is VoIPBin's **WebRTC-powered video conferencing app** — HD audio and video, screen sharing, and shareable meeting links. No downloads, no plugins, no vendor lock-in.
+WebRTC-powered video conferencing — HD audio and video, screen sharing, and shareable meeting links. No downloads, no plugins, no vendor lock-in.
 
-<table>
-<tr>
-<td align="center" width="50%">
-  <img src="docs/images/meet-home.png" alt="Meet Home" width="400" /><br/>
-  <sub><b>Start or Join a Meeting</b><br/>One-click meeting creation with shareable links</sub>
-</td>
-<td align="center" width="50%">
-  <img src="docs/images/meet-room.png" alt="Meet Room" width="400" /><br/>
-  <sub><b>In-Meeting Experience</b><br/>HD video, screen sharing, and moderation tools</sub>
-</td>
-</tr>
-</table>
+<a href="https://meet.voipbin.net"><b>🎥 Try Meet →</b></a> &nbsp;·&nbsp; <sub>No sign-up required — join instantly</sub>
 
 <p align="center">
-  <a href="https://meet.voipbin.net"><b>🎥 Try Meet →</b></a>
-</p>
-
-### 📹 Full Walkthrough
-
-<p align="center">
-  <a href="https://youtu.be/9VKu_QMFzko">
-    <img src="https://img.youtube.com/vi/9VKu_QMFzko/maxresdefault.jpg" alt="VoIPBin Demo Video" width="600" />
+  <a href="https://meet.voipbin.net">
+    <img src="docs/images/meet-slideshow.gif" alt="Meet Feature Tour" width="820" />
   </a>
-  <br/>
-  <a href="https://youtu.be/9VKu_QMFzko">▶️ Watch the full demo video</a>
 </p>
 
 ---
@@ -292,7 +222,6 @@ Use VoIPBin as a fully managed service — no infrastructure to set up, no serve
 Deploy VoIPBin on your own cloud infrastructure. Own your data, customize everything, and run it wherever you want.
 
 ✅ Complete data ownership<br/>
-✅ Currently supports GCP (AWS, Azure planned)<br/>
 ✅ Full customization & white-labeling<br/>
 ✅ No usage-based fees<br/>
 ✅ Air-gapped / private network support
@@ -422,43 +351,43 @@ VoIPBin is built as a distributed system of **34 Go microservices**, communicati
 
 ```
 ┌─────────────────────────────────────────────────────────┐
-│                     Client Layer                         │
+│                     Client Layer                        │
 │   Admin Console  •  Talk  •  Meet  •  SDK  •  REST API  │
 └────────────────────────┬────────────────────────────────┘
                          │
 ┌────────────────────────▼────────────────────────────────┐
-│                    API Gateway                           │
-│              (bin-api-manager)                           │
+│                    API Gateway                          │
+│              (bin-api-manager)                          │
 └────────────────────────┬────────────────────────────────┘
                          │
 ┌────────────────────────▼────────────────────────────────┐
-│              Core Microservices                          │
+│              Core Microservices                         │
 │                                                         │
-│  ┌──────────┐ ┌──────────┐ ┌──────────┐ ┌──────────┐  │
-│  │   Call    │ │   Flow   │ │   AI     │ │  Queue   │  │
-│  │ Manager  │ │ Manager  │ │ Manager  │ │ Manager  │  │
-│  └──────────┘ └──────────┘ └──────────┘ └──────────┘  │
+│   ┌──────────┐ ┌──────────┐ ┌──────────┐ ┌──────────┐   │
+│   │   Call   │ │   Flow   │ │   AI     │ │  Queue   │   │
+│   │ Manager  │ │ Manager  │ │ Manager  │ │ Manager  │   │
+│   └──────────┘ └──────────┘ └──────────┘ └──────────┘   │
 │                                                         │
-│  ┌──────────┐ ┌──────────┐ ┌──────────┐ ┌──────────┐  │
-│  │ Campaign │ │Conference│ │ Message  │ │ Customer │  │
-│  │ Manager  │ │ Manager  │ │ Manager  │ │ Manager  │  │
-│  └──────────┘ └──────────┘ └──────────┘ └──────────┘  │
+│   ┌──────────┐ ┌──────────┐ ┌──────────┐ ┌──────────┐   │
+│   │ Campaign │ │Conference│ │ Message  │ │ Customer │   │
+│   │ Manager  │ │ Manager  │ │ Manager  │ │ Manager  │   │
+│   └──────────┘ └──────────┘ └──────────┘ └──────────┘   │
 │                                                         │
-│  ┌──────────┐ ┌──────────┐ ┌──────────┐ ┌──────────┐  │
-│  │ Billing  │ │  Number  │ │   Talk   │ │  Hook    │  │
-│  │ Manager  │ │ Manager  │ │ Manager  │ │ Manager  │  │
-│  └──────────┘ └──────────┘ └──────────┘ └──────────┘  │
+│   ┌──────────┐ ┌──────────┐ ┌──────────┐ ┌──────────┐   │
+│   │ Billing  │ │  Number  │ │   Talk   │ │  Hook    │   │
+│   │ Manager  │ │ Manager  │ │ Manager  │ │ Manager  │   │
+│   └──────────┘ └──────────┘ └──────────┘ └──────────┘   │
 │                                                         │
-│         ... and 22 more microservices                  │
+│         ... and 22 more microservices                   │
 └────────────────────────┬────────────────────────────────┘
                          │
 ┌────────────────────────▼────────────────────────────────┐
-│                 Media & VoIP Layer                       │
+│                 Media & VoIP Layer                      │
 │       Asterisk  •  Kamailio  •  RTPEngine               │
 └─────────────────────────────────────────────────────────┘
 ```
 
-> 📖 See the full [architecture documentation](https://github.com/voipbin/monorepo) for detailed service descriptions.
+> 📖 See the [monorepo](https://github.com/voipbin/monorepo) for full source code and service descriptions.
 
 ---
 
@@ -478,30 +407,8 @@ VoIPBin is built as a distributed system of **34 Go microservices**, communicati
 ## 📚 Documentation
 
 - 📘 **[API Reference](https://api.voipbin.net/docs/)** — Explore and test all VoIPBin APIs
-- 🏗️ **[Architecture Guide](https://github.com/voipbin/monorepo)** — System design and service breakdown
-- 🐍 **[Python Examples](https://github.com/voipbin/sandbox)** — Sample applications and integrations
-
----
-
-## 🗺️ Roadmap
-
-- [x] Programmable voice flows with JSON-based logic
-- [x] SMS & messaging flow engine
-- [x] AI-powered voice assistants
-- [x] Real-time transcription & summarization
-- [x] Multi-tenant platform with billing
-- [x] Outbound campaign engine
-- [x] Team messaging with threads and media sharing (Talk)
-- [x] Video conferencing (Meet / WebRTC)
-- [x] MCP server for AI agent integration
-- [x] Terraform-based cloud deployment (GCP)
-- [ ] Docker Compose quick-start for easy local setup
-- [ ] AWS & Azure support
-- [ ] Plugin/extension marketplace
-- [ ] SDKs for Python, JavaScript, Java
-- [ ] Hosted free tier at voipbin.net
-
-> 💡 Have an idea? [Open an issue](https://github.com/voipbin/voipbin/issues) — we'd love to hear from you!
+- 🏗️ **[Backend Microservices](https://github.com/voipbin/monorepo)** — Source code for all 34 Go services
+- 🐍 **[Examples & Sandbox](https://github.com/voipbin/sandbox)** — Sample applications and integrations
 
 ---
 
@@ -509,17 +416,18 @@ VoIPBin is built as a distributed system of **34 Go microservices**, communicati
 
 We welcome contributions of all kinds! Whether it's fixing a bug, improving documentation, or proposing new features.
 
-```bash
-# Fork and clone
-git clone https://github.com/YOUR_USERNAME/monorepo.git
+All source code lives in the individual repositories — this repo is the project hub with no code of its own. To contribute, head to the repo that matches what you want to work on:
 
-# Create a feature branch
-git checkout -b feature/amazing-feature
+| What you want to work on | Repo |
+|---|---|
+| Documentation & general feedback | **[voipbin/voipbin](https://github.com/voipbin/voipbin/issues)** |
+| Backend microservices (Go) | **[voipbin/monorepo](https://github.com/voipbin/monorepo)** |
+| Go SDK | **[voipbin/voipbin-go](https://github.com/voipbin/voipbin-go)** |
+| MCP server | **[voipbin/mcp](https://github.com/voipbin/mcp)** |
+| Deployment / self-hosting | **[voipbin/install](https://github.com/voipbin/install)** |
+| Examples & sandbox | **[voipbin/sandbox](https://github.com/voipbin/sandbox)** |
 
-# Make your changes and submit a PR
-```
-
-See the [monorepo](https://github.com/voipbin/monorepo) for development setup instructions.
+Fork the relevant repo, create a feature branch, and open a PR there. Have a question first? Join our [Discord](https://discord.com/invite/waztvb63Yx) — we're happy to help.
 
 ---
 
@@ -540,6 +448,7 @@ If VoIPBin saves you from reinventing a CPaaS, help others find it by starring t
 - 🌐 Website: [voipbin.net](https://voipbin.net)
 - 📧 Email: [support@voipbin.net](mailto:support@voipbin.net)
 - 🐙 GitHub: [@voipbin](https://github.com/voipbin)
+- 💬 Discord: [Join our community](https://discord.com/invite/waztvb63Yx)
 
 ---
 
