@@ -416,17 +416,17 @@ VoIPBin is built as a distributed system of **34 Go microservices**, communicati
 
 We welcome contributions of all kinds! Whether it's fixing a bug, improving documentation, or proposing new features.
 
-```bash
-# Fork and clone
-git clone https://github.com/YOUR_USERNAME/voipbin.git
+All source code lives in the individual repositories — this repo is the project hub with no code of its own. To contribute, head to the repo that matches what you want to work on:
 
-# Create a feature branch
-git checkout -b feature/amazing-feature
+| What you want to work on | Repo |
+|---|---|
+| Backend microservices (Go) | **[voipbin/monorepo](https://github.com/voipbin/monorepo)** |
+| Go SDK | **[voipbin/voipbin-go](https://github.com/voipbin/voipbin-go)** |
+| MCP server | **[voipbin/mcp](https://github.com/voipbin/mcp)** |
+| Deployment / self-hosting | **[voipbin/install](https://github.com/voipbin/install)** |
+| Examples & sandbox | **[voipbin/sandbox](https://github.com/voipbin/sandbox)** |
 
-# Make your changes and submit a PR
-```
-
-See the [monorepo](https://github.com/voipbin/monorepo) for development setup instructions.
+Fork the relevant repo, create a feature branch, and open a PR there. Have a question first? Join our [Discord](https://discord.com/invite/waztvb63Yx) — we're happy to help.
 
 ---
 
@@ -447,6 +447,7 @@ If VoIPBin saves you from reinventing a CPaaS, help others find it by starring t
 - 🌐 Website: [voipbin.net](https://voipbin.net)
 - 📧 Email: [support@voipbin.net](mailto:support@voipbin.net)
 - 🐙 GitHub: [@voipbin](https://github.com/voipbin)
+- 💬 Discord: [Join our community](https://discord.com/invite/waztvb63Yx)
 
 ---
 
