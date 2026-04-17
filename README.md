@@ -322,15 +322,19 @@ After signing in, grab your API token from the Admin Console dashboard.
 **3. Make your first API call**
 
 ```bash
+export VOIPBIN_TOKEN="your_api_token_here"
+```
+
+```bash
 # List your registered numbers
 curl -X GET https://api.voipbin.net/v1.0/numbers \
-  -H "Authorization: Bearer ***
+  -H "Authorization: Bearer $VOIPBIN_TOKEN"
 ```
 
 ```bash
 # Create a programmable call flow
 curl -X POST https://api.voipbin.net/v1.0/flows \
-  -H "Authorization: Bearer *** \
+  -H "Authorization: Bearer $VOIPBIN_TOKEN" \
   -H "Content-Type: application/json" \
   -d '{
     "name": "Hello World",
