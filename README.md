@@ -17,8 +17,7 @@ A complete, production-grade Communications Platform as a Service: <b>Voice</b>,
   <a href="https://api.voipbin.net/docs/">API Docs</a> •
   <a href="https://admin.voipbin.net">Admin Console</a> •
   <a href="https://talk.voipbin.net">Talk</a> •
-  <a href="https://meet.voipbin.net">Meet</a> •
-  <a href="https://youtu.be/9VKu_QMFzko">Demo Video</a>
+  <a href="https://meet.voipbin.net">Meet</a>
 </p>
 
 <p align="center">
@@ -173,22 +172,11 @@ VoIPBin ships with **three production-ready applications** — an Admin Console 
 
 ### 🔧 Admin Console — Build and Manage Your CPaaS
 
-<table>
-<tr>
-<td align="center" width="33%">
-  <img src="docs/images/flow-builder.png" alt="Flow Builder" width="280" /><br/>
-  <sub><b>Visual Flow Builder</b><br/>Design voice/messaging flows with drag-and-drop</sub>
-</td>
-<td align="center" width="33%">
-  <img src="docs/images/team-builder.png" alt="Team Builder" width="280" /><br/>
-  <sub><b>Multi-Agent Team Builder</b><br/>Coordinate AI agents and human operators</sub>
-</td>
-<td align="center" width="33%">
-  <img src="docs/images/ai-assistants.png" alt="AI Assistants" width="280" /><br/>
-  <sub><b>AI Assistants</b><br/>Conversational AI with custom actions</sub>
-</td>
-</tr>
-</table>
+<p align="center">
+  <a href="https://admin.voipbin.net">
+    <img src="docs/images/admin-slideshow.gif" alt="Admin Console Tour" width="820" />
+  </a>
+</p>
 
 ### 💼 Talk — The Agent & Team Workspace
 
@@ -196,64 +184,26 @@ Talk is VoIPBin's collaboration hub — real-time team messaging with **threaded
 
 <p align="center">
   <a href="https://talk.voipbin.net">
-    <img src="docs/images/talk-channel.png" alt="Talk Channel View" width="820" />
+    <img src="docs/images/talk-slideshow.gif" alt="Talk Feature Tour" width="820" />
   </a>
-  <br/>
-  <sub><b>Channels</b> — Team chat with images, videos, files, and link previews</sub>
 </p>
 
-<table>
-<tr>
-<td align="center" width="50%">
-  <img src="docs/images/talk-thread.png" alt="Talk Thread" width="400" /><br/>
-  <sub><b>Threaded Replies</b><br/>Focused discussions without cluttering the main channel</sub>
-</td>
-<td align="center" width="50%">
-  <img src="docs/images/talk-calls.png" alt="Talk Calls" width="400" /><br/>
-  <sub><b>Integrated Voice Calls</b><br/>Place and receive calls directly from the workspace</sub>
-</td>
-</tr>
-<tr>
-<td align="center" width="50%">
-  <img src="docs/images/talk-agents.png" alt="Talk Agents" width="400" /><br/>
-  <sub><b>Agent Directory</b><br/>See availability, assign conversations, and collaborate</sub>
-</td>
-<td align="center" width="50%">
-  <a href="https://talk.voipbin.net"><b>Try Talk →</b></a><br/>
-  <sub>Log in with the demo account at <a href="https://talk.voipbin.net">talk.voipbin.net</a></sub>
-</td>
-</tr>
-</table>
+<p align="center">
+  <a href="https://talk.voipbin.net"><b>🚀 Try Talk →</b></a> &nbsp;·&nbsp; <sub>Guest account available — no sign-up required</sub>
+</p>
 
 ### 🎥 Meet — Browser-Based Video Conferencing
 
 Meet is VoIPBin's **WebRTC-powered video conferencing app** — HD audio and video, screen sharing, and shareable meeting links. No downloads, no plugins, no vendor lock-in.
 
-<table>
-<tr>
-<td align="center" width="50%">
-  <img src="docs/images/meet-home.png" alt="Meet Home" width="400" /><br/>
-  <sub><b>Start or Join a Meeting</b><br/>One-click meeting creation with shareable links</sub>
-</td>
-<td align="center" width="50%">
-  <img src="docs/images/meet-room.png" alt="Meet Room" width="400" /><br/>
-  <sub><b>In-Meeting Experience</b><br/>HD video, screen sharing, and moderation tools</sub>
-</td>
-</tr>
-</table>
-
 <p align="center">
-  <a href="https://meet.voipbin.net"><b>🎥 Try Meet →</b></a>
+  <a href="https://meet.voipbin.net">
+    <img src="docs/images/meet-slideshow.gif" alt="Meet Feature Tour" width="820" />
+  </a>
 </p>
 
-### 📹 Full Walkthrough
-
 <p align="center">
-  <a href="https://youtu.be/9VKu_QMFzko">
-    <img src="https://img.youtube.com/vi/9VKu_QMFzko/maxresdefault.jpg" alt="VoIPBin Demo Video" width="600" />
-  </a>
-  <br/>
-  <a href="https://youtu.be/9VKu_QMFzko">▶️ Watch the full demo video</a>
+  <a href="https://meet.voipbin.net"><b>🎥 Try Meet →</b></a> &nbsp;·&nbsp; <sub>No sign-up required — join instantly</sub>
 </p>
 
 ---
