@@ -28,6 +28,7 @@ A complete, production-grade Communications Platform as a Service: <b>Voice</b>,
   <a href="https://github.com/voipbin/voipbin/blob/main/LICENSE"><img src="https://img.shields.io/github/license/voipbin/voipbin?color=blue" alt="License" /></a>
   <a href="https://github.com/voipbin/monorepo"><img src="https://img.shields.io/badge/microservices-34-orange" alt="Microservices" /></a>
   <a href="https://github.com/voipbin/voipbin/issues"><img src="https://img.shields.io/badge/PRs-welcome-brightgreen.svg" alt="PRs Welcome" /></a>
+  <a href="https://discord.com/invite/waztvb63Yx"><img src="https://img.shields.io/badge/Discord-Join_Community-5865F2?logo=discord&logoColor=white" alt="Discord" /></a>
 </p>
 
 <p align="center">
@@ -40,6 +41,20 @@ A complete, production-grade Communications Platform as a Service: <b>Voice</b>,
   <a href="https://admin.voipbin.net">
     <img src="docs/images/dashboard-tour.gif" alt="VoIPBin Admin Console Tour" width="800" />
   </a>
+</p>
+
+<p align="center">
+  <sub>
+    <a href="#why-voipbin">Why</a> ·
+    <a href="#-who-is-voipbin-for">Who it's for</a> ·
+    <a href="#-features--a-unified-cpaas-not-a-collection-of-parts">Features</a> ·
+    <a href="#-see-it-in-action">Demo</a> ·
+    <a href="#-two-ways-to-use-voipbin">Cloud or Self-host</a> ·
+    <a href="#-voipbin-cloud--quick-start">Quick Start</a> ·
+    <a href="#-architecture">Architecture</a> ·
+    <a href="#-security--data-sovereignty">Security</a> ·
+    <a href="#-repositories">Repos</a>
+  </sub>
 </p>
 
 ---
@@ -62,6 +77,66 @@ A complete, production-grade Communications Platform as a Service: <b>Voice</b>,
 - ☸️ **Cloud-native & horizontally scalable** — Kubernetes-first, stateless services, message-queue backbone
 - 📞 **Carrier-grade voice** — Asterisk + Kamailio + RTPEngine with SRTP, OPUS, PCMU/PCMA, WebRTC
 - 🛡️ **Data sovereignty** — Deploy on your own infrastructure. No data leaves your cloud.
+
+---
+
+## 👥 Who is VoIPBin For?
+
+VoIPBin is built for teams who need **real communications infrastructure** — not a wrapper around someone else's API.
+
+<table>
+<tr>
+<td width="50%">
+
+### 🏢 SaaS & Product Teams
+**Embed voice, SMS, and chat into your product** without paying per-minute markups for the rest of your life. Multi-tenant from day one — isolate every customer with native billing, quotas, and access control.
+
+> _"We were paying $40k/mo to a CPaaS vendor for features we could now own."_
+
+</td>
+<td width="50%">
+
+### 📞 Contact Centers & BPOs
+**Run inbound/outbound campaigns at scale** with programmable flows, agent queues, real-time transcription, and AI-powered post-call summaries. Full agent workspace included via Talk.
+
+> _"Replace your legacy ACD without replacing your phone numbers."_
+
+</td>
+</tr>
+<tr>
+<td width="50%">
+
+### 🤖 AI Agent Builders
+**Connect any LLM to a real phone line.** Built-in MCP server, RAG-backed assistants, real-time STT/TTS, and a flow engine that handles call routing while your AI handles the conversation.
+
+> _"The fastest path from `gpt-4` to `+1-555-…`."_
+
+</td>
+<td width="50%">
+
+### 🌍 Telecom Operators & ISVs
+**White-label a complete CPaaS** under your own brand. Bring your own carriers, deploy in your own region, comply with local data residency rules — air-gapped deployments supported.
+
+> _"Self-hostable means you actually own the customer relationship."_
+
+</td>
+</tr>
+</table>
+
+---
+
+## 🔐 Security & Data Sovereignty
+
+Communications data is sensitive — VoIPBin is engineered so you stay in control of it.
+
+- **🏠 Self-hostable, fully** — Every component (backend, frontend, telephony, databases) runs in your cloud. Air-gapped deployments supported.
+- **🔒 Encrypted media** — SRTP for voice, TLS for signaling and APIs end-to-end.
+- **🗝️ Secrets management** — Configuration encrypted at rest with [SOPS](https://github.com/getsops/sops) — no plaintext credentials in the repo or runtime.
+- **🪪 Multi-tenant isolation** — Every customer's data, flows, and credentials are isolated at the database layer, not just the API.
+- **🌐 Data residency** — You pick the region. Data never leaves your VPC.
+- **📜 Auditable** — 100% MIT-licensed source. Inspect every line, fork freely, host anywhere.
+
+> No managed-service backdoors. No "phone home" telemetry. No usage caps that hold your data hostage.
 
 ---
 
@@ -261,19 +336,36 @@ curl -X GET https://api.voipbin.net/v1.0/numbers \
 ```
 
 ```bash
-# Create a programmable call flow
+# Create a programmable call flow with branching
 curl -X POST https://api.voipbin.net/v1.0/flows \
   -H "Authorization: Bearer $VOIPBIN_TOKEN" \
   -H "Content-Type: application/json" \
   -d '{
-    "name": "Hello World",
+    "name": "IVR with AI Fallback",
     "actions": [
-      {"type": "talk", "text": "Hello from VoIPBin!"}
+      {"type": "talk", "text": "Welcome to VoIPBin. Press 1 for sales, or stay on the line for our AI assistant."},
+      {"type": "digits_receive", "length": 1, "duration": 5000},
+      {"type": "branch", "variable": "voipbin.digits_receive.digits", "default_target_id": "ai_assist", "target_ids": {"1": "sales_queue"}}
     ]
   }'
 ```
 
+```bash
+# Spin up an AI voice assistant grounded in your knowledge base
+curl -X POST https://api.voipbin.net/v1.0/ais \
+  -H "Authorization: Bearer $VOIPBIN_TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "name": "Support Bot",
+    "engine_type": "openai",
+    "engine_model": "gpt-4o",
+    "init_prompt": "You are a friendly support agent for Acme Inc. Keep replies under 2 sentences.",
+    "credentials": {"api_key": "sk-..."}
+  }'
+```
+
 > 📘 **Full API Reference**: [api.voipbin.net/docs](https://api.voipbin.net/docs/) — Explore all endpoints interactively.
+> 🐍 **SDK**: [voipbin/voipbin-go](https://github.com/voipbin/voipbin-go) for typed Go bindings.
 
 ---
 
@@ -438,6 +530,16 @@ If VoIPBin saves you from reinventing a CPaaS, help others find it by starring t
 <p align="center">
   <a href="https://github.com/voipbin/voipbin/stargazers">
     <img src="https://img.shields.io/github/stars/voipbin/voipbin?style=social" alt="GitHub Stars" />
+  </a>
+</p>
+
+<p align="center">
+  <a href="https://www.star-history.com/#voipbin/voipbin&voipbin/monorepo&Date">
+    <picture>
+      <source media="(prefers-color-scheme: dark)" srcset="https://api.star-history.com/svg?repos=voipbin/voipbin,voipbin/monorepo&type=Date&theme=dark" />
+      <source media="(prefers-color-scheme: light)" srcset="https://api.star-history.com/svg?repos=voipbin/voipbin,voipbin/monorepo&type=Date" />
+      <img alt="Star History Chart" src="https://api.star-history.com/svg?repos=voipbin/voipbin,voipbin/monorepo&type=Date" width="720" />
+    </picture>
   </a>
 </p>
 
