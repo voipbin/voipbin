@@ -9,7 +9,7 @@
 <h3 align="center">The Open-Source CPaaS Platform — Built for Enterprises, Open for Everyone</h3>
 
 <p align="center">
-A complete, production-grade Communications Platform as a Service: <b>Voice</b>, <b>SMS</b>, <b>Video</b>, <b>AI</b>, <b>Team Messaging</b>, and <b>Conferencing</b> — fully self-hostable, API-first, and running in production today.
+A complete, production-grade Communications Platform as a Service: <b>Voice</b>, <b>SMS</b>, <b>AI</b>, <b>Team Messaging</b>, and <b>Conferencing</b> — fully self-hostable, API-first, and running in production today.
 </p>
 
 <p align="center">
@@ -63,7 +63,7 @@ A complete, production-grade Communications Platform as a Service: <b>Voice</b>,
 
 **Most CPaaS platforms come with trade-offs**: vendor lock-in, unpredictable pricing, and zero control over your infrastructure. Most open-source alternatives either stop at SIP or require gluing together a dozen unrelated projects.
 
-**VoIPBin is different.** It's the **only production-grade, self-hostable, all-in-one CPaaS** — voice, messaging, video, AI, team collaboration, and conferencing in a single coherent platform. 34 Go microservices running on Kubernetes, backed by Asterisk, Kamailio, and RTPEngine, fully open-sourced under MIT.
+**VoIPBin is different.** It's the **only production-grade, self-hostable, all-in-one CPaaS** — voice, messaging, AI, team collaboration, and audio conferencing in a single coherent platform. 34 Go microservices running on Kubernetes, backed by Asterisk, Kamailio, and RTPEngine, fully open-sourced under MIT.
 
 > _"Own your communications stack."_ — Run your own CPaaS with full API control and zero vendor lock-in.
 
@@ -71,7 +71,7 @@ A complete, production-grade Communications Platform as a Service: <b>Voice</b>,
 
 - 🏭 **Running in production today** — Serving real traffic at [voipbin.net](https://voipbin.net), not a weekend prototype
 - 🔓 **Truly open-source** — MIT Licensed, no "open-core" bait-and-switch, every component is in the repo
-- 🧩 **Complete platform, not a toolkit** — Voice, SMS, Video, AI, Queues, Campaigns, Team Messaging, Meetings — all integrated
+- 🧩 **Complete platform, not a toolkit** — Voice, SMS, AI, Queues, Campaigns, Team Messaging, Meetings — all integrated
 - 🤖 **AI-native** — Built-in AI assistants, real-time transcription, post-call summarization, intelligent routing
 - 🏢 **Multi-tenant by design** — Full customer isolation, billing, quotas, and access control out of the box
 - ☸️ **Cloud-native & horizontally scalable** — Kubernetes-first, stateless services, message-queue backbone
@@ -152,7 +152,7 @@ Everything your communications stack needs, built to work together out of the bo
 - **Programmable Call Flows** — Design advanced call logic with branching, loops, and post-call hooks using declarative JSON
 - **Call Queues & Agents** — Priority-based routing, ring strategies, agent login/logout
 - **Call Recording** — Record, transcribe, and summarize conversations
-- **Conferencing** — Secure real-time audio/video with moderation tools
+- **Conferencing** — Secure real-time audio with moderation tools
 - **Extension Management** — SIP/WebRTC registration and routing
 - **Carrier-grade media** — SRTP, OPUS, PCMU/PCMA codecs
 
@@ -196,13 +196,13 @@ Everything your communications stack needs, built to work together out of the bo
 <tr>
 <td width="50%">
 
-### 🎥 Meet — Video Conferencing
-- **Browser-based Video Calls** — No downloads, works everywhere via WebRTC
-- **HD Audio & Video** — Low-latency real-time media
-- **Screen Sharing & Presentations** — Share your screen in one click
+### 🎙️ Meet — Audio Conferencing
+- **Browser-based Audio Calls** — No downloads, works everywhere via WebRTC
+- **HD Audio** — Low-latency real-time voice
 - **Moderation Tools** — Host controls, mute, remove participants
 - **Shareable Links** — Join meetings via simple URL
-- **Integrated with Voice** — Escalate chats into full video meetings
+- **Multi-tenant** — Isolated meeting spaces per workspace
+- **Integrated with Voice** — Escalate chats into full audio meetings
 
 </td>
 <td width="50%">
@@ -249,11 +249,11 @@ The collaboration hub for agents and teams — real-time messaging with **thread
   </a>
 </p>
 
-### 🎥 Meet — Browser-Based Video Conferencing
+### 🎙️ Meet — Browser-Based Audio Conferencing
 
-WebRTC-powered video conferencing — HD audio and video, screen sharing, and shareable meeting links. No downloads, no plugins, no vendor lock-in.
+WebRTC-powered audio conferencing — HD voice, moderation controls, and shareable meeting links. No downloads, no plugins, no vendor lock-in.
 
-<a href="https://meet.voipbin.net"><b>🎥 Try Meet →</b></a> &nbsp;·&nbsp; <sub>No sign-up required — join instantly</sub>
+<a href="https://meet.voipbin.net"><b>🎙️ Try Meet →</b></a> &nbsp;·&nbsp; <sub>No sign-up required — join instantly</sub>
 
 <p align="center">
   <a href="https://meet.voipbin.net">
@@ -419,7 +419,7 @@ NAT, KMS, Storage           Docker + Config           3 Frontend Apps
 |---|---|
 | **Backend** | 34 Go microservices (call, flow, AI, queue, campaign, billing, talk, etc.) |
 | **VoIP** | Asterisk (call, conference, registrar) + Kamailio + RTPEngine |
-| **Frontend** | Admin Console, Talk (agent app), Meet (video conferencing) |
+| **Frontend** | Admin Console, Talk (agent app), Meet (audio conferencing) |
 | **Infrastructure** | Redis, RabbitMQ, ClickHouse, Cloud SQL (MySQL), Cloud SQL Proxy |
 | **Network** | VPC, Cloud NAT, Load Balancers, Firewall Rules, TLS/SSL |
 
