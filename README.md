@@ -523,9 +523,9 @@ Fork the relevant repo, create a feature branch, and open a PR there. Have a que
 
 ---
 
-## ⭐ Star VoIPBin
+## ⭐ Like the Project?
 
-If VoIPBin saves you from reinventing a CPaaS, help others find it by starring the repo. It genuinely helps the project grow.
+VoIPBin is brand new on GitHub — every star helps the project show up for the next person searching for an open-source CPaaS. If you find it useful (or even just interesting), a star goes a long way 🙏
 
 <p align="center">
   <a href="https://github.com/voipbin/voipbin/stargazers">
@@ -533,15 +533,7 @@ If VoIPBin saves you from reinventing a CPaaS, help others find it by starring t
   </a>
 </p>
 
-<p align="center">
-  <a href="https://www.star-history.com/#voipbin/voipbin&voipbin/monorepo&Date">
-    <picture>
-      <source media="(prefers-color-scheme: dark)" srcset="https://api.star-history.com/svg?repos=voipbin/voipbin,voipbin/monorepo&type=Date&theme=dark" />
-      <source media="(prefers-color-scheme: light)" srcset="https://api.star-history.com/svg?repos=voipbin/voipbin,voipbin/monorepo&type=Date" />
-      <img alt="Star History Chart" src="https://api.star-history.com/svg?repos=voipbin/voipbin,voipbin/monorepo&type=Date" width="720" />
-    </picture>
-  </a>
-</p>
+> Even better — try it, break it, file an issue, or drop by [Discord](https://discord.com/invite/waztvb63Yx) and tell us what's missing. That's worth more than a star.
 
 ---
 
