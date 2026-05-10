@@ -185,7 +185,7 @@ Everything your communications stack needs, built to work together out of the bo
 
 ### 💼 Talk — Team Collaboration
 - **Channels & Threads** — Organized team messaging with threaded replies
-- **Rich Media Sharing** — Images, videos, files, and link previews
+- **Rich Media Sharing** — Images, files, and link previews
 - **Integrated Voice Calls** — Place and receive calls without leaving the app
 - **Agent Workspace** — Unified inbox for chats, calls, and tasks
 - **Multi-tenant Messaging** — Isolated workspaces per customer
