@@ -63,7 +63,7 @@ A complete, production-grade Communications Platform as a Service: <b>Voice</b>,
 
 **Most CPaaS platforms come with trade-offs**: vendor lock-in, unpredictable pricing, and zero control over your infrastructure. Most opensource alternatives either stop at SIP or require gluing together a dozen unrelated projects.
 
-**VoIPBin is different.** It's the **only production-grade, self-hostable, all-in-one CPaaS**. Voice, messaging, AI, team collaboration, and audio conferencing in a single coherent platform. 34 Go microservices running on Kubernetes, backed by Asterisk, Kamailio, and RTPEngine, fully open-sourced under MIT.
+**VoIPBin is different.** It's the **only production-grade, self-hostable, all-in-one CPaaS**. Voice, messaging, AI, team collaboration, and audio conferencing in a single coherent platform. 34 Go microservices running on Kubernetes, backed by Asterisk, Kamailio, and RTPEngine, fully released as opensource software under MIT.
 
 > _"Own your communications stack."_ Run your own CPaaS with full API control and zero vendor lock-in.
 
