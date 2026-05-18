@@ -6,10 +6,10 @@
 
 <h1 align="center">VoIPBin</h1>
 
-<h3 align="center">The Open-Source CPaaS Platform — Built for Enterprises, Open for Everyone</h3>
+<h3 align="center">The Opensource CPaaS Platform. Built for Enterprises, Open for Everyone.</h3>
 
 <p align="center">
-A complete, production-grade Communications Platform as a Service: <b>Voice</b>, <b>SMS</b>, <b>AI</b>, <b>Team Messaging</b>, and <b>Conferencing</b> — fully self-hostable, API-first, and running in production today.
+A complete, production-grade Communications Platform as a Service: <b>Voice</b>, <b>SMS</b>, <b>AI</b>, <b>Team Messaging</b>, and <b>Conferencing</b>. Fully self-hostable, API-first, and running in production today.
 </p>
 
 <p align="center">
@@ -32,7 +32,7 @@ A complete, production-grade Communications Platform as a Service: <b>Voice</b>,
 </p>
 
 <p align="center">
-  <b>🟢 Live production instance:</b> <a href="https://admin.voipbin.net">admin.voipbin.net</a> — Try it now with the built-in <b>guest account</b> (no signup required)
+  <b>🟢 Live production instance:</b> <a href="https://admin.voipbin.net">admin.voipbin.net</a>. Try it now with the built-in <b>guest account</b> (no signup required)
 </p>
 
 <br />
@@ -61,35 +61,35 @@ A complete, production-grade Communications Platform as a Service: <b>Voice</b>,
 
 ## Why VoIPBin?
 
-**Most CPaaS platforms come with trade-offs**: vendor lock-in, unpredictable pricing, and zero control over your infrastructure. Most open-source alternatives either stop at SIP or require gluing together a dozen unrelated projects.
+**Most CPaaS platforms come with trade-offs**: vendor lock-in, unpredictable pricing, and zero control over your infrastructure. Most opensource alternatives either stop at SIP or require gluing together a dozen unrelated projects.
 
-**VoIPBin is different.** It's the **only production-grade, self-hostable, all-in-one CPaaS** — voice, messaging, AI, team collaboration, and audio conferencing in a single coherent platform. 34 Go microservices running on Kubernetes, backed by Asterisk, Kamailio, and RTPEngine, fully open-sourced under MIT.
+**VoIPBin is different.** It's the **only production-grade, self-hostable, all-in-one CPaaS**. Voice, messaging, AI, team collaboration, and audio conferencing in a single coherent platform. 34 Go microservices running on Kubernetes, backed by Asterisk, Kamailio, and RTPEngine, fully released as opensource software under MIT.
 
-> _"Own your communications stack."_ — Run your own CPaaS with full API control and zero vendor lock-in.
+> _"Own your communications stack."_ Run your own CPaaS with full API control and zero vendor lock-in.
 
 ### What makes VoIPBin enterprise-ready:
 
-- 🏭 **Running in production today** — Serving real traffic at [voipbin.net](https://voipbin.net), not a weekend prototype
-- 🔓 **Truly open-source** — MIT Licensed, no "open-core" bait-and-switch, every component is in the repo
-- 🧩 **Complete platform, not a toolkit** — Voice, SMS, AI, Queues, Campaigns, Team Messaging, Meetings — all integrated
-- 🤖 **AI-native** — Built-in AI assistants, real-time transcription, post-call summarization, intelligent routing
-- 🏢 **Multi-tenant by design** — Full customer isolation, billing, quotas, and access control out of the box
-- ☸️ **Cloud-native & horizontally scalable** — Kubernetes-first, stateless services, message-queue backbone
-- 📞 **Carrier-grade voice** — Asterisk + Kamailio + RTPEngine with SRTP, OPUS, PCMU/PCMA, WebRTC
-- 🛡️ **Data sovereignty** — Deploy on your own infrastructure. No data leaves your cloud.
+- 🏭 **Running in production today**. Serving real traffic at [voipbin.net](https://voipbin.net), not a weekend prototype
+- 🔓 **Truly opensource**. MIT Licensed, no "open-core" bait-and-switch, every component is in the repo
+- 🧩 **Complete platform, not a toolkit**. Voice, SMS, AI, Queues, Campaigns, Team Messaging, Meetings, all integrated
+- 🤖 **AI-native**. Built-in AI assistants, real-time transcription, post-call summarization, intelligent routing
+- 🏢 **Multi-tenant by design**. Full customer isolation, billing, quotas, and access control out of the box
+- ☸️ **Cloud-native and horizontally scalable**. Kubernetes-first, stateless services, message-queue backbone
+- 📞 **Carrier-grade voice**. Asterisk + Kamailio + RTPEngine with SRTP, OPUS, PCMU/PCMA, WebRTC
+- 🛡️ **Data sovereignty**. Deploy on your own infrastructure. No data leaves your cloud.
 
 ---
 
 ## 👥 Who is VoIPBin For?
 
-VoIPBin is built for teams who need **real communications infrastructure** — not a wrapper around someone else's API.
+VoIPBin is built for teams who need **real communications infrastructure**, not a wrapper around someone else's API.
 
 <table>
 <tr>
 <td width="50%">
 
 ### 🏢 SaaS & Product Teams
-**Embed voice, SMS, and chat into your product** without paying per-minute markups for the rest of your life. Multi-tenant from day one — isolate every customer with native billing, quotas, and access control.
+**Embed voice, SMS, and chat into your product** without paying per-minute markups for the rest of your life. Multi-tenant from day one, isolating every customer with native billing, quotas, and access control.
 
 > _"We were paying $40k/mo to a CPaaS vendor for features we could now own."_
 
@@ -109,13 +109,13 @@ VoIPBin is built for teams who need **real communications infrastructure** — n
 ### 🤖 AI Agent Builders
 **Connect any LLM to a real phone line.** Built-in MCP server, RAG-backed assistants, real-time STT/TTS, and a flow engine that handles call routing while your AI handles the conversation.
 
-> _"The fastest path from `gpt-4` to `+1-555-…`."_
+> _"The fastest path from `gpt-4` to `+1-555-...`."_
 
 </td>
 <td width="50%">
 
 ### 🌍 Telecom Operators & ISVs
-**White-label a complete CPaaS** under your own brand. Bring your own carriers, deploy in your own region, comply with local data residency rules — air-gapped deployments supported.
+**White-label a complete CPaaS** under your own brand. Bring your own carriers, deploy in your own region, comply with local data residency rules. Air-gapped deployments supported.
 
 > _"Self-hostable means you actually own the customer relationship."_
 
@@ -127,20 +127,20 @@ VoIPBin is built for teams who need **real communications infrastructure** — n
 
 ## 🔐 Security & Data Sovereignty
 
-Communications data is sensitive — VoIPBin is engineered so you stay in control of it.
+Communications data is sensitive. VoIPBin is engineered so you stay in control of it.
 
-- **🏠 Self-hostable, fully** — Every component (backend, frontend, telephony, databases) runs in your cloud. Air-gapped deployments supported.
-- **🔒 Encrypted media** — SRTP for voice, TLS for signaling and APIs end-to-end.
-- **🗝️ Secrets management** — Configuration encrypted at rest with [SOPS](https://github.com/getsops/sops) — no plaintext credentials in the repo or runtime.
-- **🪪 Multi-tenant isolation** — Every customer's data, flows, and credentials are isolated at the database layer, not just the API.
-- **🌐 Data residency** — You pick the region. Data never leaves your VPC.
-- **📜 Auditable** — 100% MIT-licensed source. Inspect every line, fork freely, host anywhere.
+- **🏠 Self-hostable, fully**. Every component (backend, frontend, telephony, databases) runs in your cloud. Air-gapped deployments supported.
+- **🔒 Encrypted media**. SRTP for voice, TLS for signaling and APIs end-to-end.
+- **🗝️ Secrets management**. Configuration encrypted at rest with [SOPS](https://github.com/getsops/sops). No plaintext credentials in the repo or runtime.
+- **🪪 Multi-tenant isolation**. Every customer's data, flows, and credentials are isolated at the database layer, not just the API.
+- **🌐 Data residency**. You pick the region. Data never leaves your VPC.
+- **📜 Auditable**. 100% MIT-licensed source. Inspect every line, fork freely, host anywhere.
 
 > No managed-service backdoors. No "phone home" telemetry. No usage caps that hold your data hostage.
 
 ---
 
-## ✨ Features — A Unified CPaaS, Not a Collection of Parts
+## ✨ Features. A Unified CPaaS, Not a Collection of Parts
 
 Everything your communications stack needs, built to work together out of the box.
 
@@ -149,23 +149,23 @@ Everything your communications stack needs, built to work together out of the bo
 <td width="50%">
 
 ### 📞 Voice & Telephony
-- **Programmable Call Flows** — Design advanced call logic with branching, loops, and post-call hooks using declarative JSON
-- **Call Queues & Agents** — Priority-based routing, ring strategies, agent login/logout
-- **Call Recording** — Record, transcribe, and summarize conversations
-- **Conferencing** — Secure real-time audio with moderation tools
-- **Extension Management** — SIP/WebRTC registration and routing
-- **Carrier-grade media** — SRTP, OPUS, PCMU/PCMA codecs
+- **Programmable Call Flows**. Design advanced call logic with branching, loops, and post-call hooks using declarative JSON
+- **Call Queues & Agents**. Priority-based routing, ring strategies, agent login/logout
+- **Call Recording**. Record, transcribe, and summarize conversations
+- **Conferencing**. Secure real-time audio with moderation tools
+- **Extension Management**. SIP/WebRTC registration and routing
+- **Carrier-grade media**. SRTP, OPUS, PCMU/PCMA codecs
 
 </td>
 <td width="50%">
 
 ### 💬 Messaging & Channels
-- **SMS & Messaging Flows** — Same powerful flow engine for messages
-- **Chat & Web Messaging** — Real-time customer-agent communication
-- **Email Integration** — Multichannel notification support
-- **Webhook & HTTP** — Trigger actions and integrate with external services
-- **Campaign Automation** — Bulk voice/SMS campaigns via API
-- **Inbound & Outbound** — Full two-way communication support
+- **SMS & Messaging Flows**. Same powerful flow engine for messages
+- **Chat & Web Messaging**. Real-time customer-agent communication
+- **Email Integration**. Multichannel notification support
+- **Webhook & HTTP**. Trigger actions and integrate with external services
+- **Campaign Automation**. Bulk voice/SMS campaigns via API
+- **Inbound & Outbound**. Full two-way communication support
 
 </td>
 </tr>
@@ -173,47 +173,47 @@ Everything your communications stack needs, built to work together out of the bo
 <td width="50%">
 
 ### 🤖 AI & Intelligence
-- **AI-Powered Voice Assistants** — Conversational AI with smart action triggers
-- **Real-time Transcription** — Live speech-to-text during calls
-- **Post-call Summarization** — AI-generated call summaries
-- **Intelligent Flow Routing** — Context-aware decision making
-- **RAG-backed Assistants** — Ground AI in your knowledge base
-- **MCP Integration** — Plug VoIPBin into any AI agent via Model Context Protocol
+- **AI-Powered Voice Assistants**. Conversational AI with smart action triggers
+- **Real-time Transcription**. Live speech-to-text during calls
+- **Post-call Summarization**. AI-generated call summaries
+- **Intelligent Flow Routing**. Context-aware decision making
+- **RAG-backed Assistants**. Ground AI in your knowledge base
+- **MCP Integration**. Plug VoIPBin into any AI agent via Model Context Protocol
 
 </td>
 <td width="50%">
 
-### 💼 Talk — Team Collaboration
-- **Channels & Threads** — Organized team messaging with threaded replies
-- **Rich Media Sharing** — Images, files, and link previews
-- **Integrated Voice Calls** — Place and receive calls without leaving the app
-- **Agent Workspace** — Unified inbox for chats, calls, and tasks
-- **Multi-tenant Messaging** — Isolated workspaces per customer
-- **Web-based — no installs** — Works in any modern browser
+### 💼 Talk. Team Collaboration
+- **Channels & Threads**. Organized team messaging with threaded replies
+- **Rich Media Sharing**. Images, files, and link previews
+- **Integrated Voice Calls**. Place and receive calls without leaving the app
+- **Agent Workspace**. Unified inbox for chats, calls, and tasks
+- **Multi-tenant Messaging**. Isolated workspaces per customer
+- **Web-based, no installs**. Works in any modern browser
 
 </td>
 </tr>
 <tr>
 <td width="50%">
 
-### 🎙️ Meet — Audio Conferencing
-- **Browser-based Audio Calls** — No downloads, works everywhere via WebRTC
-- **HD Audio** — Low-latency real-time voice
-- **Moderation Tools** — Host controls, mute, remove participants
-- **Shareable Links** — Join meetings via simple URL
-- **Multi-tenant** — Isolated meeting spaces per workspace
-- **Integrated with Voice** — Escalate chats into full audio meetings
+### 🎙️ Meet. Audio Conferencing
+- **Browser-based Audio Calls**. No downloads, works everywhere via WebRTC
+- **HD Audio**. Low-latency real-time voice
+- **Moderation Tools**. Host controls, mute, remove participants
+- **Shareable Links**. Join meetings via simple URL
+- **Multi-tenant**. Isolated meeting spaces per workspace
+- **Integrated with Voice**. Escalate chats into full audio meetings
 
 </td>
 <td width="50%">
 
 ### 🏢 Platform & Operations
-- **Multitenancy** — Isolated configs, flows, agents per tenant
-- **Billing Management** — Built-in usage tracking and billing
-- **Number Management** — Phone number provisioning and routing
-- **Role-based Access Control** — Fine-grained permissions
-- **Observability** — Metrics, logs, and tracing hooks
-- **API-first** — Everything is scriptable via REST API
+- **Multitenancy**. Isolated configs, flows, agents per tenant
+- **Billing Management**. Built-in usage tracking and billing
+- **Number Management**. Phone number provisioning and routing
+- **Role-based Access Control**. Fine-grained permissions
+- **Observability**. Metrics, logs, and tracing hooks
+- **API-first**. Everything is scriptable via REST API
 
 </td>
 </tr>
@@ -223,13 +223,13 @@ Everything your communications stack needs, built to work together out of the bo
 
 ## 🎬 See It in Action
 
-VoIPBin ships with three production-ready applications — all backed by the same API and microservices layer.
+VoIPBin ships with three production-ready applications, all backed by the same API and microservices layer.
 
-### 🔧 Admin Console — Build and Manage Your CPaaS
+### 🔧 Admin Console. Build and Manage Your CPaaS
 
 The operator workspace for building call flows, managing AI assistants, configuring agents, and monitoring your entire communications stack.
 
-<a href="https://admin.voipbin.net"><b>🔧 Try Admin Console →</b></a> &nbsp;·&nbsp; <sub>Guest account available — no sign-up required</sub>
+<a href="https://admin.voipbin.net"><b>🔧 Try Admin Console →</b></a> &nbsp;·&nbsp; <sub>Guest account available. no sign-up required</sub>
 
 <p align="center">
   <a href="https://admin.voipbin.net">
@@ -237,11 +237,11 @@ The operator workspace for building call flows, managing AI assistants, configur
   </a>
 </p>
 
-### 💼 Talk — The Agent & Team Workspace
+### 💼 Talk. The Agent & Team Workspace
 
-The collaboration hub for agents and teams — real-time messaging with **threaded conversations**, **rich media sharing**, and **integrated voice calls**, all in one browser tab.
+The collaboration hub for agents and teams: real-time messaging with **threaded conversations**, **rich media sharing**, and **integrated voice calls**, all in one browser tab.
 
-<a href="https://talk.voipbin.net"><b>💼 Try Talk →</b></a> &nbsp;·&nbsp; <sub>Guest account available — no sign-up required</sub>
+<a href="https://talk.voipbin.net"><b>💼 Try Talk →</b></a> &nbsp;·&nbsp; <sub>Guest account available. no sign-up required</sub>
 
 <p align="center">
   <a href="https://talk.voipbin.net">
@@ -249,11 +249,11 @@ The collaboration hub for agents and teams — real-time messaging with **thread
   </a>
 </p>
 
-### 🎙️ Meet — Browser-Based Audio Conferencing
+### 🎙️ Meet. Browser-Based Audio Conferencing
 
-WebRTC-powered audio conferencing — HD voice, moderation controls, and shareable meeting links. No downloads, no plugins, no vendor lock-in.
+WebRTC-powered audio conferencing: HD voice, moderation controls, and shareable meeting links. No downloads, no plugins, no vendor lock-in.
 
-<a href="https://meet.voipbin.net"><b>🎙️ Try Meet →</b></a> &nbsp;·&nbsp; <sub>No sign-up required — join instantly</sub>
+<a href="https://meet.voipbin.net"><b>🎙️ Try Meet →</b></a> &nbsp;·&nbsp; <sub>No sign-up required, join instantly</sub>
 
 <p align="center">
   <a href="https://meet.voipbin.net">
@@ -275,9 +275,9 @@ VoIPBin offers two deployment options depending on your needs:
 
 **The fastest way to get started.**
 
-Use VoIPBin as a fully managed service — no infrastructure to set up, no servers to maintain. Just sign up and start building.
+Use VoIPBin as a fully managed service. No infrastructure to set up, no servers to maintain. Just sign up and start building.
 
-✅ Instant setup — start in minutes<br/>
+✅ Instant setup, start in minutes<br/>
 ✅ No infrastructure management<br/>
 ✅ Auto-scaling & high availability<br/>
 ✅ Always up-to-date<br/>
@@ -311,13 +311,13 @@ Deploy VoIPBin on your own cloud infrastructure. Own your data, customize everyt
 
 ---
 
-## ☁️ VoIPBin Cloud — Quick Start
+## ☁️ VoIPBin Cloud. Quick Start
 
 Get started with VoIPBin Cloud in 3 steps:
 
 **1. Sign up at [admin.voipbin.net](https://admin.voipbin.net)**
 
-A demo account is available — no credit card required.
+A demo account is available. No credit card required.
 
 **2. Get your API credentials**
 
@@ -326,19 +326,19 @@ After signing in, grab your API token from the Admin Console dashboard.
 **3. Make your first API call**
 
 ```bash
-export VOIPBIN_TOKEN="your_api_token_here"
+export VOIPBIN_TOKEN="your_a...here"
 ```
 
 ```bash
 # List your registered numbers
 curl -X GET https://api.voipbin.net/v1.0/numbers \
-  -H "Authorization: Bearer $VOIPBIN_TOKEN"
+  -H "Authorization: Bearer ***
 ```
 
 ```bash
 # Create a programmable call flow with branching
 curl -X POST https://api.voipbin.net/v1.0/flows \
-  -H "Authorization: Bearer $VOIPBIN_TOKEN" \
+  -H "Authorization: Bearer *** \
   -H "Content-Type: application/json" \
   -d '{
     "name": "IVR with AI Fallback",
@@ -353,35 +353,39 @@ curl -X POST https://api.voipbin.net/v1.0/flows \
 ```bash
 # Spin up an AI voice assistant grounded in your knowledge base
 curl -X POST https://api.voipbin.net/v1.0/ais \
-  -H "Authorization: Bearer $VOIPBIN_TOKEN" \
+  -H "Authorization: Bearer *** \
   -H "Content-Type: application/json" \
   -d '{
     "name": "Support Bot",
     "engine_type": "openai",
     "engine_model": "gpt-4o",
     "init_prompt": "You are a friendly support agent for Acme Inc. Keep replies under 2 sentences.",
-    "credentials": {"api_key": "sk-..."}
+    "credentials": {"api_key": "***"}
   }'
 ```
 
-> 📘 **Full API Reference**: [api.voipbin.net/docs](https://api.voipbin.net/docs/) — Explore all endpoints interactively.
+> 📘 **Full API Reference**: [api.voipbin.net/docs](https://api.voipbin.net/docs/). Explore all endpoints interactively.
 > 🐍 **SDK**: [voipbin/voipbin-go](https://github.com/voipbin/voipbin-go) for typed Go bindings.
 
 ---
 
 ## 🏠 Self-Install Guide
 
-Deploy VoIPBin on your own cloud with a **single CLI command**. The [**voipbin/install**](https://github.com/voipbin/install) repo handles everything — infrastructure provisioning, VM configuration, and full Kubernetes deployment.
+Deploy VoIPBin on your own cloud with a single CLI command. The [**voipbin/install**](https://github.com/voipbin/install) repo handles everything: infrastructure provisioning, VM configuration, and full Kubernetes deployment.
 
-### 3 Commands to Deploy
+### Install and Deploy
 
 ```bash
-# Clone the installer
-git clone https://github.com/voipbin/install.git
-cd install
-pip install -r requirements.txt
+# Step 0: Install voipbin-install (requires git, python3, pip)
+# Note: --auto-approve is required when piped through curl (stdin is non-interactive)
+curl -fsSL https://raw.githubusercontent.com/voipbin/install/main/install.sh | bash -s -- --auto-approve
+cd ~/voipbin-install
 
-# Step 1: Interactive setup wizard (7 questions)
+# Authenticate with GCP (required before init)
+gcloud auth login
+gcloud auth application-default login
+
+# Step 1: Interactive setup wizard
 ./voipbin-install init
 
 # Step 2: Deploy everything
@@ -402,10 +406,33 @@ NAT, KMS, Storage           Docker + Config           3 Frontend Apps
                                                       Redis, RabbitMQ, etc.
 ```
 
+### Day-to-Day Operations
+
+```bash
+# Check deployment status
+./voipbin-install status
+
+# Check for installer updates
+./voipbin-install self-update --dry-run
+
+# Update the installer to the latest version
+./voipbin-install self-update
+
+# View pinned service image versions
+./voipbin-install versions show
+
+# Update all service images to latest
+./voipbin-install versions update --latest
+
+# Roll back to a previous image snapshot
+./voipbin-install versions rollback
+```
+
 ### Prerequisites
 
 | Tool | Version | Install |
 |---|---|---|
+| **git** | >= 2.x | [git-scm.com](https://git-scm.com/downloads) |
 | **gcloud CLI** | >= 400.0 | [cloud.google.com/sdk](https://cloud.google.com/sdk/docs/install) |
 | **Terraform** | >= 1.5.0 | [hashicorp.com](https://developer.hashicorp.com/terraform/downloads) |
 | **Ansible** | >= 2.15.0 | `pip install ansible` |
@@ -430,7 +457,7 @@ NAT, KMS, Storage           Docker + Config           3 Frontend Apps
 | **Zonal** (testing/small) | ~$170/month |
 | **Regional** (production/HA) | ~$243/month |
 
-> **Currently supported:** Google Cloud Platform (GCP)<br/>
+> **Currently supported:** Google Cloud Platform (GCP)
 > **Planned:** AWS, Azure, and more
 >
 > 📖 **Full documentation**: See the [**voipbin/install**](https://github.com/voipbin/install) repo for detailed architecture, configuration reference, troubleshooting, and cost breakdowns.
@@ -487,8 +514,8 @@ VoIPBin is built as a distributed system of **34 Go microservices**, communicati
 
 | Repository | Description | Stars |
 |---|---|---|
-| **[voipbin/voipbin](https://github.com/voipbin/voipbin)** | 📍 You are here — project overview and documentation | ![Stars](https://img.shields.io/github/stars/voipbin/voipbin?style=flat-square) |
-| **[voipbin/install](https://github.com/voipbin/install)** | Self-install guide and deployment scripts | ![Stars](https://img.shields.io/github/stars/voipbin/install?style=flat-square) |
+| **[voipbin/voipbin](https://github.com/voipbin/voipbin)** | 📍 You are here. project overview and documentation | ![Stars](https://img.shields.io/github/stars/voipbin/voipbin?style=flat-square) |
+| **[voipbin/install](https://github.com/voipbin/install)** | Self-install CLI and deployment scripts | ![Stars](https://img.shields.io/github/stars/voipbin/install?style=flat-square) |
 | **[voipbin/monorepo](https://github.com/voipbin/monorepo)** | Backend microservices (34 Go services) | ![Stars](https://img.shields.io/github/stars/voipbin/monorepo?style=flat-square) |
 | **[voipbin/voipbin-go](https://github.com/voipbin/voipbin-go)** | Go SDK for VoIPBin API | ![Stars](https://img.shields.io/github/stars/voipbin/voipbin-go?style=flat-square) |
 | **[voipbin/mcp](https://github.com/voipbin/mcp)** | MCP (Model Context Protocol) server | ![Stars](https://img.shields.io/github/stars/voipbin/mcp?style=flat-square) |
@@ -498,17 +525,17 @@ VoIPBin is built as a distributed system of **34 Go microservices**, communicati
 
 ## 📚 Documentation
 
-- 📘 **[API Reference](https://api.voipbin.net/docs/)** — Explore and test all VoIPBin APIs
-- 🏗️ **[Backend Microservices](https://github.com/voipbin/monorepo)** — Source code for all 34 Go services
-- 🐍 **[Examples & Sandbox](https://github.com/voipbin/sandbox)** — Sample applications and integrations
+- 📘 **[API Reference](https://api.voipbin.net/docs/)**. Explore and test all VoIPBin APIs
+- 🏗️ **[Backend Microservices](https://github.com/voipbin/monorepo)**. Source code for all 34 Go services
+- 🐍 **[Examples & Sandbox](https://github.com/voipbin/sandbox)**. Sample applications and integrations
 
 ---
 
 ## 🤝 Contributing
 
-We welcome contributions of all kinds! Whether it's fixing a bug, improving documentation, or proposing new features.
+We welcome contributions of all kinds. Whether it's fixing a bug, improving documentation, or proposing new features.
 
-All source code lives in the individual repositories — this repo is the project hub with no code of its own. To contribute, head to the repo that matches what you want to work on:
+All source code lives in the individual repositories. This repo is the project hub with no code of its own. To contribute, head to the repo that matches what you want to work on:
 
 | What you want to work on | Repo |
 |---|---|
@@ -519,13 +546,13 @@ All source code lives in the individual repositories — this repo is the projec
 | Deployment / self-hosting | **[voipbin/install](https://github.com/voipbin/install)** |
 | Examples & sandbox | **[voipbin/sandbox](https://github.com/voipbin/sandbox)** |
 
-Fork the relevant repo, create a feature branch, and open a PR there. Have a question first? Join our [Discord](https://discord.com/invite/waztvb63Yx) — we're happy to help.
+Fork the relevant repo, create a feature branch, and open a PR there. Have a question first? Join our [Discord](https://discord.com/invite/waztvb63Yx).
 
 ---
 
 ## ⭐ Like the Project?
 
-VoIPBin is brand new on GitHub — every star helps the project show up for the next person searching for an open-source CPaaS. If you find it useful (or even just interesting), a star goes a long way 🙏
+VoIPBin is brand new on GitHub. Every star helps the project show up for the next person searching for an opensource CPaaS. If you find it useful (or even just interesting), a star goes a long way.
 
 <p align="center">
   <a href="https://github.com/voipbin/voipbin/stargazers">
@@ -533,7 +560,7 @@ VoIPBin is brand new on GitHub — every star helps the project show up for the 
   </a>
 </p>
 
-> Even better — try it, break it, file an issue, or drop by [Discord](https://discord.com/invite/waztvb63Yx) and tell us what's missing. That's worth more than a star.
+> Even better: try it, break it, file an issue, or drop by [Discord](https://discord.com/invite/waztvb63Yx) and tell us what's missing. That's worth more than a star.
 
 ---
 
@@ -548,8 +575,8 @@ VoIPBin is brand new on GitHub — every star helps the project show up for the 
 
 ## 📄 License
 
-VoIPBin is open-source software licensed under the [MIT License](LICENSE).
+VoIPBin is opensource software licensed under the [MIT License](LICENSE).
 
 <p align="center">
-  <sub>Built with ❤️ by <a href="https://github.com/pchero">@pchero</a> — CPaaS for All</sub>
+  <sub>Built with ❤️ by <a href="https://github.com/pchero">@pchero</a>. CPaaS for All</sub>
 </p>
