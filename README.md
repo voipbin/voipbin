@@ -24,10 +24,12 @@ A complete, production-grade Communications Platform as a Service: <b>Voice</b>,
 <p align="center">
   <a href="https://admin.voipbin.net"><img src="https://img.shields.io/badge/Live-admin.voipbin.net-success?logo=statuspage&logoColor=white" alt="Live Demo" /></a>
   <a href="https://github.com/voipbin/voipbin/stargazers"><img src="https://img.shields.io/github/stars/voipbin/voipbin?style=social" alt="GitHub Stars" /></a>
-  <a href="https://circleci.com/gh/voipbin/monorepo"><img src="https://img.shields.io/circleci/build/github/voipbin/monorepo?label=build" alt="Build Status" /></a>
+  <a href="https://dl.circleci.com/status-badge/redirect/circleci/WkxddRhKkgdmM4mAHrayjZ/XdYPEn6P3XGjkvZ8JxoB1b/tree/main"><img src="https://dl.circleci.com/status-badge/img/circleci/WkxddRhKkgdmM4mAHrayjZ/XdYPEn6P3XGjkvZ8JxoB1b/tree/main.svg?style=shield" alt="Build Status" /></a>
   <a href="https://github.com/voipbin/voipbin/blob/main/LICENSE"><img src="https://img.shields.io/github/license/voipbin/voipbin?color=blue" alt="License" /></a>
   <a href="https://github.com/voipbin/monorepo"><img src="https://img.shields.io/badge/microservices-34-orange" alt="Microservices" /></a>
   <a href="https://github.com/voipbin/install/releases"><img src="https://img.shields.io/github/v/tag/voipbin/install?label=installer&color=blueviolet" alt="Installer Version" /></a>
+  <a href="https://github.com/voipbin/monorepo/commits/main"><img src="https://img.shields.io/github/commit-activity/m/voipbin/monorepo?label=commits%2Fmonth&color=brightgreen" alt="Commit Activity" /></a>
+  <a href="https://github.com/voipbin/monorepo/commits/main"><img src="https://img.shields.io/github/last-commit/voipbin/monorepo?label=last+commit&color=brightgreen" alt="Last Commit" /></a>
   <a href="https://github.com/voipbin/voipbin/issues"><img src="https://img.shields.io/badge/PRs-welcome-brightgreen.svg" alt="PRs Welcome" /></a>
   <a href="https://discord.com/invite/waztvb63Yx"><img src="https://img.shields.io/badge/Discord-Join_Community-5865F2?logo=discord&logoColor=white" alt="Discord" /></a>
 </p>
