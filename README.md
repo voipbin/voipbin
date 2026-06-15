@@ -427,8 +427,20 @@ NAT, KMS, Storage           Docker + Config           3 Frontend Apps
 # Update all service images to latest
 ./voipbin-install versions update --latest
 
+# Pin a specific service to an exact image digest
+./voipbin-install versions update --set svc:sha256:...
+
 # Roll back to a previous image snapshot
 ./voipbin-install versions rollback
+
+# Check TLS certificate validity
+./voipbin-install cert status
+
+# Renew Kamailio TLS certificates
+./voipbin-install cert renew
+
+# Tear down all VoIPBin GCP resources
+./voipbin-install destroy
 ```
 
 ### Prerequisites
