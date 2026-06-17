@@ -1,6 +1,9 @@
 <p align="center">
   <a href="https://voipbin.net">
-    <img alt="VoIPBin" src="https://voipbin.net/android-chrome-192x192.png" width="120" />
+    <picture>
+      <source media="(prefers-color-scheme: dark)" srcset="docs/images/logo-dark.png" />
+      <img alt="VoIPBin" src="docs/images/logo-light.png" width="120" />
+    </picture>
   </a>
 </p>
 
