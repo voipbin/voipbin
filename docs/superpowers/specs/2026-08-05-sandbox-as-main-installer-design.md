@@ -1,7 +1,8 @@
 # Sandbox as the Main Installer — Design
 
-_Revision 9 — incorporates round-1 through round-8 review findings (see PR discussion for all
-eight reports)._
+_Revision 10 — incorporates round-1 through round-9 review findings (round 9 was the first
+APPROVE; this revision folds in its non-blocking recommendations). See PR discussion for all nine
+reports._
 
 ## Motivation
 
@@ -108,14 +109,24 @@ from this design's engineering approval. See Scope.
      | `.env` | **Copy** | Existing credentials; skipping loses DB/AMQP auth entirely. |
      | `certs/` | **Copy** | Self-heals under default mkcert mode, but a hard failure under `TLS_MODE=byo` if missing. |
      | `config/dummy-gcp-credentials.json` | **Copy** | Created only by `init.sh`/`init_no_sudo.sh`, never by `start.sh`; several services' bind mounts break silently without it. |
-     | `config/coredns/Corefile` | **Copy** | DNS config matching the existing install's mode. |
+     | `config/coredns/Corefile` | **Copy** | Actually self-heals (`setup-host.sh` generates it, `start.sh` regenerates it every run in internal mode) — copying is harmless and saves a regeneration, but isn't load-bearing like the other "Copy" rows. |
      | `.test_data_initialized` | **Copy — critical** | Without it, `start.sh` treats the migration as a fresh install and re-runs `setup_test_customer` against the existing production data, unconditionally resetting the admin agent's password to `admin@localhost`. This directly defeats the credential hardening this Scope item exists to provide. `doctor.sh` already warns about this re-seeding behavior when the marker is missing. |
      | `backups/` | **Copy** | Local DB backup snapshots documented in Scope item 6; no reason to discard them, and `clean --purge` (rightly) never touches them either. |
      | `docker-compose.override.yml` | **Skip** | Holds the *old* install's resolved image tags. The new checkout ships its own `versions.lock`-pinned digests; an inherited override would silently shadow them, reintroducing the image/schema mismatch the pin mechanism exists to prevent. |
      | `.voipbin-versions/` | **Skip** | Rollback history tied to the override above — same reasoning. |
      | `tmp/` (incl. `tmp/bin-dbscheme-manager`) | **Skip** | Regenerable schema-source cache; `init_database.sh`'s refresh path silently swallows fetch/checkout failures, so an inherited stale or non-git tree can produce an unnoticed schema drift with no upside from carrying it over. |
      | `.voipbin-op.lock` | **Skip** | Pure existence lock with no stale-lock auto-recovery; carrying over a lock from a crashed run would block backup/upgrade operations on the new install until manually removed. |
+     | `.backup/` | **Skip** | `voipbin-cli.py`'s own-script backup/rollback mechanism (`update scripts` / `_rollback_scripts`) — same reasoning as `.voipbin-versions/`: rolling old scripts back over a new checkout has no upside. |
      | `.env.pre-restore*`, `__pycache__/`, `config/rabbitmq/plugins/*.ez` | **Skip** | Transient artifacts / regenerable build output; no migration value. |
+
+     One piece of migrated state lives **outside the repo entirely** and isn't caught by any
+     path-based table: `voipbin-cli.py` persists its own config at `~/.voipbin-cli.conf`
+     (`Config.set`/`Config.load`), including a `project_dir` key defaulting to the *old*
+     checkout's absolute path, for any operator who has ever run `voipbin config <key> <value>`
+     or `voipbin config reset`. If present, this file makes the CLI's `start`/`backup`/`clean`
+     subcommands act on the old checkout even when invoked from the new one. Migration
+     instructions include running `voipbin config project_dir <new-path>` (or `voipbin config
+     reset`) as part of the migration, not just the file-copy table above.
 
      Scope item 6's "existing, working pin/rollback feature" refers to `versions.lock`-based
      pinning as it works on a *fresh* install — not to carrying an old install's
@@ -407,8 +418,10 @@ way:
   the documented copy/skip table, and confirm afterward that (a) the admin account password was
   *not* reset to `admin@localhost`, (b) `docker compose config`'s resolved images match the new
   checkout's `versions.lock` pins — i.e. no stale `docker-compose.override.yml` shadowing them,
-  (c) prior backup snapshots under `backups/` are still present, and (d) all services start
-  successfully against the preserved volumes.
+  (c) prior backup snapshots under `backups/` are still present, (d) all services start
+  successfully against the preserved volumes, and (e) `config/dummy-gcp-credentials.json` landed
+  as a file (not a Docker-created empty directory) — this one fails silently at the mount level
+  rather than at container start, so it needs its own explicit check rather than folding into (d).
 
 ## Open Questions (flagged, not blocking Phase 1 engineering review — the commercial-positioning
 sign-off in Motivation is a separate, blocking precondition on shipping)
