@@ -1,6 +1,7 @@
 # Sandbox as the Main Installer — Design
 
-_Revision 2 — incorporates round-1 review findings (see PR discussion for the round-1 report)._
+_Revision 3 — incorporates round-1 and round-2 review findings (see PR discussion for both
+reports)._
 
 ## Motivation
 
@@ -8,190 +9,222 @@ Today `voipbin/voipbin` positions `voipbin/install` (GCP + Terraform + Ansible +
 as *the* self-install path, and lists `voipbin/sandbox` (Docker Compose, single-host) only as
 "Examples & sandbox" — a dev/test toy, not an install method.
 
-Decision (confirmed with the CEO/CTO): flip this. The Docker Compose stack in
-`voipbin/sandbox` becomes the **primary, documented self-install method** for VoIPBin,
-including production use on a single server. `voipbin/install` (GCP/K8s) stays available as a
-secondary option; its long-term fate is a separate future decision, out of scope here.
+**What is already decided (CEO/CTO, confirmed):** the Docker Compose stack in
+`voipbin/sandbox` becomes the primary, documented self-install method for VoIPBin, positioned
+alongside `voipbin/install` (GCP/K8s stays available, its long-term fate is a separate future
+decision). This is an engineering/documentation restructuring decision and is what this design
+document covers.
+
+**What is NOT yet decided, and blocks shipping the README rewrite regardless of engineering
+readiness:** `sandbox/README.md` currently tells production users to "use the official VoIPBin
+cloud service or contact us for on-premise licensing" — i.e., self-hosted production is
+currently framed as commercially restricted. Making it a first-class, openly documented path is
+a *commercial positioning change*, not a docs change, and needs explicit CEO sign-off separate
+from this design's engineering approval. See Scope.
 
 ## Scope
 
 **Phase 1 (this spec, this PR):**
-- Bring the sandbox codebase into `voipbin/voipbin` as an in-repo directory (`self-install/`).
-- Rewrite the root README so both self-install paths are documented side by side, with the
-  Docker Compose path as primary.
-- Rewrite `self-install/README.md`'s security section: replace "local dev only, don't expose"
-  with "these are the defaults, here is what to change before exposing this to the internet."
-- Add a default-credential rotation step to the installer's `init` flow (or, if that's too large
-  a code change for this PR, a documented manual procedure) so "production" isn't shipped with
-  `root`/`root_password` and `guest`/`guest` reachable from the internet on day one. **This is
-  a Phase 1 blocker, not a Phase 2 nice-to-have** — see round-1 review finding B1.
-- Carry the sandbox repo's CI workflow over, adjusted to live at repo root.
-- Add a minimal, explicit-scope exception to "no changes to `voipbin/install` itself": a single
-  README banner in `voipbin/install` pointing existing GCP users at the new primary path while
-  confirming their setup keeps working. This is a stakeholder-communication necessity, not a
-  functional change to the installer — see round-1 finding I5.
+
+1. Bring the sandbox codebase into `voipbin/voipbin` as an in-repo directory (`self-install/`),
+   via clean copy (method specified below) + `self-install/HISTORY.md`.
+2. Rewrite the root README so both self-install paths are documented side by side (Option A:
+   Docker Compose, primary; Option B: GCP/K8s, existing), fixing every reference point listed
+   under README Changes.
+3. Rewrite `self-install/README.md`'s security section from "local dev only, don't expose" to
+   "these are the defaults, here is what changes before you expose this."
+4. **Credential hardening — hard requirement, no fallback to a manual/documented-only
+   procedure** (round-2 review found the credentials are compose-file literals, not `.env`
+   references, so a "just document how to rotate them" escape hatch doesn't work — an operator
+   would have to hand-edit ~127 occurrences across `docker-compose.yml`). Phase 1 must include:
+   - Parameterize `docker-compose.yml`'s hardcoded credentials (`MYSQL_ROOT_PASSWORD`,
+     `RABBITMQ_DEFAULT_USER`/`PASS`, `AMI_PASSWORD`, DSNs referencing `root:root_password`,
+     etc.) to read from `.env`, with `init` generating random values by default instead of
+     shipping `root_password`/`guest`/`guest`/`asterisk` as literals.
+   - Ensure `JWT_KEY` (compose) is always generated, never a shipped default.
+   - `scripts/start.sh`'s auto-created test account (`admin@localhost` / `admin@localhost`,
+     extensions `1000/2000/3000` with `pass1000` etc.) must not be created with these fixed
+     values outside of an explicit dev/test mode — either gate it behind a flag that defaults
+     off, or force a password change/generation on first production-mode run.
+   - This is real code work in the sandbox scripts/compose files, done as part of this PR (in
+     `self-install/`, or upstream in `voipbin/sandbox` first and carried over — see Merge
+     mechanism note on timing).
+5. Carry the sandbox repo's CI-adjacent config over: move
+   `.github/workflows/discord-merge-notify.yml` to repo root (workflows in a subdirectory don't
+   run), and provision its `DISCORD_WEBHOOK_URL` secret on `voipbin/voipbin`.
+6. Document, in Phase 1 (not defer to Phase 2), the backup and version-pinning capabilities
+   sandbox already has: the existing scheduled in-stack DB backup, `versions.lock`-based
+   image pinning/update/rollback. These exist today; round-2 review confirmed it's inaccurate to
+   describe the installer as having no upgrade/backup story — the gap is that it isn't
+   documented as part of the primary install guide yet, which this PR fixes. Anything actually
+   missing (see Phase 2) is scoped there instead.
+7. A single, minimal README banner in `voipbin/install` pointing existing GCP users at the new
+   primary path while confirming their setup keeps working. **This lands as a separate PR in the
+   `voipbin/install` repo**, not bundled into this PR (different repo, different review queue) —
+   noted here so the rollout isn't announced with only one half of the pair merged.
 
 **Phase 2 (tracked separately, not implemented in this PR):**
 - Remove/replace the macvlan networking requirement (or clearly document it as a hard
   prerequisite with a guided setup path).
 - Fix the internal ↔ external DNS mode switch currently requiring a clean host.
 - Live E2E re-verification of the `confbridge_join` call-bridge fix (monorepo `bin-call-manager`,
-  commit `f1dd2687a`, PR #1033, merged 2026-07-01). The bug itself is **already fixed** — this
-  item is re-verification only, currently blocked by an unrelated Kamailio external-IP drift
-  issue, not a bug fix (round-1 review corrected this; the original draft mis-stated it as an
-  open bug).
-- Full security review of the Compose stack for internet-facing, single-server production use.
-- Upgrade / backup / rollback story for the installed stack (version pin/bump via
-  `versions.lock`, backup procedure, rollback procedure). Flagged in round-1 review as missing
-  from any phase; a production installer needs this eventually, but it is not required to ship
-  Phase 1 since GCP install remains available for operators who need it today.
+  commit `f1dd2687a`, PR #1033, merged 2026-07-01, unit-tested in
+  `pkg/confbridgehandler/ari_event_test.go`). The bug itself is already fixed — this item is
+  re-verification only, currently blocked by an unrelated Kamailio external-IP drift issue. Once
+  re-verified, remove the stale "Known Limitations" note from `CLAUDE.md`/README.
+- Full security review of the Compose stack for internet-facing, single-server production use,
+  beyond the credential-hardening baseline shipped in Phase 1.
+- Installation script test CI (the sandbox repo's `tests/*.bats` and `scripts/tests/*.py` suites
+  currently don't run as CI anywhere; round-2 review flagged that moving the scripts without
+  moving their test automation leaves them untested by any pipeline).
+- Any remaining upgrade/backup/rollback gaps beyond what Phase 1 documents (e.g., automated
+  restore-and-verify, cross-version migration guidance).
 - Each item above gets its own follow-up ticket/PR; this spec only lists them so they aren't
   lost, it does not implement them.
 
 **Explicitly out of scope for Phase 1:**
-- Any *functional* change to `voipbin/install` (GCP repo) — the one README banner above is
-  communication-only, not a behavior change.
+- Any *functional* change to `voipbin/install` (GCP repo) beyond the one README banner (item 7
+  above, its own PR).
 - Deciding whether `voipbin/sandbox` (the standalone repo) gets archived, kept as a mirror, or
-  deleted — deferred per the CEO/CTO's "decide later" call. Its existing open issues/PRs stay
-  there until that decision is made; the Contributing table routes *new* self-install issues to
-  `voipbin/voipbin` going forward.
-- Any of the Phase 2 hardening/upgrade-story work above.
-- **Business/commercial positioning:** `sandbox/README.md` currently tells production users to
-  "use the official VoIPBin cloud service or contact us for on-premise licensing." Making
-  self-hosted production a first-class, unrestricted, documented path is a commercial
-  positioning change, not just a docs change. **This needs explicit CEO sign-off before the
-  README rewrite ships**, separate from the engineering design approval this spec is asking
-  for. Flagging here so it isn't missed; not resolving it in this document.
+  deleted. Its existing open issues/PRs stay there until that decision is made; the Contributing
+  table routes *new* self-install issues to `voipbin/voipbin` going forward.
+- Any of the Phase 2 items above.
+- The commercial-positioning sign-off described in Motivation — tracked there as a blocking
+  precondition on shipping, not something this document resolves.
 
 ## Repository Structure Change
 
-### Directory name: `self-install/`, not `sandbox/` or `install/`
+### Directory name: `self-install/`
 
-- `install/` would collide in meaning with the separate `voipbin/install` repo — confusing.
-- `sandbox/` undersells its new role as the primary install method.
-- `self-install/` matches the README's existing `#-self-install-guide` anchor.
+Matches the README's existing `#-self-install-guide` anchor; avoids the name collision with
+`voipbin/install` and avoids underselling the directory as "just a sandbox."
 
 ### Merge mechanism: plain copy + `HISTORY.md`, not `git subtree`
 
-Round-1 review flagged a real conflict: the org's mandatory squash-merge policy collapses any
-subtree-imported history into a single commit at merge time, which defeats the entire reason to
-use `git subtree` (`git log --follow` becomes meaningless post-merge). Requesting a squash
-exception for one PR is a bigger ask than this integration warrants.
+`git subtree`'s only advantage (preserved per-file history via `git log --follow`) is destroyed
+by the org's mandatory squash-merge policy, which collapses the import into one commit at merge
+time. Plain copy avoids that dead-end.
 
-Revised approach: copy the current `voipbin/sandbox` tree into `self-install/` as a normal
-`git add`, and add `self-install/HISTORY.md` with a link to `https://github.com/voipbin/sandbox`
-and a note that full commit history for everything under this directory prior to the move lives
-in that repo (which is not deleted — see Scope). This is simpler, has no policy conflict, and
-loses nothing a reader can't already get from the linked repo.
+**Copy source, explicit:** a clean clone of `voipbin/sandbox` at a pinned commit (or
+`git archive <ref> | tar -x` into `self-install/`), **not** a `cp -r` of the local working
+checkout at `~/gitvoipbin/sandbox`. The local checkout's `.gitignore` excludes `.env`, `certs/`,
+`tmp/` but **not** `.worktrees/`, and a stray `.worktrees/NOJIRA-Sandbox-versions-lock-refresh/`
+checkout currently exists there — a raw copy would drag that whole worktree into the commit.
+`self-install/HISTORY.md` records the source commit hash and a link to
+`https://github.com/voipbin/sandbox` for pre-move history.
 
-### Directory rename breaks existing installs' Docker volumes — needs a migration note
+If the credential-hardening work (Scope item 4) lands upstream in `voipbin/sandbox` first and is
+then carried over, the copy is taken from that post-hardening commit, not before it — Phase 1
+must not ship the pre-hardening defaults into `voipbin/voipbin` even transiently.
 
-Round-1 review caught this: `scripts/setup-host.sh` derives the Compose project name from
-`basename "$PROJECT_DIR"` when `COMPOSE_PROJECT_NAME` isn't set. Renaming the checkout directory
-from `sandbox` to `self-install` changes the project name, which changes the network
-(`sandbox_default` → `self-install_default`) and **volume names**
-(`sandbox_db_data` → `self-install_db_data`). An existing sandbox user who pulls the new location
-and re-runs `init`/`start` would appear to lose their database and recordings.
+### Directory rename and the Compose project name — env var, not `.env` file
 
-**Mitigation for Phase 1:** document that anyone migrating an existing sandbox checkout must set
-`COMPOSE_PROJECT_NAME=sandbox` in their `.env` before first run at the new location, to keep
-resolving to the pre-existing volumes. New installs from `voipbin/voipbin` get no such
-instruction and default to `self-install` naturally.
+Round-1 review found that renaming the checkout directory from `sandbox` to `self-install`
+changes the Compose project name (`scripts/setup-host.sh`'s `derive_compose_project_name()`
+falls back to `basename "$PROJECT_DIR"`), which changes network and volume names
+(`sandbox_default`/`sandbox_db_data` → `self-install_default`/`self-install_db_data`), silently
+"losing" an existing installation's data.
 
-### Path portability check (done, with one caveat)
+Round-2 review found the originally-proposed fix (put `COMPOSE_PROJECT_NAME=sandbox` in `.env`)
+doesn't work: `setup-host.sh` and `doctor.sh` read `COMPOSE_PROJECT_NAME` only from the shell
+environment, never from `.env` (they don't source it for this value). Corrected fix: anyone
+migrating an existing sandbox checkout must `export COMPOSE_PROJECT_NAME=sandbox` in their shell
+(or persist it in their shell profile) before running `setup-host.sh`/`doctor.sh`/`start.sh` at
+the new location — this is a documentation instruction, not a `.env` edit. New installs default
+to `self-install` naturally and need no such instruction.
 
-Sandbox's scripts derive `PROJECT_DIR` from `SCRIPT_DIR` (`dirname` of the script's own
-location), not from a hardcoded repo name — confirmed via grep across `scripts/*.sh`. The one
-exception is the Compose project name behavior above, which is handled via the migration note,
-not a code change. (`migrate.sh` and `generate-versions-lock.sh` also contain a
-`$HOME/gitvoipbin/monorepo` default for a developer-only cross-repo lookup, overridable via env
-var; this is pre-existing sandbox-repo behavior, unrelated to the directory move, left as-is.)
+### Path portability check
+
+Sandbox's scripts derive `PROJECT_DIR` from `SCRIPT_DIR`, not from a hardcoded repo name —
+confirmed via grep across `scripts/*.sh`, with the Compose-project-name caveat handled above.
+(`migrate.sh` / `generate-versions-lock.sh` also default to `$HOME/gitvoipbin/monorepo` for a
+developer-only cross-repo lookup, overridable via env var — pre-existing behavior, unrelated to
+this move, left as-is.)
 
 ### CI
 
-`voipbin/sandbox` carries one workflow, `.github/workflows/discord-merge-notify.yml`. A plain
-copy (not subtree) means this file needs to be **explicitly moved** to
-`voipbin/voipbin/.github/workflows/` at repo root — GitHub Actions only runs workflows from the
-root `.github/workflows/`, not from a nested directory's copy of that path. Its Discord webhook
-secret must also be provisioned on `voipbin/voipbin` (it currently lives on `voipbin/sandbox`
-only). `voipbin/voipbin` has no other CI today (it's been a docs-only repo) — this is the first
-CI this repo runs, called out so it isn't a surprise in review.
+Move `.github/workflows/discord-merge-notify.yml` to `voipbin/voipbin/.github/workflows/`
+(GitHub Actions doesn't run workflows from a nested path) and provision its
+`DISCORD_WEBHOOK_URL` secret on `voipbin/voipbin`. Note this is a notification workflow, not a
+test suite — see Phase 2 for actual installation-script test CI, which doesn't exist today in
+either repo.
 
 ## README Changes
 
-Full list of `voipbin/install` references in the current root `README.md` that need updating
-(round-1 review found the original draft only caught one of these):
+Reference points in the current root `README.md` that get updated:
 - Badge at line 33 (`installer` label pointing at `voipbin/install` releases)
+- The "Self-Install" summary card, lines ~299–312 ("Deploy VoIPBin on your own cloud
+  infrastructure" — becomes inaccurate once Docker Compose/single-server is the primary path;
+  needs rewording to cover both options)
 - "Self-Install Guide" section, lines 378–481 (the GCP 3-stage pipeline walkthrough)
-- Repositories table row (line ~536)
-- Documentation section, line ~548 ("Examples & Sandbox" bullet)
-- Contributing table row (line ~564)
+- Repositories table rows for `voipbin/sandbox` (~540) and `voipbin/install` (~536)
+- Documentation section bullet, line ~548 ("Examples & Sandbox")
+- Contributing table rows, line ~564–565
 
-Rather than deleting the GCP path to make room for the Compose path (which would contradict the
-"install stays available" scope decision), the Self-Install Guide section is restructured into
-two documented options, following the same two-column pattern the README already uses for
-"Cloud vs Self-host":
+Restructured as two documented options (keeps `voipbin/install` visible, satisfying "install
+stays available"), following the README's existing "Cloud vs Self-host" two-column pattern:
 
-- **Option A — Single-Server Docker Compose (primary, recommended):** points at
-  `self-install/`, `git clone` + `cd voipbin/self-install && sudo ./voipbin init` as the
-  entrypoint (see bootstrap note below — no `curl | bash` for this option, unlike the current
-  GCP flow).
+- **Option A — Single-Server Docker Compose (primary, recommended):** points at `self-install/`.
+  Entrypoint, matching sandbox's actual documented flow (round-2 review corrected an earlier
+  draft that collapsed this to a single `init` command):
+  1. `./scripts/init.sh --yes` (unprivileged — generates `.env`/certs)
+  2. `sudo ./scripts/setup-host.sh` (the one privileged step — VoIP network interfaces, DNS)
+  3. `./scripts/start.sh` (brings up all services, runs migrations)
+  4. `./scripts/check-install.sh` (verifies the result)
 - **Option B — GCP + Kubernetes (existing, still supported):** the current 3-stage pipeline
-  content, moved under this subheading largely as-is, still linking to `voipbin/install` for
-  full docs.
+  content, moved under this subheading, still linking to `voipbin/install` for full docs.
 
 Other changes:
 1. Repositories table: `voipbin/sandbox` row description updated to note the installer's primary
-   location moved to `voipbin/voipbin/self-install/`; `voipbin/install` row description
-   unchanged (still a valid, supported option).
-2. Contributing table: "Deployment / self-hosting (Docker Compose)" row points at
-   `voipbin/voipbin`; a second row, "Deployment / self-hosting (GCP/K8s)", keeps pointing at
-   `voipbin/install`.
-3. "This repo is the project hub with no code of its own" line (Contributing section): rewritten
-   to name the one exception (`self-install/`) explicitly, along with a short note on what that
-   means going forward — this repo now carries its own CI and code-review burden for that one
-   directory, alongside its existing docs-only workflow for everything else.
+   location moved to `voipbin/voipbin/self-install/`; `voipbin/install` row unchanged.
+2. Contributing table: "Deployment / self-hosting (Docker Compose)" → `voipbin/voipbin`; a
+   second row "Deployment / self-hosting (GCP/K8s)" keeps pointing at `voipbin/install`.
+3. "This repo is the project hub with no code of its own" line: rewritten to name the one
+   exception (`self-install/`) and note that this repo now carries CI and code-review scope for
+   that directory, alongside its existing docs-only role for everything else.
 
-### Bootstrap mechanism (resolved — no new script)
+### Bootstrap mechanism
 
-Round-1 review flagged that the original draft implied a `curl | bash` bootstrap analogous to
-`voipbin/install`'s, which doesn't exist for sandbox and isn't being written in this PR. Phase 1
-uses the same entrypoint sandbox already documents: `git clone`, then run `./voipbin init` /
-`./voipbin start` from the `self-install/` subdirectory. No new bootstrap script is in scope.
-
-A full clone of `voipbin/voipbin` also pulls `docs/images/` (several MB of PNGs/GIFs). This is a
-minor, non-blocking rough edge — not worth a sparse-checkout instruction for Phase 1 given the
-repo is already meant to be cloned by contributors — but noted here so it isn't rediscovered
-later as a surprise.
+No new bootstrap script. Phase 1 uses sandbox's existing documented flow: `git clone` the
+`voipbin/voipbin` repo, then the 4-step sequence above from `self-install/`. A full clone also
+pulls `docs/images/` (several MB of PNGs/GIFs) — a minor, non-blocking rough edge, not worth a
+sparse-checkout instruction for Phase 1.
 
 ## Verification Plan
 
-Round-1 review corrected a factual error in the original draft: `self-install/voipbin init`
-is **not** a dry-run. It writes a CoreDNS Corefile, calls `setup-dns.sh -y` which replaces
-`/etc/resolv.conf`, and installs an mkcert CA into the system trust store — all host-level
-changes, not read-only checks. Running it against a host that already has a sandbox install
-active risks colliding with the existing macvlan interfaces and DNS config.
+`self-install/voipbin doctor` (renamed per Option A's actual entrypoints, but the read-only
+health-check script) confirms relocation didn't break its own path resolution — it does **not**
+exercise `init.sh`/`setup-host.sh`/`start.sh`'s path handling. Since those are unsafe to run
+against a host with an existing install (see below), the actual regression net for this move is
+running sandbox's existing test suites (`tests/*.bats`, `scripts/tests/*.py`) from the new
+`self-install/` location and confirming they pass unchanged.
 
-Revised plan:
-- Run `self-install/voipbin doctor` (read-only, safe at any point) from the new path to confirm
-  the relocation didn't break script path resolution.
-- If an end-to-end `init`/`start` check is wanted, run it only on a disposable/clean host or VM,
-  never on a host with an existing sandbox install.
-- Manually verify the migration note above by simulating an existing install: set
-  `COMPOSE_PROJECT_NAME=sandbox`, confirm `docker compose config` resolves to the pre-existing
-  network/volume names.
-- Manual read-through of the rewritten README sections for broken links/anchors (including the
-  five reference points listed above).
-- Confirm the moved CI workflow (`.github/workflows/discord-merge-notify.yml`) triggers correctly
-  from repo root with its secret provisioned.
+- Run the bats/pytest suites from `self-install/` post-move; confirm no path-resolution
+  regressions.
+- `init.sh`/`setup-host.sh` make real host changes (CoreDNS Corefile generation, replacing
+  `/etc/resolv.conf` via `setup-dns.sh -y`, installing an mkcert CA into the system trust store)
+  — not dry-runs. Any full `init`→`setup-host`→`start` check runs only on a disposable/clean
+  host or VM, never on a host with an existing sandbox install (macvlan interface and DNS
+  collision risk).
+- Verify the Compose-project-name migration path directly: with `COMPOSE_PROJECT_NAME=sandbox`
+  exported, run `setup-host.sh`'s network-derivation logic (or the equivalent doctor check) and
+  confirm it resolves to `sandbox_default`, not `self-install_default` — checking
+  `docker compose config` alone doesn't exercise this path, since project-name derivation lives
+  in `setup-host.sh`, not in Compose itself.
+- Manual read-through of the rewritten README sections for broken links/anchors, covering every
+  reference point listed above.
+- Confirm the moved CI workflow triggers correctly from repo root with its secret provisioned.
+- Confirm the credential-hardening change (Scope item 4): a fresh `init` produces non-default
+  MySQL/RabbitMQ/AMI/JWT values and does not auto-create the `admin@localhost` test account
+  outside of an explicit dev-mode flag.
 
-## Open Questions (flagged, not blocking Phase 1 engineering review — see Scope for the
-commercial-positioning sign-off, which does block shipping)
+## Open Questions (flagged, not blocking Phase 1 engineering review — the commercial-positioning
+sign-off in Motivation is a separate, blocking precondition on shipping)
 
 - Fate of the standalone `voipbin/sandbox` repo post-merge — deferred per explicit decision.
 - Whether `voipbin/sandbox`'s own CI/Discord notifications should be disabled once
   `voipbin/voipbin` takes over as the canonical location, to avoid duplicate notifications
   during the coexistence window.
-- Whether default-credential rotation (Scope, Phase 1 blocker) is implemented as an `init`-time
-  prompt/generator or a documented manual step — an implementation-level call for the write-up
-  plan, not this design doc.
+- Whether the credential-hardening code change (Scope item 4) lands upstream in
+  `voipbin/sandbox` first (then carried over) or directly in `self-install/` as part of this
+  PR — an implementation-sequencing call for the write-up plan, not this design doc.
