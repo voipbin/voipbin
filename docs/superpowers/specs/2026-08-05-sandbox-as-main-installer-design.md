@@ -1,7 +1,7 @@
 # Sandbox as the Main Installer — Design
 
-_Revision 6 — incorporates round-1 through round-5 review findings (see PR discussion for all
-five reports)._
+_Revision 7 — incorporates round-1 through round-6 review findings (see PR discussion for all
+six reports)._
 
 ## Motivation
 
@@ -85,16 +85,35 @@ from this design's engineering approval. See Scope.
      regenerating), alongside exporting `COMPOSE_PROJECT_NAME=sandbox` — no credential rotation
      for them in Phase 1.
 
-     **Round-5 review found `.env` alone is not enough to migrate.** `.gitignore` also excludes
-     `certs/` and generated files under `config/` (including
-     `config/dummy-gcp-credentials.json`), none of which exist in a fresh `voipbin/voipbin`
-     clone. `dummy-gcp-credentials.json` is created only by `init.sh`/`init_no_sudo.sh`, never by
-     `start.sh`; without it, several services' bind mounts resolve to an empty host-created
-     directory instead of the expected file and those services fail to start (`start.sh`'s
-     `validate_env` only warns, it doesn't block). `certs/` self-heals for the default mkcert
-     mode (`start.sh` regenerates it), but a `TLS_MODE=byo` (bring-your-own-cert) migrating user
-     hits a hard failure without it. Migration instructions must say "copy `.env`, `certs/`, and
-     `config/` from the existing checkout" — not `.env` alone.
+     **Round-5 review found `.env` alone is not enough to migrate; round-6 review found the
+     fuller list still had gaps.** Rather than hand-enumerate gitignored paths and risk missing
+     one a third time, the migration instructions define the copy set by reference to the
+     authoritative list already maintained in code: `voipbin-cli.py`'s `clean --purge` command
+     (~line 4802) enumerates every generated artifact the installer considers "local state" —
+     `certs/`, `.env`, `config/coredns/`, `config/dummy-gcp-credentials.json`, `tmp/`,
+     `docker-compose.override.yml` (version pins), `.voipbin-versions/` (rollback history), and
+     `.test_data_initialized`. Migration instructions say "copy this entire set from the existing
+     checkout" and point at that command's source as the definition, instead of a fixed list in
+     this doc that can drift from the code.
+
+     Two items in that set matter enough to call out explicitly, since missing either causes
+     real damage, not just a failed service:
+     - **`.test_data_initialized`** — without it, `start.sh` treats the migrated install as a
+       fresh one and re-runs `setup_test_customer` against the existing production data: it
+       looks up whatever customer/agent already exists at that email, unconditionally resets that
+       agent's password to `admin@localhost`, and re-tops-up test balances. This directly defeats
+       the credential hardening this same Scope item exists to provide, for exactly the
+       operators migrating a real install. `doctor.sh` already warns about this re-seeding
+       behavior when the marker is missing.
+     - **`docker-compose.override.yml` / `.voipbin-versions/`** — these hold the image
+       pins/rollback history that Scope item 6 documents as an existing, working feature. Losing
+       them on migration means a "documented" capability breaks for exactly the users being
+       migrated onto it.
+     - `dummy-gcp-credentials.json` (created only by `init.sh`/`init_no_sudo.sh`, never by
+       `start.sh`) and `certs/` remain relevant as before: missing the former breaks several
+       services' bind mounts (silently — `start.sh`'s `validate_env` only warns), and missing the
+       latter is fine for default mkcert mode (self-heals) but a hard failure under
+       `TLS_MODE=byo`.
 
      Rotating credentials *on an already-running install* (via `ALTER USER`
      / `rabbitmqctl change_password` against the live volume) is real additional work, deferred
@@ -136,9 +155,18 @@ from this design's engineering approval. See Scope.
    under `self-install/` (project name naturally `self-install`) fails at
    `setup-voip-network.sh`'s network lookup — the migration path only "works" today by
    coincidence, because exporting `COMPOSE_PROJECT_NAME=sandbox` happens to match the hardcoded
-   literal. Move `derive_compose_project_name()` into `common.sh` and have all four consumers
-   (including `setup-host.sh`) call the shared function. See Repository Structure Change for
-   detail.
+   literal. **Round-6 review corrected the fix's scope:** there isn't one derivation to
+   centralize, there are already three independent implementations with subtly different
+   normalization rules — `setup-host.sh`'s `derive_compose_project_name()` (validates + strips
+   leading `[-_]`), `doctor.sh`'s own copy (`doctor_compose_project_name`, no validation), and
+   `voipbin-cli.py`'s `_compose_project_name()` (no leading-char stripping, plus a `"voipbin"`
+   fallback) — and Python can't call a bash function directly regardless. The fix is: move the
+   bash implementation into `common.sh` and have `setup-host.sh`, `setup-voip-network.sh`, and
+   `start.sh` share it (three consumers, not four); fold `doctor.sh`'s separate copy into the
+   same shared function; have `voipbin-cli.py`'s hardcoded lookups (4553/4564) call its existing
+   `_compose_project_name()` helper instead of the literal, and bring its normalization rule in
+   line with the shared bash version, with a test pinning that the two agree. See Repository
+   Structure Change for detail.
 9. A single, minimal README banner in `voipbin/install` pointing existing GCP users at the new
    primary path while confirming their setup keeps working. **This lands as a separate PR in the
    `voipbin/install` repo**, not bundled into this PR (different repo, different review queue) —
@@ -233,12 +261,19 @@ This means a **fresh install** under `self-install/` — which derives project n
 migration path (which happens to work by coincidence, since exporting
 `COMPOSE_PROJECT_NAME=sandbox` matches these hardcoded literals). Phase 1 must fix this before
 `self-install/` can be a working fresh-install target at all:
-- Move `derive_compose_project_name()` (currently only in `setup-host.sh`) into `common.sh`, and
-  have `setup-voip-network.sh`, `start.sh`, and `voipbin-cli.py`'s diagnostics call it instead of
-  hardcoding the literal.
+- Round-6 review found three independent implementations already exist, not one to reuse and one
+  to fix: `setup-host.sh`'s `derive_compose_project_name()` (validates input, strips leading
+  `[-_]`), `doctor.sh`'s separate copy (`doctor_compose_project_name`, no validation), and
+  `voipbin-cli.py`'s `_compose_project_name()` (different normalization, `"voipbin"` fallback;
+  Python can't call a bash function regardless of centralization). Fix: move the bash
+  implementation into `common.sh`, shared by `setup-host.sh`, `setup-voip-network.sh`, and
+  `start.sh`, absorbing `doctor.sh`'s separate copy into the same function; have
+  `voipbin-cli.py`'s hardcoded lookups (4553/4564) call its existing `_compose_project_name()`
+  instead of the literal, with its normalization rule brought in line with the bash version and
+  pinned by a test.
 - With that in place, new installs work with no special instruction (project name naturally
   derives to `self-install`), and migrating installs work by exporting
-  `COMPOSE_PROJECT_NAME=sandbox` as described above — both paths go through the same derivation
+  `COMPOSE_PROJECT_NAME=sandbox` as described above — both paths go through equivalent derivation
   logic instead of one being a hardcoded coincidence.
 
 ### Path portability check
@@ -287,8 +322,9 @@ stays available"), following the README's existing "Cloud vs Self-host" two-colu
   4. `./scripts/check-install.sh` (verifies the result)
 
   For an operator **migrating an existing `voipbin/sandbox` checkout**, step 1 is replaced: copy
-  `.env`, `certs/`, and `config/` from the existing checkout into the new location (not `.env`
-  alone — see the existing-install migration note under Scope item 4 for why) and
+  the full generated-artifact set from the existing checkout into the new location (defined as
+  whatever `voipbin-cli.py`'s `clean --purge` command enumerates — see the existing-install
+  migration note under Scope item 4 for the full list and why `.env` alone isn't enough) and
   `export COMPOSE_PROJECT_NAME=sandbox`, instead of running `init.sh --yes` — steps 2–4 are
   unchanged.
 - **Option B — GCP + Kubernetes (existing, still supported):** the current 3-stage pipeline
@@ -355,6 +391,13 @@ way:
   succeeds through `setup-voip-network.sh` instead of failing on a hardcoded `sandbox_default`
   lookup; also confirm the `start.sh` first-run heuristic and `voipbin-cli.py` diagnostics
   resolve correctly under both a fresh (`self-install`) and migrated (`sandbox`) project name.
+- Migration path, end to end (this class of gap has been found twice by review, so it gets its
+  own explicit check rather than relying on the file list being complete): reproduce an existing
+  sandbox install on a disposable host, migrate it following only the documented copy-set
+  instructions, and confirm afterward that (a) the admin account password was *not* reset to
+  `admin@localhost`, (b) existing image pins / rollback history in `docker-compose.override.yml`
+  / `.voipbin-versions/` are still present and honored, and (c) all services start successfully
+  against the preserved volumes.
 
 ## Open Questions (flagged, not blocking Phase 1 engineering review — the commercial-positioning
 sign-off in Motivation is a separate, blocking precondition on shipping)
