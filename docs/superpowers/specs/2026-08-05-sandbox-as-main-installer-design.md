@@ -1,7 +1,7 @@
 # Sandbox as the Main Installer — Design
 
-_Revision 7 — incorporates round-1 through round-6 review findings (see PR discussion for all
-six reports)._
+_Revision 8 — incorporates round-1 through round-7 review findings (see PR discussion for all
+seven reports)._
 
 ## Motivation
 
@@ -86,18 +86,27 @@ from this design's engineering approval. See Scope.
      for them in Phase 1.
 
      **Round-5 review found `.env` alone is not enough to migrate; round-6 review found the
-     fuller list still had gaps.** Rather than hand-enumerate gitignored paths and risk missing
-     one a third time, the migration instructions define the copy set by reference to the
-     authoritative list already maintained in code: `voipbin-cli.py`'s `clean --purge` command
-     (~line 4802) enumerates every generated artifact the installer considers "local state" —
-     `certs/`, `.env`, `config/coredns/`, `config/dummy-gcp-credentials.json`, `tmp/`,
-     `docker-compose.override.yml` (version pins), `.voipbin-versions/` (rollback history), and
-     `.test_data_initialized`. Migration instructions say "copy this entire set from the existing
-     checkout" and point at that command's source as the definition, instead of a fixed list in
-     this doc that can drift from the code.
+     fuller list still had gaps; round-7 review found the fix proposed for that (delegating the
+     definition to `voipbin-cli.py`'s `clean --purge` command) is itself wrong** — `clean --purge`
+     deliberately *excludes* `.test_data_initialized` (it's handled by the separate `--volumes`
+     branch instead, since the marker mirrors DB state that lives in the volumes, not in purgeable
+     files) and excludes `backups/` (its local backup snapshots, by design, aren't something
+     `clean --purge` touches). Delegating to that command's definition would silently reintroduce
+     the exact `.test_data_initialized` gap round-6 flagged.
 
-     Two items in that set matter enough to call out explicitly, since missing either causes
-     real damage, not just a failed service:
+     Corrected: the migration copy set is defined by `.gitignore` instead — every path `.gitignore`
+     excludes as generated/local state, in full, is what a migrating operator copies over:
+     `.env`, `certs/`, `backups/`, `.backup/`, `config/coredns/Corefile`,
+     `config/dummy-gcp-credentials.json`, `tmp/`, `docker-compose.override.yml`,
+     `.voipbin-versions/`, `.test_data_initialized`, `.env.pre-restore*`, `.voipbin-op.lock`, and
+     `config/rabbitmq/plugins/*.ez`. Migration instructions say "copy every `.gitignore`-excluded
+     path from the existing checkout" and point at `.gitignore` as the definition — chosen over
+     `clean --purge` specifically because `.gitignore`'s list is the more complete one and isn't
+     scoped to "things safe to delete," which is a different question than "things that need to
+     travel with a migration."
+
+     Three items in that set matter enough to call out explicitly, since missing any of them
+     causes real damage, not just a failed service:
      - **`.test_data_initialized`** — without it, `start.sh` treats the migrated install as a
        fresh one and re-runs `setup_test_customer` against the existing production data: it
        looks up whatever customer/agent already exists at that email, unconditionally resets that
@@ -109,6 +118,9 @@ from this design's engineering approval. See Scope.
        pins/rollback history that Scope item 6 documents as an existing, working feature. Losing
        them on migration means a "documented" capability breaks for exactly the users being
        migrated onto it.
+     - **`backups/`** — the local DB backup snapshots Scope item 6 also documents as existing.
+       `clean --purge` deliberately leaves this directory alone, which is exactly why it isn't a
+       safe stand-in for "what a migration needs to bring along."
      - `dummy-gcp-credentials.json` (created only by `init.sh`/`init_no_sudo.sh`, never by
        `start.sh`) and `certs/` remain relevant as before: missing the former breaks several
        services' bind mounts (silently — `start.sh`'s `validate_env` only warns), and missing the
@@ -161,9 +173,10 @@ from this design's engineering approval. See Scope.
    leading `[-_]`), `doctor.sh`'s own copy (`doctor_compose_project_name`, no validation), and
    `voipbin-cli.py`'s `_compose_project_name()` (no leading-char stripping, plus a `"voipbin"`
    fallback) — and Python can't call a bash function directly regardless. The fix is: move the
-   bash implementation into `common.sh` and have `setup-host.sh`, `setup-voip-network.sh`, and
-   `start.sh` share it (three consumers, not four); fold `doctor.sh`'s separate copy into the
-   same shared function; have `voipbin-cli.py`'s hardcoded lookups (4553/4564) call its existing
+   bash implementation into `common.sh` and have all four bash consumers —
+   `setup-host.sh`, `setup-voip-network.sh`, `start.sh`, and `doctor.sh` (absorbing its separate
+   `doctor_compose_project_name` copy) — share it; separately, have `voipbin-cli.py`'s hardcoded
+   lookups (4553/4564) call its existing
    `_compose_project_name()` helper instead of the literal, and bring its normalization rule in
    line with the shared bash version, with a test pinning that the two agree. See Repository
    Structure Change for detail.
@@ -322,10 +335,11 @@ stays available"), following the README's existing "Cloud vs Self-host" two-colu
   4. `./scripts/check-install.sh` (verifies the result)
 
   For an operator **migrating an existing `voipbin/sandbox` checkout**, step 1 is replaced: copy
-  the full generated-artifact set from the existing checkout into the new location (defined as
-  whatever `voipbin-cli.py`'s `clean --purge` command enumerates — see the existing-install
-  migration note under Scope item 4 for the full list and why `.env` alone isn't enough) and
-  `export COMPOSE_PROJECT_NAME=sandbox`, instead of running `init.sh --yes` — steps 2–4 are
+  every `.gitignore`-excluded path from the existing checkout into the new location (not `.env`
+  alone, and not just what `clean --purge` happens to remove — see the existing-install migration
+  note under Scope item 4 for the full list, why `.gitignore` and not `clean --purge` is the
+  right reference, and why `.env` alone isn't enough) and `export COMPOSE_PROJECT_NAME=sandbox`,
+  instead of running `init.sh --yes` — steps 2–4 are
   unchanged.
 - **Option B — GCP + Kubernetes (existing, still supported):** the current 3-stage pipeline
   content, moved under this subheading, still linking to `voipbin/install` for full docs.
@@ -391,12 +405,13 @@ way:
   succeeds through `setup-voip-network.sh` instead of failing on a hardcoded `sandbox_default`
   lookup; also confirm the `start.sh` first-run heuristic and `voipbin-cli.py` diagnostics
   resolve correctly under both a fresh (`self-install`) and migrated (`sandbox`) project name.
-- Migration path, end to end (this class of gap has been found twice by review, so it gets its
-  own explicit check rather than relying on the file list being complete): reproduce an existing
-  sandbox install on a disposable host, migrate it following only the documented copy-set
-  instructions, and confirm afterward that (a) the admin account password was *not* reset to
-  `admin@localhost`, (b) existing image pins / rollback history in `docker-compose.override.yml`
-  / `.voipbin-versions/` are still present and honored, and (c) all services start successfully
+- Migration path, end to end (this class of gap has been found across three review rounds, so it
+  gets its own explicit check rather than relying on the file list being complete): reproduce an
+  existing sandbox install on a disposable host, migrate it following only the documented
+  copy-set instructions, and confirm afterward that (a) the admin account password was *not*
+  reset to `admin@localhost`, (b) existing image pins / rollback history in
+  `docker-compose.override.yml` / `.voipbin-versions/` are still present and honored, (c) prior
+  backup snapshots under `backups/` are still present, and (d) all services start successfully
   against the preserved volumes.
 
 ## Open Questions (flagged, not blocking Phase 1 engineering review — the commercial-positioning
