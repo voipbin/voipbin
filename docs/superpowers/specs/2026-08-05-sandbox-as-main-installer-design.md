@@ -1,7 +1,7 @@
 # Sandbox as the Main Installer — Design
 
-_Revision 4 — incorporates round-1, round-2, and round-3 review findings (see PR discussion for
-all three reports)._
+_Revision 5 — incorporates round-1 through round-4 review findings (see PR discussion for all
+four reports)._
 
 ## Motivation
 
@@ -45,19 +45,52 @@ from this design's engineering approval. See Scope.
    - `scripts/migrate.sh` (`DB_PASSWORD="root_password"`)
    - `scripts/voipbin-cli.py` (backup/restore/shell subcommands; only two of the several call
      sites already fall back to `${MYSQL_ROOT_PASSWORD:-root_password}`, the rest don't)
-   - test fixtures (`scripts/tests/test_backup_restore_live.py`, `tests/config.bats`)
+   - `scripts/doctor.sh`'s in-container MySQL checks (`${MYSQL_ROOT_PASSWORD:-root_password}` —
+     already has an env fallback, so this one keeps working once the env var is set; listed here
+     so it isn't missed from the audit, not because it needs a code change)
+   - test fixtures — `tests/config.bats` **asserts** the current literals are present (a test
+     that needs updating, not a runtime consumer that breaks); `scripts/tests/test_backup_restore_live.py`
+     is a live-stack consumer like the others above
 
    Phase 1 must parameterize **all of the above together**, not just the compose file, plus:
-   - Add the corresponding keys to `.env.template` (required — `check-env-template-sync.sh`
-     enforces `.env`/`.env.template` key parity and will fail CI otherwise), with `init`
-     generating random values by default instead of shipping `root_password`/`guest`/`guest`/
-     `asterisk` as literals.
+   - Add the corresponding keys to `.env.template`. Note on why this matters:
+     `check-env-template-sync.sh` is **not wired into CI today** (its own header says CI
+     integration is deliberately out of scope, and `voipbin/sandbox`'s only workflow is the
+     Discord-notify one) — round-3 review's original claim that skipping this "fails CI" was
+     wrong. It matters anyway because it's the only drift-detection tool that exists for
+     `.env`/`.env.template`, must be run manually as part of this PR, and its CI wiring is added
+     as a Phase 2 item (folded into the "installation script test CI" line below). `init` should
+     generate random values by default instead of shipping `root_password`/`guest`/`guest`/
+     `asterisk` as literals — see the existing-install migration conflict called out below before
+     assuming this applies unconditionally.
+   - Any operational docs that quote these literals as examples (`README.md`'s RabbitMQ
+     management-UI note, `CLAUDE.md`'s `mysql -uroot -proot_password` shell examples) get updated
+     alongside the code change so they don't silently go stale.
    - `JWT_KEY` generation is **already handled** — `init.sh` already calls
      `generate_random_key()` and compose already defaults to an empty string, not a shipped
      secret (round-3 review found this is not new work). The only loose end is
-     `.env.template`'s `JWT_KEY=your-random-jwt-secret-key` placeholder, which should be cleaned
-     up for consistency with the other rotated keys, plus a regression check that this stays
-     true (see Verification Plan).
+     `.env.template`'s `JWT_KEY=your-random-jwt-secret-key` placeholder value, which gets
+     replaced with a clearer placeholder comment for consistency with the other rotated keys —
+     the `JWT_KEY=` key line itself stays (removing the line would itself register as
+     `.env`/`.env.template` drift, since `init.sh` still writes that key), plus a regression check
+     that generation still happens (see Verification Plan).
+   - **Existing-install migration conflict, resolved:** the credential randomization above only
+     applies to fresh installs. `MYSQL_ROOT_PASSWORD`/`RABBITMQ_DEFAULT_USER`/`PASS` only take
+     effect the first time their respective data volumes are initialized — an existing sandbox
+     user's `db_data`/mnesia volumes already have `root_password`/`guest` baked in. Regenerating
+     random values in a fresh `.env` while reusing the old volume (the
+     `COMPOSE_PROJECT_NAME=sandbox` migration path above) would desync `.env` from what's
+     actually in the volume and lock the operator out. So: users migrating an existing install
+     keep their existing `.env` file as-is (copy it into the new checkout location rather than
+     regenerating), alongside exporting `COMPOSE_PROJECT_NAME=sandbox` — no credential rotation
+     for them in Phase 1. Rotating credentials *on an already-running install* (via `ALTER USER`
+     / `rabbitmqctl change_password` against the live volume) is real additional work, deferred
+     to Phase 2. This also means Option A's documented entrypoint must not tell a migrating user
+     to run `./scripts/init.sh --yes` unconditionally — `init.sh` overwrites an existing `.env`
+     when `--yes` is passed (logged as "Overwriting existing .env (--yes)"), which would
+     regenerate credentials and hit exactly the desync above. The README's Option A steps note
+     this explicitly: `--yes` is for fresh installs only; migrating an existing sandbox skips
+     step 1 entirely and starts from the copied `.env`.
    - `scripts/start.sh`'s auto-created test account (`admin@localhost` / `admin@localhost`,
      extensions `1000/2000/3000` with `pass1000` etc.) must not be created with these fixed
      values outside of an explicit dev/test mode — either gate it behind a flag that defaults
@@ -79,16 +112,21 @@ from this design's engineering approval. See Scope.
    default and is enabled by `start.sh`, and there is no offsite/remote copy of backups today
    (local retention only, 7 snapshots). Anything actually missing (see Phase 2) is scoped there
    instead.
-8. Remove the developer-only hardcoded path `/home/pchero/gitvoipbin/monorepo/bin-dbscheme-manager`
+7. Remove the developer-only hardcoded path `/home/pchero/gitvoipbin/monorepo/bin-dbscheme-manager`
    in `scripts/init_database.sh` (a fallback branch, not on the primary path, but inappropriate
    to carry into a public repo's primary installer as-is) — either delete the fallback or make it
    derive from `$HOME` generically.
-7. A single, minimal README banner in `voipbin/install` pointing existing GCP users at the new
+8. A single, minimal README banner in `voipbin/install` pointing existing GCP users at the new
    primary path while confirming their setup keeps working. **This lands as a separate PR in the
    `voipbin/install` repo**, not bundled into this PR (different repo, different review queue) —
    noted here so the rollout isn't announced with only one half of the pair merged.
 
 **Phase 2 (tracked separately, not implemented in this PR):**
+- Rotate credentials on an already-running install (via `ALTER USER` / `rabbitmqctl
+  change_password` against the live volume), so migrating sandbox operators aren't stuck on the
+  legacy defaults indefinitely — deferred per the migration-conflict resolution in Scope item 4.
+- Wire `check-env-template-sync.sh` into CI (today it's a manual-only drift check) — folded into
+  the installation-script-test-CI item below.
 - Remove/replace the macvlan networking requirement (or clearly document it as a hard
   prerequisite with a guided setup path).
 - Fix the internal ↔ external DNS mode switch currently requiring a clean host.
@@ -192,12 +230,17 @@ Restructured as two documented options (keeps `voipbin/install` visible, satisfy
 stays available"), following the README's existing "Cloud vs Self-host" two-column pattern:
 
 - **Option A — Single-Server Docker Compose (primary, recommended):** points at `self-install/`.
-  Entrypoint, matching sandbox's actual documented flow (round-2 review corrected an earlier
-  draft that collapsed this to a single `init` command):
+  Entrypoint for a **fresh install**, matching sandbox's actual documented flow (round-2 review
+  corrected an earlier draft that collapsed this to a single `init` command):
   1. `./scripts/init.sh --yes` (unprivileged — generates `.env`/certs)
   2. `sudo ./scripts/setup-host.sh` (the one privileged step — VoIP network interfaces, DNS)
   3. `./scripts/start.sh` (brings up all services, runs migrations)
   4. `./scripts/check-install.sh` (verifies the result)
+
+  For an operator **migrating an existing `voipbin/sandbox` checkout**, step 1 is replaced:
+  copy the existing `.env` into the new location and `export COMPOSE_PROJECT_NAME=sandbox`
+  instead of running `init.sh --yes` (see the existing-install migration note under Scope item
+  4) — steps 2–4 are unchanged.
 - **Option B — GCP + Kubernetes (existing, still supported):** the current 3-stage pipeline
   content, moved under this subheading, still linking to `voipbin/install` for full docs.
 
@@ -251,7 +294,9 @@ way:
 - Confirm the moved CI workflow triggers correctly from repo root with its secret provisioned.
 - Confirm the credential-hardening change (Scope item 4): a fresh `init` produces non-default
   MySQL/RabbitMQ/AMI values (compose, `start.sh`, `init_database.sh`, `migrate.sh`,
-  `voipbin-cli.py` all consistent, no residual literal fallback), `JWT_KEY` stays generated
+  `voipbin-cli.py` all consistent — `doctor.sh`'s own `${MYSQL_ROOT_PASSWORD:-root_password}`
+  fallback is fine as-is since it's a container-internal default that receives the real value
+  from the environment, not a literal that needs removing), `JWT_KEY` stays generated
   (regression check only — this already works today), and the `admin@localhost` test account is
   not auto-created outside of an explicit dev-mode flag.
 - Confirm Scope item 8: `init_database.sh` no longer references the personal `/home/pchero/...`
