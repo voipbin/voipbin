@@ -1,8 +1,8 @@
 # Sandbox as the Main Installer — Design
 
-_Revision 10 — incorporates round-1 through round-9 review findings (round 9 was the first
-APPROVE; this revision folds in its non-blocking recommendations). See PR discussion for all nine
-reports._
+_Revision 11 — incorporates round-1 through round-10 review findings. Rounds 9 and 10 both
+returned APPROVE (2 consecutive), closing the design review loop per policy; this revision folds
+in round 10's two non-blocking observations. See PR discussion for all ten reports._
 
 ## Motivation
 
@@ -345,8 +345,10 @@ stays available"), following the README's existing "Cloud vs Self-host" two-colu
   `config/dummy-gcp-credentials.json`, `config/coredns/Corefile`, `.test_data_initialized`,
   `backups/`) from the existing checkout into the new location — explicitly **not**
   `docker-compose.override.yml` or `.voipbin-versions/`, which the same table marks "Skip" to
-  avoid shadowing the new checkout's pinned image digests — and
-  `export COMPOSE_PROJECT_NAME=sandbox`, instead of running `init.sh --yes` — steps 2–4 are
+  avoid shadowing the new checkout's pinned image digests — and `export
+  COMPOSE_PROJECT_NAME=sandbox`, plus reset the CLI's persisted `project_dir`
+  (`voipbin config project_dir <new-path>`, or `voipbin config reset`, if `~/.voipbin-cli.conf`
+  exists — see Scope item 4 for why), instead of running `init.sh --yes` — steps 2–4 are
   unchanged.
 - **Option B — GCP + Kubernetes (existing, still supported):** the current 3-stage pipeline
   content, moved under this subheading, still linking to `voipbin/install` for full docs.
@@ -419,9 +421,11 @@ way:
   *not* reset to `admin@localhost`, (b) `docker compose config`'s resolved images match the new
   checkout's `versions.lock` pins — i.e. no stale `docker-compose.override.yml` shadowing them,
   (c) prior backup snapshots under `backups/` are still present, (d) all services start
-  successfully against the preserved volumes, and (e) `config/dummy-gcp-credentials.json` landed
-  as a file (not a Docker-created empty directory) — this one fails silently at the mount level
-  rather than at container start, so it needs its own explicit check rather than folding into (d).
+  successfully against the preserved volumes, (e) `config/dummy-gcp-credentials.json` landed as a
+  file (not a Docker-created empty directory) — this one fails silently at the mount level rather
+  than at container start, so it needs its own explicit check rather than folding into (d) — and
+  (f) `voipbin config` (if `~/.voipbin-cli.conf` existed pre-migration) reports the new
+  checkout's path, not the old one.
 
 ## Open Questions (flagged, not blocking Phase 1 engineering review — the commercial-positioning
 sign-off in Motivation is a separate, blocking precondition on shipping)
