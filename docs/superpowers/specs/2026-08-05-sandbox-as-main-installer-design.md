@@ -1,7 +1,7 @@
 # Sandbox as the Main Installer — Design
 
-_Revision 8 — incorporates round-1 through round-7 review findings (see PR discussion for all
-seven reports)._
+_Revision 9 — incorporates round-1 through round-8 review findings (see PR discussion for all
+eight reports)._
 
 ## Motivation
 
@@ -85,47 +85,42 @@ from this design's engineering approval. See Scope.
      regenerating), alongside exporting `COMPOSE_PROJECT_NAME=sandbox` — no credential rotation
      for them in Phase 1.
 
-     **Round-5 review found `.env` alone is not enough to migrate; round-6 review found the
-     fuller list still had gaps; round-7 review found the fix proposed for that (delegating the
-     definition to `voipbin-cli.py`'s `clean --purge` command) is itself wrong** — `clean --purge`
-     deliberately *excludes* `.test_data_initialized` (it's handled by the separate `--volumes`
-     branch instead, since the marker mirrors DB state that lives in the volumes, not in purgeable
-     files) and excludes `backups/` (its local backup snapshots, by design, aren't something
-     `clean --purge` touches). Delegating to that command's definition would silently reintroduce
-     the exact `.test_data_initialized` gap round-6 flagged.
+     **Round-5 review found `.env` alone is not enough to migrate. Round-6 found the fuller list
+     still had gaps. Round-7 found the fix for that (delegating to `clean --purge`'s definition)
+     was itself wrong, since that command deliberately excludes `.test_data_initialized` and
+     `backups/`. Round-8 found the next fix (delegating to `.gitignore` instead) swung the other
+     way — it's over-inclusive, and one of the extra items it pulls in causes real damage**:
+     copying `docker-compose.override.yml` from an existing pinned install would shadow the new
+     checkout's pinned image digests with the old install's resolved tags, silently reintroducing
+     the exact image/schema mismatch `versions.lock`-based pinning exists to prevent (this is
+     documented in `voipbin-cli.py`'s own pin-guard comments, and is why `cmd_rollback` refuses to
+     touch a pinned repo's override in the first place).
 
-     Corrected: the migration copy set is defined by `.gitignore` instead — every path `.gitignore`
-     excludes as generated/local state, in full, is what a migrating operator copies over:
-     `.env`, `certs/`, `backups/`, `.backup/`, `config/coredns/Corefile`,
-     `config/dummy-gcp-credentials.json`, `tmp/`, `docker-compose.override.yml`,
-     `.voipbin-versions/`, `.test_data_initialized`, `.env.pre-restore*`, `.voipbin-op.lock`, and
-     `config/rabbitmq/plugins/*.ez`. Migration instructions say "copy every `.gitignore`-excluded
-     path from the existing checkout" and point at `.gitignore` as the definition — chosen over
-     `clean --purge` specifically because `.gitignore`'s list is the more complete one and isn't
-     scoped to "things safe to delete," which is a different question than "things that need to
-     travel with a migration."
+     Delegating this definition to any single existing artifact — a deletion list, an ignore
+     file — keeps producing the wrong set, because "safe to delete," "not tracked by git," and
+     "needs to travel with a migration" are three different questions that happen to overlap but
+     aren't the same set. Corrected: this spec defines the migration copy set directly, as an
+     explicit copy/skip decision per item, cross-checked against `.gitignore` only as a
+     completeness aid (not as the definition itself):
 
-     Three items in that set matter enough to call out explicitly, since missing any of them
-     causes real damage, not just a failed service:
-     - **`.test_data_initialized`** — without it, `start.sh` treats the migrated install as a
-       fresh one and re-runs `setup_test_customer` against the existing production data: it
-       looks up whatever customer/agent already exists at that email, unconditionally resets that
-       agent's password to `admin@localhost`, and re-tops-up test balances. This directly defeats
-       the credential hardening this same Scope item exists to provide, for exactly the
-       operators migrating a real install. `doctor.sh` already warns about this re-seeding
-       behavior when the marker is missing.
-     - **`docker-compose.override.yml` / `.voipbin-versions/`** — these hold the image
-       pins/rollback history that Scope item 6 documents as an existing, working feature. Losing
-       them on migration means a "documented" capability breaks for exactly the users being
-       migrated onto it.
-     - **`backups/`** — the local DB backup snapshots Scope item 6 also documents as existing.
-       `clean --purge` deliberately leaves this directory alone, which is exactly why it isn't a
-       safe stand-in for "what a migration needs to bring along."
-     - `dummy-gcp-credentials.json` (created only by `init.sh`/`init_no_sudo.sh`, never by
-       `start.sh`) and `certs/` remain relevant as before: missing the former breaks several
-       services' bind mounts (silently — `start.sh`'s `validate_env` only warns), and missing the
-       latter is fine for default mkcert mode (self-heals) but a hard failure under
-       `TLS_MODE=byo`.
+     | Path | Migrate? | Why |
+     |---|---|---|
+     | `.env` | **Copy** | Existing credentials; skipping loses DB/AMQP auth entirely. |
+     | `certs/` | **Copy** | Self-heals under default mkcert mode, but a hard failure under `TLS_MODE=byo` if missing. |
+     | `config/dummy-gcp-credentials.json` | **Copy** | Created only by `init.sh`/`init_no_sudo.sh`, never by `start.sh`; several services' bind mounts break silently without it. |
+     | `config/coredns/Corefile` | **Copy** | DNS config matching the existing install's mode. |
+     | `.test_data_initialized` | **Copy — critical** | Without it, `start.sh` treats the migration as a fresh install and re-runs `setup_test_customer` against the existing production data, unconditionally resetting the admin agent's password to `admin@localhost`. This directly defeats the credential hardening this Scope item exists to provide. `doctor.sh` already warns about this re-seeding behavior when the marker is missing. |
+     | `backups/` | **Copy** | Local DB backup snapshots documented in Scope item 6; no reason to discard them, and `clean --purge` (rightly) never touches them either. |
+     | `docker-compose.override.yml` | **Skip** | Holds the *old* install's resolved image tags. The new checkout ships its own `versions.lock`-pinned digests; an inherited override would silently shadow them, reintroducing the image/schema mismatch the pin mechanism exists to prevent. |
+     | `.voipbin-versions/` | **Skip** | Rollback history tied to the override above — same reasoning. |
+     | `tmp/` (incl. `tmp/bin-dbscheme-manager`) | **Skip** | Regenerable schema-source cache; `init_database.sh`'s refresh path silently swallows fetch/checkout failures, so an inherited stale or non-git tree can produce an unnoticed schema drift with no upside from carrying it over. |
+     | `.voipbin-op.lock` | **Skip** | Pure existence lock with no stale-lock auto-recovery; carrying over a lock from a crashed run would block backup/upgrade operations on the new install until manually removed. |
+     | `.env.pre-restore*`, `__pycache__/`, `config/rabbitmq/plugins/*.ez` | **Skip** | Transient artifacts / regenerable build output; no migration value. |
+
+     Scope item 6's "existing, working pin/rollback feature" refers to `versions.lock`-based
+     pinning as it works on a *fresh* install — not to carrying an old install's
+     `docker-compose.override.yml` across a migration, which is the specific thing this table
+     says to skip.
 
      Rotating credentials *on an already-running install* (via `ALTER USER`
      / `rabbitmqctl change_password` against the live volume) is real additional work, deferred
@@ -335,11 +330,12 @@ stays available"), following the README's existing "Cloud vs Self-host" two-colu
   4. `./scripts/check-install.sh` (verifies the result)
 
   For an operator **migrating an existing `voipbin/sandbox` checkout**, step 1 is replaced: copy
-  every `.gitignore`-excluded path from the existing checkout into the new location (not `.env`
-  alone, and not just what `clean --purge` happens to remove — see the existing-install migration
-  note under Scope item 4 for the full list, why `.gitignore` and not `clean --purge` is the
-  right reference, and why `.env` alone isn't enough) and `export COMPOSE_PROJECT_NAME=sandbox`,
-  instead of running `init.sh --yes` — steps 2–4 are
+  the items marked "Copy" in the migration table under Scope item 4 (`.env`, `certs/`,
+  `config/dummy-gcp-credentials.json`, `config/coredns/Corefile`, `.test_data_initialized`,
+  `backups/`) from the existing checkout into the new location — explicitly **not**
+  `docker-compose.override.yml` or `.voipbin-versions/`, which the same table marks "Skip" to
+  avoid shadowing the new checkout's pinned image digests — and
+  `export COMPOSE_PROJECT_NAME=sandbox`, instead of running `init.sh --yes` — steps 2–4 are
   unchanged.
 - **Option B — GCP + Kubernetes (existing, still supported):** the current 3-stage pipeline
   content, moved under this subheading, still linking to `voipbin/install` for full docs.
@@ -405,14 +401,14 @@ way:
   succeeds through `setup-voip-network.sh` instead of failing on a hardcoded `sandbox_default`
   lookup; also confirm the `start.sh` first-run heuristic and `voipbin-cli.py` diagnostics
   resolve correctly under both a fresh (`self-install`) and migrated (`sandbox`) project name.
-- Migration path, end to end (this class of gap has been found across three review rounds, so it
-  gets its own explicit check rather than relying on the file list being complete): reproduce an
-  existing sandbox install on a disposable host, migrate it following only the documented
-  copy-set instructions, and confirm afterward that (a) the admin account password was *not*
-  reset to `admin@localhost`, (b) existing image pins / rollback history in
-  `docker-compose.override.yml` / `.voipbin-versions/` are still present and honored, (c) prior
-  backup snapshots under `backups/` are still present, and (d) all services start successfully
-  against the preserved volumes.
+- Migration path, end to end (this class of gap has been found across four review rounds, so it
+  gets its own explicit check rather than relying on the copy/skip table being exhaustive):
+  reproduce an existing, pinned sandbox install on a disposable host, migrate it following only
+  the documented copy/skip table, and confirm afterward that (a) the admin account password was
+  *not* reset to `admin@localhost`, (b) `docker compose config`'s resolved images match the new
+  checkout's `versions.lock` pins — i.e. no stale `docker-compose.override.yml` shadowing them,
+  (c) prior backup snapshots under `backups/` are still present, and (d) all services start
+  successfully against the preserved volumes.
 
 ## Open Questions (flagged, not blocking Phase 1 engineering review — the commercial-positioning
 sign-off in Motivation is a separate, blocking precondition on shipping)
