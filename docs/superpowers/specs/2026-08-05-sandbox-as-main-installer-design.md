@@ -1,7 +1,7 @@
 # Sandbox as the Main Installer — Design
 
-_Revision 5 — incorporates round-1 through round-4 review findings (see PR discussion for all
-four reports)._
+_Revision 6 — incorporates round-1 through round-5 review findings (see PR discussion for all
+five reports)._
 
 ## Motivation
 
@@ -83,7 +83,20 @@ from this design's engineering approval. See Scope.
      actually in the volume and lock the operator out. So: users migrating an existing install
      keep their existing `.env` file as-is (copy it into the new checkout location rather than
      regenerating), alongside exporting `COMPOSE_PROJECT_NAME=sandbox` — no credential rotation
-     for them in Phase 1. Rotating credentials *on an already-running install* (via `ALTER USER`
+     for them in Phase 1.
+
+     **Round-5 review found `.env` alone is not enough to migrate.** `.gitignore` also excludes
+     `certs/` and generated files under `config/` (including
+     `config/dummy-gcp-credentials.json`), none of which exist in a fresh `voipbin/voipbin`
+     clone. `dummy-gcp-credentials.json` is created only by `init.sh`/`init_no_sudo.sh`, never by
+     `start.sh`; without it, several services' bind mounts resolve to an empty host-created
+     directory instead of the expected file and those services fail to start (`start.sh`'s
+     `validate_env` only warns, it doesn't block). `certs/` self-heals for the default mkcert
+     mode (`start.sh` regenerates it), but a `TLS_MODE=byo` (bring-your-own-cert) migrating user
+     hits a hard failure without it. Migration instructions must say "copy `.env`, `certs/`, and
+     `config/` from the existing checkout" — not `.env` alone.
+
+     Rotating credentials *on an already-running install* (via `ALTER USER`
      / `rabbitmqctl change_password` against the live volume) is real additional work, deferred
      to Phase 2. This also means Option A's documented entrypoint must not tell a migrating user
      to run `./scripts/init.sh --yes` unconditionally — `init.sh` overwrites an existing `.env`
@@ -116,7 +129,17 @@ from this design's engineering approval. See Scope.
    in `scripts/init_database.sh` (a fallback branch, not on the primary path, but inappropriate
    to carry into a public repo's primary installer as-is) — either delete the fallback or make it
    derive from `$HOME` generically.
-8. A single, minimal README banner in `voipbin/install` pointing existing GCP users at the new
+8. **Centralize Compose project-name derivation (round-5 review finding — blocking, not
+   optional):** `setup-voip-network.sh:21`, `start.sh:253`, and `voipbin-cli.py:4553,4564`
+   hardcode the literal `sandbox_default`/`sandbox_db_data`/`sandbox_voip-internal` instead of
+   deriving the project name the way `setup-host.sh` does. Without this fix, a **fresh** install
+   under `self-install/` (project name naturally `self-install`) fails at
+   `setup-voip-network.sh`'s network lookup — the migration path only "works" today by
+   coincidence, because exporting `COMPOSE_PROJECT_NAME=sandbox` happens to match the hardcoded
+   literal. Move `derive_compose_project_name()` into `common.sh` and have all four consumers
+   (including `setup-host.sh`) call the shared function. See Repository Structure Change for
+   detail.
+9. A single, minimal README banner in `voipbin/install` pointing existing GCP users at the new
    primary path while confirming their setup keeps working. **This lands as a separate PR in the
    `voipbin/install` repo**, not bundled into this PR (different repo, different review queue) —
    noted here so the rollout isn't announced with only one half of the pair merged.
@@ -146,7 +169,7 @@ from this design's engineering approval. See Scope.
   lost, it does not implement them.
 
 **Explicitly out of scope for Phase 1:**
-- Any *functional* change to `voipbin/install` (GCP repo) beyond the one README banner (item 7
+- Any *functional* change to `voipbin/install` (GCP repo) beyond the one README banner (item 9
   above, its own PR).
 - Deciding whether `voipbin/sandbox` (the standalone repo) gets archived, kept as a mirror, or
   deleted. Its existing open issues/PRs stay there until that decision is made; the Contributing
@@ -193,18 +216,44 @@ doesn't work: `setup-host.sh` and `doctor.sh` read `COMPOSE_PROJECT_NAME` only f
 environment, never from `.env` (they don't source it for this value). Corrected fix: anyone
 migrating an existing sandbox checkout must `export COMPOSE_PROJECT_NAME=sandbox` in their shell
 (or persist it in their shell profile) before running `setup-host.sh`/`doctor.sh`/`start.sh` at
-the new location — this is a documentation instruction, not a `.env` edit. New installs default
-to `self-install` naturally and need no such instruction.
+the new location — this is a documentation instruction, not a `.env` edit.
+
+**Round-5 review found this only fixes `setup-host.sh`'s own network — three more places
+hardcode the literal string `sandbox_default` / `sandbox_db_data` instead of deriving it, and
+none of them have an env override:**
+- `scripts/setup-voip-network.sh:21` — `NETWORK_NAME="sandbox_default"`, used to look up the
+  bridge interface for VoIP traffic. Fails hard (`exit 1`, "Docker network 'sandbox_default'
+  does not exist") if the project name isn't literally `sandbox`.
+- `scripts/start.sh:253` — `grep -q 'sandbox_db_data'` as a first-run detection heuristic.
+- `scripts/voipbin-cli.py:4553,4564` — diagnostic network inspection for `sandbox_voip-internal`
+  / `sandbox_default`.
+
+This means a **fresh install** under `self-install/` — which derives project name
+`self-install` and creates `self-install_default` — is what actually breaks today, not the
+migration path (which happens to work by coincidence, since exporting
+`COMPOSE_PROJECT_NAME=sandbox` matches these hardcoded literals). Phase 1 must fix this before
+`self-install/` can be a working fresh-install target at all:
+- Move `derive_compose_project_name()` (currently only in `setup-host.sh`) into `common.sh`, and
+  have `setup-voip-network.sh`, `start.sh`, and `voipbin-cli.py`'s diagnostics call it instead of
+  hardcoding the literal.
+- With that in place, new installs work with no special instruction (project name naturally
+  derives to `self-install`), and migrating installs work by exporting
+  `COMPOSE_PROJECT_NAME=sandbox` as described above — both paths go through the same derivation
+  logic instead of one being a hardcoded coincidence.
 
 ### Path portability check
 
 Sandbox's scripts derive `PROJECT_DIR` from `SCRIPT_DIR`, not from a hardcoded repo name —
-confirmed via grep across `scripts/*.sh`, with the Compose-project-name caveat handled above.
-`migrate.sh` / `generate-versions-lock.sh` default to `$HOME/gitvoipbin/monorepo` for a
-developer-only cross-repo lookup (overridable via env var) — pre-existing, left as-is. One item
-does need cleanup before this becomes the repo's public primary installer:
+confirmed via grep across `scripts/*.sh`. A first grep pass on this point (round-1/round-2
+review) missed the hardcoded `sandbox_default`/`sandbox_db_data` literals now covered under
+Repository Structure Change above (round-5 review); those are a distinct kind of path
+dependency (Compose network/volume naming, not `PROJECT_DIR` resolution) and are fixed as a
+Scope item, not left as a caveat. `migrate.sh` / `generate-versions-lock.sh` default to
+`$HOME/gitvoipbin/monorepo` for a developer-only cross-repo lookup (overridable via env var) —
+pre-existing, left as-is. One item does need cleanup before this becomes the repo's public
+primary installer:
 `scripts/init_database.sh` hardcodes the author's personal absolute path
-(`/home/pchero/gitvoipbin/monorepo/bin-dbscheme-manager`) in a fallback branch — see Scope item 8.
+(`/home/pchero/gitvoipbin/monorepo/bin-dbscheme-manager`) in a fallback branch — see Scope item 7.
 
 ### CI
 
@@ -237,10 +286,11 @@ stays available"), following the README's existing "Cloud vs Self-host" two-colu
   3. `./scripts/start.sh` (brings up all services, runs migrations)
   4. `./scripts/check-install.sh` (verifies the result)
 
-  For an operator **migrating an existing `voipbin/sandbox` checkout**, step 1 is replaced:
-  copy the existing `.env` into the new location and `export COMPOSE_PROJECT_NAME=sandbox`
-  instead of running `init.sh --yes` (see the existing-install migration note under Scope item
-  4) — steps 2–4 are unchanged.
+  For an operator **migrating an existing `voipbin/sandbox` checkout**, step 1 is replaced: copy
+  `.env`, `certs/`, and `config/` from the existing checkout into the new location (not `.env`
+  alone — see the existing-install migration note under Scope item 4 for why) and
+  `export COMPOSE_PROJECT_NAME=sandbox`, instead of running `init.sh --yes` — steps 2–4 are
+  unchanged.
 - **Option B — GCP + Kubernetes (existing, still supported):** the current 3-stage pipeline
   content, moved under this subheading, still linking to `voipbin/install` for full docs.
 
@@ -299,8 +349,12 @@ way:
   from the environment, not a literal that needs removing), `JWT_KEY` stays generated
   (regression check only — this already works today), and the `admin@localhost` test account is
   not auto-created outside of an explicit dev-mode flag.
-- Confirm Scope item 8: `init_database.sh` no longer references the personal `/home/pchero/...`
+- Confirm Scope item 7: `init_database.sh` no longer references the personal `/home/pchero/...`
   path.
+- Confirm Scope item 8: a fresh `self-install/` install (no `COMPOSE_PROJECT_NAME` override)
+  succeeds through `setup-voip-network.sh` instead of failing on a hardcoded `sandbox_default`
+  lookup; also confirm the `start.sh` first-run heuristic and `voipbin-cli.py` diagnostics
+  resolve correctly under both a fresh (`self-install`) and migrated (`sandbox`) project name.
 
 ## Open Questions (flagged, not blocking Phase 1 engineering review — the commercial-positioning
 sign-off in Motivation is a separate, blocking precondition on shipping)
