@@ -1,7 +1,7 @@
 # Sandbox as the Main Installer — Design
 
-_Revision 3 — incorporates round-1 and round-2 review findings (see PR discussion for both
-reports)._
+_Revision 4 — incorporates round-1, round-2, and round-3 review findings (see PR discussion for
+all three reports)._
 
 ## Motivation
 
@@ -34,20 +34,38 @@ from this design's engineering approval. See Scope.
 3. Rewrite `self-install/README.md`'s security section from "local dev only, don't expose" to
    "these are the defaults, here is what changes before you expose this."
 4. **Credential hardening — hard requirement, no fallback to a manual/documented-only
-   procedure** (round-2 review found the credentials are compose-file literals, not `.env`
-   references, so a "just document how to rotate them" escape hatch doesn't work — an operator
-   would have to hand-edit ~127 occurrences across `docker-compose.yml`). Phase 1 must include:
-   - Parameterize `docker-compose.yml`'s hardcoded credentials (`MYSQL_ROOT_PASSWORD`,
-     `RABBITMQ_DEFAULT_USER`/`PASS`, `AMI_PASSWORD`, DSNs referencing `root:root_password`,
-     etc.) to read from `.env`, with `init` generating random values by default instead of
-     shipping `root_password`/`guest`/`guest`/`asterisk` as literals.
-   - Ensure `JWT_KEY` (compose) is always generated, never a shipped default.
+   procedure** (round-2 review found the credentials are literals, not `.env` references, in
+   `docker-compose.yml` — ~76 lines across `MYSQL_ROOT_PASSWORD`/`root_password` DSNs,
+   `guest:guest` AMQP URLs, and `AMI_PASSWORD=asterisk` — so a "just document how to rotate
+   them" escape hatch doesn't work). Round-3 review found the hardcoding is **not limited to the
+   compose file** — parameterizing only `docker-compose.yml` would break the installer, since
+   these consumers read the same literals directly with no env fallback:
+   - `scripts/start.sh` (migration-state check shells out with `mysql -u root -proot_password`)
+   - `scripts/init_database.sh` (`DB_ROOT_PASSWORD="root_password"`)
+   - `scripts/migrate.sh` (`DB_PASSWORD="root_password"`)
+   - `scripts/voipbin-cli.py` (backup/restore/shell subcommands; only two of the several call
+     sites already fall back to `${MYSQL_ROOT_PASSWORD:-root_password}`, the rest don't)
+   - test fixtures (`scripts/tests/test_backup_restore_live.py`, `tests/config.bats`)
+
+   Phase 1 must parameterize **all of the above together**, not just the compose file, plus:
+   - Add the corresponding keys to `.env.template` (required — `check-env-template-sync.sh`
+     enforces `.env`/`.env.template` key parity and will fail CI otherwise), with `init`
+     generating random values by default instead of shipping `root_password`/`guest`/`guest`/
+     `asterisk` as literals.
+   - `JWT_KEY` generation is **already handled** — `init.sh` already calls
+     `generate_random_key()` and compose already defaults to an empty string, not a shipped
+     secret (round-3 review found this is not new work). The only loose end is
+     `.env.template`'s `JWT_KEY=your-random-jwt-secret-key` placeholder, which should be cleaned
+     up for consistency with the other rotated keys, plus a regression check that this stays
+     true (see Verification Plan).
    - `scripts/start.sh`'s auto-created test account (`admin@localhost` / `admin@localhost`,
      extensions `1000/2000/3000` with `pass1000` etc.) must not be created with these fixed
      values outside of an explicit dev/test mode — either gate it behind a flag that defaults
-     off, or force a password change/generation on first production-mode run.
-   - This is real code work in the sandbox scripts/compose files, done as part of this PR (in
-     `self-install/`, or upstream in `voipbin/sandbox` first and carried over — see Merge
+     off, or force a password change/generation on first production-mode run. No such gate
+     exists today (`check_test_data_initialized` only checks whether a
+     `.test_data_initialized` marker file exists, not a mode flag).
+   - This is real code work in the sandbox scripts/compose/CLI files, done as part of this PR
+     (in `self-install/`, or upstream in `voipbin/sandbox` first and carried over — see Merge
      mechanism note on timing).
 5. Carry the sandbox repo's CI-adjacent config over: move
    `.github/workflows/discord-merge-notify.yml` to repo root (workflows in a subdirectory don't
@@ -56,8 +74,15 @@ from this design's engineering approval. See Scope.
    sandbox already has: the existing scheduled in-stack DB backup, `versions.lock`-based
    image pinning/update/rollback. These exist today; round-2 review confirmed it's inaccurate to
    describe the installer as having no upgrade/backup story — the gap is that it isn't
-   documented as part of the primary install guide yet, which this PR fixes. Anything actually
-   missing (see Phase 2) is scoped there instead.
+   documented as part of the primary install guide yet, which this PR fixes. Document honestly,
+   not as more complete than it is: the `database-backup` scheduler ships **disabled** by
+   default and is enabled by `start.sh`, and there is no offsite/remote copy of backups today
+   (local retention only, 7 snapshots). Anything actually missing (see Phase 2) is scoped there
+   instead.
+8. Remove the developer-only hardcoded path `/home/pchero/gitvoipbin/monorepo/bin-dbscheme-manager`
+   in `scripts/init_database.sh` (a fallback branch, not on the primary path, but inappropriate
+   to carry into a public repo's primary installer as-is) — either delete the fallback or make it
+   derive from `$HOME` generically.
 7. A single, minimal README banner in `voipbin/install` pointing existing GCP users at the new
    primary path while confirming their setup keeps working. **This lands as a separate PR in the
    `voipbin/install` repo**, not bundled into this PR (different repo, different review queue) —
@@ -137,9 +162,11 @@ to `self-install` naturally and need no such instruction.
 
 Sandbox's scripts derive `PROJECT_DIR` from `SCRIPT_DIR`, not from a hardcoded repo name —
 confirmed via grep across `scripts/*.sh`, with the Compose-project-name caveat handled above.
-(`migrate.sh` / `generate-versions-lock.sh` also default to `$HOME/gitvoipbin/monorepo` for a
-developer-only cross-repo lookup, overridable via env var — pre-existing behavior, unrelated to
-this move, left as-is.)
+`migrate.sh` / `generate-versions-lock.sh` default to `$HOME/gitvoipbin/monorepo` for a
+developer-only cross-repo lookup (overridable via env var) — pre-existing, left as-is. One item
+does need cleanup before this becomes the repo's public primary installer:
+`scripts/init_database.sh` hardcodes the author's personal absolute path
+(`/home/pchero/gitvoipbin/monorepo/bin-dbscheme-manager`) in a fallback branch — see Scope item 8.
 
 ### CI
 
@@ -192,15 +219,23 @@ sparse-checkout instruction for Phase 1.
 
 ## Verification Plan
 
-`self-install/voipbin doctor` (renamed per Option A's actual entrypoints, but the read-only
-health-check script) confirms relocation didn't break its own path resolution — it does **not**
-exercise `init.sh`/`setup-host.sh`/`start.sh`'s path handling. Since those are unsafe to run
-against a host with an existing install (see below), the actual regression net for this move is
-running sandbox's existing test suites (`tests/*.bats`, `scripts/tests/*.py`) from the new
-`self-install/` location and confirming they pass unchanged.
+`./scripts/doctor.sh` (the read-only health-check entrypoint) confirms relocation didn't break
+its own path resolution — it does **not** exercise `init.sh`/`setup-host.sh`/`start.sh`'s path
+handling. Since those are unsafe to run against a host with an existing install (see below), the
+actual regression net for this move is sandbox's existing test suites, run from the new
+`self-install/` location — but the two suites are not equivalent and shouldn't be run the same
+way:
 
-- Run the bats/pytest suites from `self-install/` post-move; confirm no path-resolution
-  regressions.
+- The `tests/*.bats` suite (12 files) is self-contained and safe to run immediately after the
+  move, no live stack required.
+- The `scripts/tests/*.py` suite (3 files) is a **live-stack integration test**, not a unit
+  test — e.g. `test_backup_restore_live.py` runs against an actual Compose project
+  (`COMPOSE_PROJECT_NAME="voipbin-test"`). It requires the same disposable/clean-host
+  precondition as a full `init` run, not a quick post-move check.
+
+- Run the full `tests/*.bats` suite from `self-install/` post-move immediately; confirm no
+  path-resolution regressions. Run `scripts/tests/*.py` only on a disposable host, alongside the
+  full-stack check below.
 - `init.sh`/`setup-host.sh` make real host changes (CoreDNS Corefile generation, replacing
   `/etc/resolv.conf` via `setup-dns.sh -y`, installing an mkcert CA into the system trust store)
   — not dry-runs. Any full `init`→`setup-host`→`start` check runs only on a disposable/clean
@@ -215,8 +250,12 @@ running sandbox's existing test suites (`tests/*.bats`, `scripts/tests/*.py`) fr
   reference point listed above.
 - Confirm the moved CI workflow triggers correctly from repo root with its secret provisioned.
 - Confirm the credential-hardening change (Scope item 4): a fresh `init` produces non-default
-  MySQL/RabbitMQ/AMI/JWT values and does not auto-create the `admin@localhost` test account
-  outside of an explicit dev-mode flag.
+  MySQL/RabbitMQ/AMI values (compose, `start.sh`, `init_database.sh`, `migrate.sh`,
+  `voipbin-cli.py` all consistent, no residual literal fallback), `JWT_KEY` stays generated
+  (regression check only — this already works today), and the `admin@localhost` test account is
+  not auto-created outside of an explicit dev-mode flag.
+- Confirm Scope item 8: `init_database.sh` no longer references the personal `/home/pchero/...`
+  path.
 
 ## Open Questions (flagged, not blocking Phase 1 engineering review — the commercial-positioning
 sign-off in Motivation is a separate, blocking precondition on shipping)
