@@ -1,8 +1,11 @@
 # Sandbox as the Main Installer — Design
 
-_Revision 11 — incorporates round-1 through round-10 review findings. Rounds 9 and 10 both
-returned APPROVE (2 consecutive), closing the design review loop per policy; this revision folds
-in round 10's two non-blocking observations. See PR discussion for all ten reports._
+_Revision 12 — incorporates round-1 through round-10 review findings. Rounds 9 and 10 both
+returned APPROVE (2 consecutive), closing the design review loop per policy. This revision folds
+in round 10's two non-blocking observations and records the CEO/CTO's resolution of the
+commercial-positioning question (2026-08-05): no real on-premise license exists behind the
+`sandbox/README.md` wording, so it is deleted, not preserved. See PR discussion for all ten
+review reports._
 
 ## Motivation
 
@@ -16,12 +19,15 @@ alongside `voipbin/install` (GCP/K8s stays available, its long-term fate is a se
 decision). This is an engineering/documentation restructuring decision and is what this design
 document covers.
 
-**What is NOT yet decided, and blocks shipping the README rewrite regardless of engineering
-readiness:** `sandbox/README.md` currently tells production users to "use the official VoIPBin
-cloud service or contact us for on-premise licensing" — i.e., self-hosted production is
-currently framed as commercially restricted. Making it a first-class, openly documented path is
-a *commercial positioning change*, not a docs change, and needs explicit CEO sign-off separate
-from this design's engineering approval. See Scope.
+**Commercial-positioning sign-off — resolved (CEO/CTO, confirmed):** `sandbox/README.md`
+currently tells production users to "use the official VoIPBin cloud service or contact us for
+on-premise licensing." There is no actual separate on-premise license or commercial agreement
+behind that sentence — the repo's real license is plain MIT with no production-use restriction,
+and this phrase was confirmed to be leftover habitual wording, not a real commercial offering.
+The CEO/CTO has approved deleting it outright. This isn't a positioning change against an actual
+product, just removing inaccurate copy — so it carries no additional business risk beyond what
+Scope already covers, and is folded into Scope item 3 (the `self-install/README.md` security
+section rewrite) rather than treated as a separate blocking decision.
 
 ## Scope
 
@@ -33,7 +39,9 @@ from this design's engineering approval. See Scope.
    Docker Compose, primary; Option B: GCP/K8s, existing), fixing every reference point listed
    under README Changes.
 3. Rewrite `self-install/README.md`'s security section from "local dev only, don't expose" to
-   "these are the defaults, here is what changes before you expose this."
+   "these are the defaults, here is what changes before you expose this," and delete the
+   "contact us for on-premise licensing" sentence entirely (confirmed no real license behind it
+   — see Motivation).
 4. **Credential hardening — hard requirement, no fallback to a manual/documented-only
    procedure** (round-2 review found the credentials are literals, not `.env` references, in
    `docker-compose.yml` — ~76 lines across `MYSQL_ROOT_PASSWORD`/`root_password` DSNs,
@@ -222,8 +230,6 @@ from this design's engineering approval. See Scope.
   deleted. Its existing open issues/PRs stay there until that decision is made; the Contributing
   table routes *new* self-install issues to `voipbin/voipbin` going forward.
 - Any of the Phase 2 items above.
-- The commercial-positioning sign-off described in Motivation — tracked there as a blocking
-  precondition on shipping, not something this document resolves.
 
 ## Repository Structure Change
 
@@ -427,8 +433,7 @@ way:
   (f) `voipbin config` (if `~/.voipbin-cli.conf` existed pre-migration) reports the new
   checkout's path, not the old one.
 
-## Open Questions (flagged, not blocking Phase 1 engineering review — the commercial-positioning
-sign-off in Motivation is a separate, blocking precondition on shipping)
+## Open Questions (flagged, not blocking Phase 1 engineering review)
 
 - Fate of the standalone `voipbin/sandbox` repo post-merge — deferred per explicit decision.
 - Whether `voipbin/sandbox`'s own CI/Discord notifications should be disabled once
