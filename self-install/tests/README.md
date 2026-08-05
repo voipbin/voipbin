@@ -1,4 +1,4 @@
-# VoIPBin Sandbox Tests
+# VoIPBin Self-Install Tests
 
 Unit tests for infrastructure scripts using [BATS](https://github.com/bats-core/bats-core) (Bash Automated Testing System).
 

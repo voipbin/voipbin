@@ -8,7 +8,7 @@ set -e
 CONFIG_DIR="/config"
 KAMAILIO_ETC="/usr/local/etc/kamailio"
 
-echo "Sandbox Kamailio entrypoint starting..."
+echo "Self-Install Kamailio entrypoint starting..."
 
 # Create symlinks for files expected in default locations
 if [ -f "${CONFIG_DIR}/dispatcher.list" ]; then

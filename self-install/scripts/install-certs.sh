@@ -1,5 +1,5 @@
 #!/bin/bash
-# VoIPBin Sandbox - BYO Certificate Installer (design §2.6, VOIP-1275)
+# VoIPBin Self-Install - BYO Certificate Installer (design §2.6, VOIP-1275)
 # Validates and installs an operator-provided certificate (e.g. Let's Encrypt)
 # into the layout kamailio and the sandbox scripts consume, rewrites the four
 # base64 values in .env, and recreates the running services that consume them.

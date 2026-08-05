@@ -1,5 +1,5 @@
 #!/bin/bash
-# VoIPBin Sandbox - Host Setup Script (design §2.5, VOIP-1275)
+# VoIPBin Self-Install - Host Setup Script (design §2.5, VOIP-1275)
 # The single sudo command in the AI-driven install flow. Owns every host
 # mutation: mkcert package install, mkcert CA trust-store install (two-pass
 # CAROOT handoff), DNS hijack (Corefile + setup-dns.sh), the compose default
@@ -296,7 +296,7 @@ main() {
 
     echo ""
     echo "=============================================="
-    echo "  VoIPBin Sandbox - Host Setup"
+    echo "  VoIPBin Self-Install - Host Setup"
     echo "=============================================="
     echo ""
 

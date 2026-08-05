@@ -1,5 +1,5 @@
 #!/bin/bash
-# VoIPBin Sandbox - Install Doctor (VOIP-1280)
+# VoIPBin Self-Install - Install Doctor (VOIP-1280)
 # Unprivileged, read-only, any-stage diagnose-and-prescribe helper. Runs before
 # init.sh has ever run, mid-install, or against a running stack; diagnoses
 # everything it can and prints the exact recovery command for every failure.
@@ -729,7 +729,7 @@ check_test_data() {
 main() {
     echo ""
     echo "=============================================="
-    echo "  VoIPBin Sandbox - Install Doctor"
+    echo "  VoIPBin Self-Install - Install Doctor"
     echo "=============================================="
     echo ""
     load_doctor_env

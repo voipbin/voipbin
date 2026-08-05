@@ -1,5 +1,5 @@
 #!/bin/bash
-# VoIPBin Sandbox - Stop Script
+# VoIPBin Self-Install - Stop Script
 # Stops all services, preserves data
 #
 # Usage: sudo ./voipbin stop
@@ -75,7 +75,7 @@ restore_dns() {
 main() {
     echo ""
     echo "=============================================="
-    echo "  VoIPBin Sandbox - Stop"
+    echo "  VoIPBin Self-Install - Stop"
     echo "=============================================="
 
     # Check for root (needed to restore DNS)

@@ -1,5 +1,5 @@
 #!/bin/bash
-# VoIPBin Sandbox - BATS Test Helper
+# VoIPBin Self-Install - BATS Test Helper
 # Shared utilities for all test files
 
 # =============================================================================

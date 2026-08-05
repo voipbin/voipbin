@@ -1,5 +1,5 @@
 #!/bin/bash
-# VoIPBin Sandbox - versions.lock -> docker-compose.yml image sync
+# VoIPBin Self-Install - versions.lock -> docker-compose.yml image sync
 # Rewrites every `image: voipbin/<name>@sha256:...` line in docker-compose.yml to
 # the digest versions.lock pins for that image.
 #

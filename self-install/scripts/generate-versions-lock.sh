@@ -1,5 +1,5 @@
 #!/bin/bash
-# VoIPBin Sandbox - versions.lock Generator
+# VoIPBin Self-Install - versions.lock Generator
 # Regenerates versions.lock by pinning every tracked voipbin/* image to the
 # nearest registry tag at-or-before a target monorepo commit.
 #

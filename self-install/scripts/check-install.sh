@@ -1,5 +1,5 @@
 #!/bin/bash
-# VoIPBin Sandbox - Post-Install Smoke Check (design §2.8, VOIP-1275)
+# VoIPBin Self-Install - Post-Install Smoke Check (design §2.8, VOIP-1275)
 # Unprivileged, read-only, mode-aware self-verification an agent (or human)
 # runs after start.sh, replacing "eyeball the start.sh summary".
 #
@@ -334,7 +334,7 @@ check_resolv_conf() {
 main() {
     echo ""
     echo "=============================================="
-    echo "  VoIPBin Sandbox - Install Check"
+    echo "  VoIPBin Self-Install - Install Check"
     echo "=============================================="
     echo ""
 

@@ -1,5 +1,5 @@
 #!/bin/bash
-# VoIPBin Sandbox - DNS Setup Script
+# VoIPBin Self-Install - DNS Setup Script
 # Configures OS to use CoreDNS (port 53) for all DNS queries
 #
 # Linux: Points /etc/resolv.conf to CoreDNS (127.0.0.1)
@@ -167,7 +167,7 @@ setup_macos() {
 
     # Create resolver file for voipbin.test
     cat > /etc/resolver/voipbin.test << 'EOF'
-# VoIPBin Sandbox - Forward .voipbin.test to CoreDNS
+# VoIPBin Self-Install - Forward .voipbin.test to CoreDNS
 nameserver 127.0.0.1
 port 53
 EOF
@@ -428,7 +428,7 @@ main() {
 
     echo ""
     echo "=============================================="
-    echo "  VoIPBin Sandbox - DNS Setup"
+    echo "  VoIPBin Self-Install - DNS Setup"
     echo "=============================================="
 
     if [[ "$os" == "unknown" ]]; then

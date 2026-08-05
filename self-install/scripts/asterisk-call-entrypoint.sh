@@ -5,7 +5,7 @@
 
 set -e
 
-echo "Sandbox Asterisk Call entrypoint starting..."
+echo "Self-Install Asterisk Call entrypoint starting..."
 
 # Detect target interface and MAC address
 TARGET_INTERFACE=$(ls /sys/class/net | grep -v "lo" | head -n 1)

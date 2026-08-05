@@ -1,5 +1,5 @@
 #!/bin/bash
-# VoIPBin Sandbox - Database Initialization Script
+# VoIPBin Self-Install - Database Initialization Script
 # Creates databases and runs alembic migrations from the monorepo
 
 set -e
@@ -387,7 +387,7 @@ run_migrations() {
 main() {
     echo ""
     echo "=============================================="
-    echo "  VoIPBin Sandbox - Database Initialization"
+    echo "  VoIPBin Self-Install - Database Initialization"
     echo "=============================================="
     echo ""
 
