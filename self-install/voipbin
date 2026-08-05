@@ -1,0 +1,6 @@
+#!/bin/bash
+# VoIPBin Sandbox CLI wrapper
+# Delegates to scripts/voipbin-cli.py
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+exec python3 "$SCRIPT_DIR/scripts/voipbin-cli.py" "$@"
