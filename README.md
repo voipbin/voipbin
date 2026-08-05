@@ -300,7 +300,7 @@ Use VoIPBin as a fully managed service. No infrastructure to set up, no servers 
 
 **Full control over your infrastructure.**
 
-Deploy VoIPBin on your own cloud infrastructure. Own your data, customize everything, and run it wherever you want.
+Deploy VoIPBin on your own server or cloud infrastructure. Own your data, customize everything, and run it wherever you want.
 
 ✅ Complete data ownership<br/>
 ✅ Full customization & white-labeling<br/>
@@ -377,9 +377,30 @@ curl -X POST https://api.voipbin.net/v1.0/ais \
 
 ## 🏠 Self-Install Guide
 
-Deploy VoIPBin on your own cloud with a single CLI command. The [**voipbin/install**](https://github.com/voipbin/install) repo handles everything: infrastructure provisioning, VM configuration, and full Kubernetes deployment.
+VoIPBin can be self-hosted two ways. Option A is the primary, recommended path for most operators; Option B is for teams that specifically need GCP/Kubernetes-scale infrastructure.
 
-### Install and Deploy
+### Option A — Single-Server Docker Compose (recommended)
+
+Deploy the full stack on one server with Docker Compose. Lives in this repo's [`self-install/`](self-install/) directory.
+
+```bash
+git clone https://github.com/voipbin/voipbin.git
+cd voipbin/self-install
+
+# Fresh install:
+./scripts/init.sh --yes
+sudo ./scripts/setup-host.sh
+./scripts/start.sh
+./scripts/check-install.sh
+```
+
+Migrating an existing `voipbin/sandbox` checkout instead of starting fresh? See [`self-install/HISTORY.md`](self-install/HISTORY.md) and the migration notes in [`self-install/README.md`](self-install/README.md) — the copy/skip file list and `COMPOSE_PROJECT_NAME` handling matter for preserving your existing data.
+
+Full docs, including backup/restore, version pinning/rollback, and troubleshooting: see [`self-install/README.md`](self-install/README.md).
+
+### Option B — GCP + Kubernetes (existing, still supported)
+
+Deploy on your own cloud with a single CLI command. The [**voipbin/install**](https://github.com/voipbin/install) repo handles everything: infrastructure provisioning, VM configuration, and full Kubernetes deployment.
 
 ```bash
 # Step 0: Install voipbin-install (requires git, python3, pip)
@@ -401,6 +422,8 @@ gcloud auth application-default login
 ./voipbin-install verify
 ```
 
+> 📖 **Full documentation**: See the [**voipbin/install**](https://github.com/voipbin/install) repo for detailed architecture, configuration reference, day-to-day operations, and cost breakdowns.
+
 The `init` wizard guides you through: GCP project, region, cluster type, TLS, domain, and DNS configuration. Then `apply` runs a fully automated 3-stage pipeline:
 
 ```
@@ -412,7 +435,7 @@ NAT, KMS, Storage           Docker + Config           3 Frontend Apps
                                                       Redis, RabbitMQ, etc.
 ```
 
-### Day-to-Day Operations
+### Day-to-Day Operations (Option B)
 
 ```bash
 # Check deployment status
@@ -446,7 +469,7 @@ NAT, KMS, Storage           Docker + Config           3 Frontend Apps
 ./voipbin-install destroy
 ```
 
-### Prerequisites
+### Prerequisites (Option B)
 
 | Tool | Version | Install |
 |---|---|---|
@@ -537,7 +560,7 @@ VoIPBin is built as a distributed system of **34 Go microservices**, communicati
 | **[voipbin/monorepo](https://github.com/voipbin/monorepo)** | Backend microservices (34 Go services) | ![Stars](https://img.shields.io/github/stars/voipbin/monorepo?style=flat-square) |
 | **[voipbin/voipbin-go](https://github.com/voipbin/voipbin-go)** | Go SDK for VoIPBin API | ![Stars](https://img.shields.io/github/stars/voipbin/voipbin-go?style=flat-square) |
 | **[voipbin/mcp](https://github.com/voipbin/mcp)** | MCP (Model Context Protocol) server | ![Stars](https://img.shields.io/github/stars/voipbin/mcp?style=flat-square) |
-| **[voipbin/sandbox](https://github.com/voipbin/sandbox)** | Sandbox & examples | ![Stars](https://img.shields.io/github/stars/voipbin/sandbox?style=flat-square) |
+| **[voipbin/sandbox](https://github.com/voipbin/sandbox)** | Legacy standalone location of the Docker Compose installer — now primarily developed as [`self-install/`](self-install/) in this repo | ![Stars](https://img.shields.io/github/stars/voipbin/sandbox?style=flat-square) |
 
 ---
 
@@ -545,7 +568,7 @@ VoIPBin is built as a distributed system of **34 Go microservices**, communicati
 
 - 📘 **[API Reference](https://api.voipbin.net/docs/)**. Explore and test all VoIPBin APIs
 - 🏗️ **[Backend Microservices](https://github.com/voipbin/monorepo)**. Source code for all 34 Go services
-- 🐍 **[Examples & Sandbox](https://github.com/voipbin/sandbox)**. Sample applications and integrations
+- 🏠 **[Self-Install](self-install/)**. Docker Compose installer — the primary self-hosting path
 
 ---
 
@@ -553,7 +576,7 @@ VoIPBin is built as a distributed system of **34 Go microservices**, communicati
 
 We welcome contributions of all kinds. Whether it's fixing a bug, improving documentation, or proposing new features.
 
-All source code lives in the individual repositories. This repo is the project hub with no code of its own. To contribute, head to the repo that matches what you want to work on:
+Most source code lives in the individual repositories linked below. The one exception is [`self-install/`](self-install/), the Docker Compose installer, which lives directly in this repo. To contribute, head to the repo that matches what you want to work on:
 
 | What you want to work on | Repo |
 |---|---|
@@ -561,8 +584,8 @@ All source code lives in the individual repositories. This repo is the project h
 | Backend microservices (Go) | **[voipbin/monorepo](https://github.com/voipbin/monorepo)** |
 | Go SDK | **[voipbin/voipbin-go](https://github.com/voipbin/voipbin-go)** |
 | MCP server | **[voipbin/mcp](https://github.com/voipbin/mcp)** |
-| Deployment / self-hosting | **[voipbin/install](https://github.com/voipbin/install)** |
-| Examples & sandbox | **[voipbin/sandbox](https://github.com/voipbin/sandbox)** |
+| Deployment / self-hosting (Docker Compose) | **This repo** — [`self-install/`](self-install/) |
+| Deployment / self-hosting (GCP/K8s) | **[voipbin/install](https://github.com/voipbin/install)** |
 
 Fork the relevant repo, create a feature branch, and open a PR there. Have a question first? Join our [Discord](https://discord.com/invite/waztvb63Yx).
 
