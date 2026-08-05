@@ -884,10 +884,12 @@ Base URL: `https://localhost:8443`
 
 ## Commit Message Format
 
-Use project prefix `sandbox:` for changes:
+This directory now lives inside the `voipbin/voipbin` repo. Use project prefix `voipbin:` for
+changes (not `sandbox:` — that prefix belonged to the standalone `voipbin/sandbox` repo this
+directory was copied from):
 
 ```
 Summary of changes (max 72 chars)
 
-- sandbox: Specific change description
+- voipbin: Specific change description
 ```
