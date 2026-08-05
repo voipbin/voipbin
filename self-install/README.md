@@ -456,9 +456,7 @@ mkcert -install
 
 ---
 
-> **⚠️ SECURITY WARNING: Local Development Only**
->
-> This sandbox uses **local-only credentials** for ease of development:
+> **🔒 Security: credentials are generated per-install, not shipped as defaults**
 >
 > | Service | Credentials |
 > |---------|-------------|
@@ -468,7 +466,13 @@ mkcert -install
 > | Extensions (opt-in, `VOIPBIN_SANDBOX_DEV_SEED=true`) | `1000` / `pass1000`, `2000` / `pass2000`, `3000` / `pass3000` |
 > | JWT Secret | Auto-generated in `.env` |
 >
-> **DO NOT expose this sandbox to the public internet.** All ports, credentials, and secrets are meant for local development only. For production deployments, use the official VoIPBin cloud service or contact us for on-premise licensing.
+> The admin/extension credentials above are a dev/test seed account, off by default. It is only
+> created if you explicitly set `VOIPBIN_SANDBOX_DEV_SEED=true` in `.env` — never set this on an
+> install reachable from the public internet.
+>
+> Before exposing this install beyond localhost, also review: TLS certificate mode (`TLS_MODE`),
+> firewall/network exposure of the ports this stack opens, and that `VOIPBIN_SANDBOX_DEV_SEED` is
+> unset or `false`.
 
 ---
 
