@@ -556,7 +556,7 @@ VoIPBin is built as a distributed system of **34 Go microservices**, communicati
 | Repository | Description | Stars |
 |---|---|---|
 | **[voipbin/voipbin](https://github.com/voipbin/voipbin)** | 📍 You are here. project overview and documentation | ![Stars](https://img.shields.io/github/stars/voipbin/voipbin?style=flat-square) |
-| **[voipbin/install](https://github.com/voipbin/install)** | Self-install CLI and deployment scripts | ![Stars](https://img.shields.io/github/stars/voipbin/install?style=flat-square) |
+| **[voipbin/install](https://github.com/voipbin/install)** | GCP/Kubernetes deployment CLI and scripts | ![Stars](https://img.shields.io/github/stars/voipbin/install?style=flat-square) |
 | **[voipbin/monorepo](https://github.com/voipbin/monorepo)** | Backend microservices (34 Go services) | ![Stars](https://img.shields.io/github/stars/voipbin/monorepo?style=flat-square) |
 | **[voipbin/voipbin-go](https://github.com/voipbin/voipbin-go)** | Go SDK for VoIPBin API | ![Stars](https://img.shields.io/github/stars/voipbin/voipbin-go?style=flat-square) |
 | **[voipbin/mcp](https://github.com/voipbin/mcp)** | MCP (Model Context Protocol) server | ![Stars](https://img.shields.io/github/stars/voipbin/mcp?style=flat-square) |
