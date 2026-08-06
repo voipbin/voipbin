@@ -1,5 +1,5 @@
 #!/bin/bash
-# VoIPBin Self-Install - Common Functions
+# VoIPBin Install - Common Functions
 # Shared utilities used by all sandbox scripts
 
 # =============================================================================
@@ -405,7 +405,7 @@ generate_coredns_config() {
     fi
 
     cat > "$corefile" << EOF
-# CoreDNS configuration for VoIPBin Self-Install
+# CoreDNS configuration for VoIPBin Install
 # Auto-generated - do not edit directly
 #
 # Web Services (resolve to host IP, Docker port mapping handles routing):
@@ -550,7 +550,7 @@ write_resolv_conf_with_fallback() {
     # first so `cat >` replaces it instead of writing through the symlink.
     rm -f "$RESOLV_CONF"
     {
-        echo "# VoIPBin Self-Install - DNS via CoreDNS"
+        echo "# VoIPBin Install - DNS via CoreDNS"
         echo "# CoreDNS handles *.voipbin.test locally and forwards others upstream."
         echo "# Fallback nameservers below are used if CoreDNS is unreachable."
         echo "# To restore: sudo ./scripts/setup-dns.sh --uninstall"
@@ -564,7 +564,7 @@ write_resolv_conf_with_fallback() {
 # Compose Project Name Derivation
 # =============================================================================
 # Shared by setup-host.sh, setup-voip-network.sh, start.sh, and doctor.sh so a
-# renamed checkout directory (e.g. sandbox -> self-install) derives a
+# renamed checkout directory (e.g. sandbox -> install) derives a
 # consistent Compose project name everywhere, instead of some places
 # hardcoding the literal "sandbox".
 #

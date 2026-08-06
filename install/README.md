@@ -1,4 +1,4 @@
-# VoIPBin Self-Install (Docker Compose)
+# VoIPBin Install (Docker Compose)
 
 ```
           ████████          
@@ -16,7 +16,7 @@
 
 **Your Private AI-Powered CPaaS Laboratory** — A complete Docker Compose environment for building AI voice agents and communications applications. Deploy 25+ microservices with built-in AI capabilities: real-time speech-to-text, text-to-speech, LLM-powered conversations, and programmable voice workflows.
 
-### Why VoIPBin Self-Install?
+### Why VoIPBin Install?
 
 - **AI Voice Agents** — Build conversational AI agents with OpenAI, Deepgram, ElevenLabs, and Cartesia
 - **Real-time Transcription** — Live speech-to-text during calls with AWS Transcribe or Google Speech
@@ -51,7 +51,7 @@
 ```bash
 # Clone the repository
 git clone https://github.com/voipbin/voipbin.git
-cd voipbin/self-install
+cd voipbin/install
 ```
 
 ### First-Time Install (unprivileged, AI-agent friendly)
@@ -169,8 +169,8 @@ exported `COMPOSE_PROJECT_NAME` shell variable. **Neither of these reads
 affects them. A checkout at `voipbin/sandbox/` implicitly used the project
 name `sandbox`; Docker volumes (`sandbox_db_data`, etc.) and networks
 (`sandbox_default`) are named from it. A fresh checkout at
-`voipbin/self-install/` would default to the project name `self-install`
-instead, and every script would look for (or create) `self-install_*`
+`voipbin/install/` would default to the project name `install`
+instead, and every script would look for (or create) `install_*`
 volumes and networks, leaving your `sandbox_*` volumes untouched and
 seemingly "gone," even though the data is still on disk.
 
@@ -195,15 +195,15 @@ of its own).
    git clone https://github.com/voipbin/voipbin.git
    ```
 
-2. **Copy your existing state into `voipbin/self-install/` before running
+2. **Copy your existing state into `voipbin/install/` before running
    any script:**
 
    ```bash
-   cp /path/to/old/sandbox/.env voipbin/self-install/.env
-   cp -r /path/to/old/sandbox/certs voipbin/self-install/certs
+   cp /path/to/old/sandbox/.env voipbin/install/.env
+   cp -r /path/to/old/sandbox/certs voipbin/install/certs
    # If present in the old checkout:
-   cp /path/to/old/sandbox/config/dummy-gcp-credentials.json voipbin/self-install/config/ 2>/dev/null || true
-   cp /path/to/old/sandbox/.test_data_initialized voipbin/self-install/ 2>/dev/null || true
+   cp /path/to/old/sandbox/config/dummy-gcp-credentials.json voipbin/install/config/ 2>/dev/null || true
+   cp /path/to/old/sandbox/.test_data_initialized voipbin/install/ 2>/dev/null || true
    ```
 
 3. **Export `COMPOSE_PROJECT_NAME=sandbox`** in the shell you'll run the
@@ -449,7 +449,7 @@ switch on an existing install. Two supported escape hatches:
 
 ## Web Applications
 
-VoIPBin Self-Install includes three web applications for managing and using the platform.
+VoIPBin Install includes three web applications for managing and using the platform.
 
 ### Admin Console
 
@@ -492,7 +492,7 @@ Meet provides simple voice conferencing:
 
 ## Technical Architecture
 
-VoIPBin Self-Install orchestrates a microservices architecture with four core layers:
+VoIPBin Install orchestrates a microservices architecture with four core layers:
 
 | Layer | Components | Purpose |
 |-------|------------|---------|
@@ -700,13 +700,13 @@ If you prefer not to modify system DNS, add these entries to your hosts file:
 **Windows**: `C:\Windows\System32\drivers\etc\hosts`
 
 ```
-# VoIPBin Self-Install - Web Services (replace with your HOST_EXTERNAL_IP)
+# VoIPBin Install - Web Services (replace with your HOST_EXTERNAL_IP)
 192.168.1.100  api.voipbin.test
 192.168.1.100  admin.voipbin.test
 192.168.1.100  meet.voipbin.test
 192.168.1.100  talk.voipbin.test
 
-# VoIPBin Self-Install - SIP Services (replace with your KAMAILIO_EXTERNAL_IP)
+# VoIPBin Install - SIP Services (replace with your KAMAILIO_EXTERNAL_IP)
 192.168.1.108  sip.voipbin.test
 192.168.1.108  pstn.voipbin.test
 192.168.1.108  trunk.voipbin.test
@@ -994,7 +994,7 @@ voipbin> config reset              # Reset to defaults
 
 ## AI Voice Agents
 
-VoIPBin Self-Install includes a complete AI voice agent framework powered by **Pipecat** — enabling you to build conversational AI experiences over phone calls.
+VoIPBin Install includes a complete AI voice agent framework powered by **Pipecat** — enabling you to build conversational AI experiences over phone calls.
 
 ### Architecture
 

@@ -20,7 +20,7 @@ API_HOST="${API_HOST:-localhost}"
 API_PORT="${API_PORT:-8443}"
 
 echo -e "${GREEN}================================${NC}"
-echo -e "${GREEN}VoIPBin Self-Install Bootstrap Script${NC}"
+echo -e "${GREEN}VoIPBin Install Bootstrap Script${NC}"
 echo -e "${GREEN}================================${NC}"
 echo ""
 
@@ -209,7 +209,7 @@ else
     ACCESSKEY_RESPONSE=$(curl -sk -X POST "https://${API_HOST}:${API_PORT}/v1.0/accesskeys" \
         -H "Content-Type: application/json" \
         -H "Authorization: Bearer $TOKEN" \
-        -d "{\"name\": \"Self-Install API Key\", \"detail\": \"Auto-generated for local development\", \"expire\": $EXPIRE}" 2>&1)
+        -d "{\"name\": \"Install API Key\", \"detail\": \"Auto-generated for local development\", \"expire\": $EXPIRE}" 2>&1)
 
     API_TOKEN=$(echo "$ACCESSKEY_RESPONSE" | jq -r '.token' 2>/dev/null)
 

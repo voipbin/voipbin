@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-VoIPBin Self-Install Interactive CLI
+VoIPBin Install Interactive CLI
 
 An interactive command-line interface for managing VoIPBin sandbox,
 inspired by Asterisk CLI and Claude Code.
@@ -1896,7 +1896,7 @@ class VoIPBinCLI:
             return
 
         print(f"""
-{bold('VoIPBin Self-Install CLI')}
+{bold('VoIPBin Install CLI')}
 
 {blue('Service Commands:')}
   status, ps        Show service status
@@ -6683,7 +6683,7 @@ def setup_readline(cli):
 def show_cli_usage():
     """Show usage for command-line mode"""
     print(f"""
-{bold('VoIPBin Self-Install CLI')}
+{bold('VoIPBin Install CLI')}
 
 Usage:
   sudo ./voipbin                # Start interactive mode

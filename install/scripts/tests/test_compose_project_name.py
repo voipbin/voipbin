@@ -52,23 +52,23 @@ check(
 )
 check(
     "renamed checkout directory derives its own basename",
-    cli._compose_project_name("/tmp/self-install") == "self-install",
-    cli._compose_project_name("/tmp/self-install"),
+    cli._compose_project_name("/tmp/install") == "install",
+    cli._compose_project_name("/tmp/install"),
 )
 check(
     "uppercase basename is lowercased",
-    cli._compose_project_name("/tmp/Self-Install") == "self-install",
-    cli._compose_project_name("/tmp/Self-Install"),
+    cli._compose_project_name("/tmp/Install") == "install",
+    cli._compose_project_name("/tmp/Install"),
 )
 check(
     "leading dash is stripped after lowercasing",
-    cli._compose_project_name("/tmp/-Self-Install") == "self-install",
-    cli._compose_project_name("/tmp/-Self-Install"),
+    cli._compose_project_name("/tmp/-Install") == "install",
+    cli._compose_project_name("/tmp/-Install"),
 )
 check(
     "leading underscore is stripped",
-    cli._compose_project_name("/tmp/_self_install") == "self_install",
-    cli._compose_project_name("/tmp/_self_install"),
+    cli._compose_project_name("/tmp/_install") == "install",
+    cli._compose_project_name("/tmp/_install"),
 )
 check(
     "mixed-case with disallowed characters is filtered and stripped",

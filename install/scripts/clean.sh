@@ -1,5 +1,5 @@
 #!/bin/bash
-# VoIPBin Self-Install - Cleanup Script
+# VoIPBin Install - Cleanup Script
 # Removes volumes, network interfaces, DNS config, and generated files
 #
 # Usage: sudo ./voipbin clean [OPTIONS]
@@ -98,7 +98,7 @@ fi
 main() {
     echo ""
     echo "=============================================="
-    echo "  VoIPBin Self-Install - Cleanup"
+    echo "  VoIPBin Install - Cleanup"
     echo "=============================================="
 
     cd "$PROJECT_DIR"

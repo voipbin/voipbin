@@ -1,5 +1,5 @@
 #!/bin/bash
-# VoIPBin Self-Install - .env.template Drift Checker
+# VoIPBin Install - .env.template Drift Checker
 # Compares the variables the init scripts write into .env against the variables
 # documented in .env.template, and reports any difference in either direction.
 #
