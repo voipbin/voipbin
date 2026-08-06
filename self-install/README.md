@@ -56,7 +56,7 @@ cd voipbin/self-install
 
 ### First-Time Install (unprivileged, AI-agent friendly)
 
-This is the recommended path for a fresh install — it isolates the one
+This is the recommended path for a fresh install, since it isolates the one
 step that actually needs root (`setup-host.sh`):
 
 ```bash
@@ -72,7 +72,7 @@ instead of `voipbin.test`).
 ### Day-to-Day Operations: the `voipbin` CLI
 
 Once installed, `sudo ./voipbin` is the interactive command center for
-day-to-day operations — status, logs, restart, debug shells (`ast`, `kam`,
+day-to-day operations: status, logs, restart, debug shells (`ast`, `kam`,
 `db`, `api`), backup/restore, and version pinning/rollback (see
 [The Interactive CLI](#the-interactive-cli)). It wraps the same
 `scripts/*.sh` entry points used above.
@@ -147,10 +147,10 @@ voipbin(api)> get /v1.0/extensions
 ## Migrating from voipbin/sandbox
 
 If you have an existing `voipbin/sandbox` checkout that is already running
-(a live install with real data — customers, extensions, call history), do
+(a live install with real data: customers, extensions, call history), do
 **not** just clone this repo and re-run `init.sh` in the new location. That
 will generate a brand-new `.env` with fresh random credentials and, unless
-you take the steps below, a different Docker Compose project name — which
+you take the steps below, a different Docker Compose project name, which
 changes the derived volume and network names Docker uses to find your
 existing data.
 
@@ -165,17 +165,17 @@ the Compose project name in this order:
 
 This mirrors `docker compose`'s own resolution order, which also honors an
 exported `COMPOSE_PROJECT_NAME` shell variable. **Neither of these reads
-`COMPOSE_PROJECT_NAME` out of `.env`** — only an actual shell export
+`COMPOSE_PROJECT_NAME` out of `.env`**, only an actual shell export
 affects them. A checkout at `voipbin/sandbox/` implicitly used the project
 name `sandbox`; Docker volumes (`sandbox_db_data`, etc.) and networks
 (`sandbox_default`) are named from it. A fresh checkout at
 `voipbin/self-install/` would default to the project name `self-install`
 instead, and every script would look for (or create) `self-install_*`
-volumes and networks — leaving your `sandbox_*` volumes untouched and
+volumes and networks, leaving your `sandbox_*` volumes untouched and
 seemingly "gone," even though the data is still on disk.
 
 **Fix: export `COMPOSE_PROJECT_NAME=sandbox` in your shell** (not just in
-`.env` — these scripts do not read it from there) before running anything
+`.env`, since these scripts do not read it from there) before running anything
 in the new checkout:
 
 ```bash
@@ -211,12 +211,12 @@ of its own).
 
 4. **Do NOT run `./scripts/init.sh --yes`** on the copied `.env`. Reading
    `init.sh`'s `check_existing_env_compat()`: when the requested mode/domain
-   match what's already in `.env`, `--yes` silently overwrites it —
+   match what's already in `.env`, `--yes` silently overwrites it,
    including regenerating `JWT_KEY`, `MYSQL_ROOT_PASSWORD`,
    `RABBITMQ_DEFAULT_PASS`, `AMI_PASSWORD`, and `POSTGRES_PASSWORD` with
    brand-new random values. Those new values will not match the credentials
-   already baked into your existing database and RabbitMQ Docker volumes —
-   your services will fail to authenticate against your own (otherwise
+   already baked into your existing database and RabbitMQ Docker volumes,
+   so your services will fail to authenticate against your own (otherwise
    intact) data. There is no dedicated flag to skip credential rotation
    while still touching `.env`, so the correct move is to skip `init.sh`
    entirely once `.env` has been copied over.
@@ -230,14 +230,14 @@ of its own).
    ```
 
    `setup-host.sh` and `start.sh` are idempotent and probe existing state
-   (mkcert CA, DNS, the Docker network, VoIP interfaces) — they will not
+   (mkcert CA, DNS, the Docker network, VoIP interfaces), so they will not
    duplicate work already done by your old checkout, as long as
    `COMPOSE_PROJECT_NAME` resolves to the same value (`sandbox`) it always
    did.
 
-6. Run `./scripts/doctor.sh` if anything looks off — it is read-only and
+6. Run `./scripts/doctor.sh` if anything looks off (it is read-only and
    diagnoses install state at any stage, printing the exact recovery
-   command for each failure.
+   command for each failure).
 
 Once you've confirmed the migrated checkout is healthy, you can retire the
 old `voipbin/sandbox` directory (after your own backup of `.env`, `certs/`,
@@ -595,7 +595,7 @@ mkcert -install
 > | JWT Secret | Auto-generated in `.env` |
 >
 > The admin/extension credentials above are a dev/test seed account, off by default. It is only
-> created if you explicitly set `VOIPBIN_SANDBOX_DEV_SEED=true` in `.env` — never set this on an
+> created if you explicitly set `VOIPBIN_SANDBOX_DEV_SEED=true` in `.env`. Never set this on an
 > install reachable from the public internet.
 >
 > Before exposing this install beyond localhost, also review: TLS certificate mode (`TLS_MODE`),
