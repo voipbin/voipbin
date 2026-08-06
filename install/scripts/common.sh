@@ -564,7 +564,7 @@ write_resolv_conf_with_fallback() {
 # Compose Project Name Derivation
 # =============================================================================
 # Shared by setup-host.sh, setup-voip-network.sh, start.sh, and doctor.sh so a
-# renamed checkout directory (e.g. sandbox -> self-install) derives a
+# renamed checkout directory (e.g. sandbox -> install) derives a
 # consistent Compose project name everywhere, instead of some places
 # hardcoding the literal "sandbox".
 #

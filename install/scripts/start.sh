@@ -445,7 +445,7 @@ check_test_data_initialized() {
 # Test/dev seed data (admin@localhost account, extensions 1000/2000/3000 with
 # fixed passwords) is only created when explicitly opted into via
 # VOIPBIN_SANDBOX_DEV_SEED=true in .env. This is now the primary, documented
-# self-install path, including production use — auto-seeding known credentials
+# install path, including production use — auto-seeding known credentials
 # by default is not acceptable there.
 dev_seed_enabled() {
     [ "${VOIPBIN_SANDBOX_DEV_SEED:-false}" = "true" ]

@@ -1,5 +1,5 @@
 #!/bin/bash
-# VoIPBin Self-Install CLI wrapper
+# VoIPBin Install CLI wrapper
 # Delegates to scripts/voipbin-cli.py
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"

@@ -51,7 +51,7 @@
 ```bash
 # Clone the repository
 git clone https://github.com/voipbin/voipbin.git
-cd voipbin/self-install
+cd voipbin/install
 ```
 
 ### First-Time Install (unprivileged, AI-agent friendly)
@@ -169,8 +169,8 @@ exported `COMPOSE_PROJECT_NAME` shell variable. **Neither of these reads
 affects them. A checkout at `voipbin/sandbox/` implicitly used the project
 name `sandbox`; Docker volumes (`sandbox_db_data`, etc.) and networks
 (`sandbox_default`) are named from it. A fresh checkout at
-`voipbin/self-install/` would default to the project name `self-install`
-instead, and every script would look for (or create) `self-install_*`
+`voipbin/install/` would default to the project name `install`
+instead, and every script would look for (or create) `install_*`
 volumes and networks, leaving your `sandbox_*` volumes untouched and
 seemingly "gone," even though the data is still on disk.
 
@@ -195,15 +195,15 @@ of its own).
    git clone https://github.com/voipbin/voipbin.git
    ```
 
-2. **Copy your existing state into `voipbin/self-install/` before running
+2. **Copy your existing state into `voipbin/install/` before running
    any script:**
 
    ```bash
-   cp /path/to/old/sandbox/.env voipbin/self-install/.env
-   cp -r /path/to/old/sandbox/certs voipbin/self-install/certs
+   cp /path/to/old/sandbox/.env voipbin/install/.env
+   cp -r /path/to/old/sandbox/certs voipbin/install/certs
    # If present in the old checkout:
-   cp /path/to/old/sandbox/config/dummy-gcp-credentials.json voipbin/self-install/config/ 2>/dev/null || true
-   cp /path/to/old/sandbox/.test_data_initialized voipbin/self-install/ 2>/dev/null || true
+   cp /path/to/old/sandbox/config/dummy-gcp-credentials.json voipbin/install/config/ 2>/dev/null || true
+   cp /path/to/old/sandbox/.test_data_initialized voipbin/install/ 2>/dev/null || true
    ```
 
 3. **Export `COMPOSE_PROJECT_NAME=sandbox`** in the shell you'll run the

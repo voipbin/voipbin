@@ -21,25 +21,25 @@ teardown() {
 @test "derive_compose_project_name: derives from PROJECT_DIR basename when unset" {
     load_common
     unset COMPOSE_PROJECT_NAME
-    PROJECT_DIR="/tmp/self-install"
+    PROJECT_DIR="/tmp/install"
     result=$(derive_compose_project_name)
-    [ "$result" = "self-install" ]
+    [ "$result" = "install" ]
 }
 
 @test "derive_compose_project_name: normalizes uppercase and strips leading dash" {
     load_common
     unset COMPOSE_PROJECT_NAME
-    PROJECT_DIR="/tmp/-Self-Install"
+    PROJECT_DIR="/tmp/-Install"
     result=$(derive_compose_project_name)
-    [ "$result" = "self-install" ]
+    [ "$result" = "install" ]
 }
 
 @test "derive_compose_project_name: strips leading underscore" {
     load_common
     unset COMPOSE_PROJECT_NAME
-    PROJECT_DIR="/tmp/_self_install"
+    PROJECT_DIR="/tmp/_install"
     result=$(derive_compose_project_name)
-    [ "$result" = "self_install" ]
+    [ "$result" = "install" ]
 }
 
 @test "derive_compose_project_name: fails on invalid COMPOSE_PROJECT_NAME" {
