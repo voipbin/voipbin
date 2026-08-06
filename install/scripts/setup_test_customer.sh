@@ -13,9 +13,9 @@ API_HOST="${API_HOST:-localhost}"
 API_PORT="${API_PORT:-8443}"
 CUSTOMER_EMAIL="${CUSTOMER_EMAIL:-admin@localhost}"
 CUSTOMER_PASSWORD="${CUSTOMER_PASSWORD:-admin@localhost}"
-CUSTOMER_NAME="${CUSTOMER_NAME:-Self-Install Admin}"
+CUSTOMER_NAME="${CUSTOMER_NAME:-Install Admin}"
 
-echo "=== VoIPBin Self-Install Setup ==="
+echo "=== VoIPBin Install Setup ==="
 echo ""
 
 # 1. Check/Create customer
@@ -159,7 +159,7 @@ echo ""
 echo "Step 7: Creating API key..."
 ACCESSKEY_OUTPUT=$(docker exec voipbin-customer-mgr /app/bin/customer-control accesskey create \
     --customer-id "$CUSTOMER_ID" \
-    --name "Self-Install API Key" \
+    --name "Install API Key" \
     --detail "Auto-generated for testing" \
     --expire 87600h 2>&1 | grep -v severity || true)
 

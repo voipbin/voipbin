@@ -1,4 +1,4 @@
-# VoIPBin Self-Install (Docker Compose)
+# VoIPBin Install (Docker Compose)
 
 ```
           ████████          
@@ -16,7 +16,7 @@
 
 **Your Private AI-Powered CPaaS Laboratory** — A complete Docker Compose environment for building AI voice agents and communications applications. Deploy 25+ microservices with built-in AI capabilities: real-time speech-to-text, text-to-speech, LLM-powered conversations, and programmable voice workflows.
 
-### Why VoIPBin Self-Install?
+### Why VoIPBin Install?
 
 - **AI Voice Agents** — Build conversational AI agents with OpenAI, Deepgram, ElevenLabs, and Cartesia
 - **Real-time Transcription** — Live speech-to-text during calls with AWS Transcribe or Google Speech
@@ -449,7 +449,7 @@ switch on an existing install. Two supported escape hatches:
 
 ## Web Applications
 
-VoIPBin Self-Install includes three web applications for managing and using the platform.
+VoIPBin Install includes three web applications for managing and using the platform.
 
 ### Admin Console
 
@@ -492,7 +492,7 @@ Meet provides simple voice conferencing:
 
 ## Technical Architecture
 
-VoIPBin Self-Install orchestrates a microservices architecture with four core layers:
+VoIPBin Install orchestrates a microservices architecture with four core layers:
 
 | Layer | Components | Purpose |
 |-------|------------|---------|
@@ -700,13 +700,13 @@ If you prefer not to modify system DNS, add these entries to your hosts file:
 **Windows**: `C:\Windows\System32\drivers\etc\hosts`
 
 ```
-# VoIPBin Self-Install - Web Services (replace with your HOST_EXTERNAL_IP)
+# VoIPBin Install - Web Services (replace with your HOST_EXTERNAL_IP)
 192.168.1.100  api.voipbin.test
 192.168.1.100  admin.voipbin.test
 192.168.1.100  meet.voipbin.test
 192.168.1.100  talk.voipbin.test
 
-# VoIPBin Self-Install - SIP Services (replace with your KAMAILIO_EXTERNAL_IP)
+# VoIPBin Install - SIP Services (replace with your KAMAILIO_EXTERNAL_IP)
 192.168.1.108  sip.voipbin.test
 192.168.1.108  pstn.voipbin.test
 192.168.1.108  trunk.voipbin.test
@@ -994,7 +994,7 @@ voipbin> config reset              # Reset to defaults
 
 ## AI Voice Agents
 
-VoIPBin Self-Install includes a complete AI voice agent framework powered by **Pipecat** — enabling you to build conversational AI experiences over phone calls.
+VoIPBin Install includes a complete AI voice agent framework powered by **Pipecat** — enabling you to build conversational AI experiences over phone calls.
 
 ### Architecture
 

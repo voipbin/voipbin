@@ -1,5 +1,5 @@
 #!/bin/bash
-# VoIPBin Self-Install - Start Script
+# VoIPBin Install - Start Script
 # Orchestrates the full startup process with dependency and environment checks
 #
 # Usage: sudo ./voipbin start
@@ -558,7 +558,7 @@ setup_test_customer() {
     local api_port="8443"
     local customer_email="admin@localhost"
     local customer_password="admin@localhost"
-    local customer_name="Self-Install Admin"
+    local customer_name="Install Admin"
 
     # Step 1: Create customer via CLI
     # agent-manager will auto-create an admin agent with a random unusable password
@@ -677,7 +677,7 @@ setup_test_customer() {
     local accesskey_output
     accesskey_output=$(docker exec voipbin-customer-mgr /app/bin/customer-control accesskey create \
         --customer-id "$CUSTOMER_ID" \
-        --name "Self-Install API Key" \
+        --name "Install API Key" \
         --detail "Default API key for sandbox testing" \
         --expire 87600h 2>&1 | grep -v severity || true)
     # Extract the token from the output (format: "token: <token>")
@@ -718,7 +718,7 @@ main() {
 
     echo ""
     echo "=============================================="
-    echo "  VoIPBin Self-Install - Startup"
+    echo "  VoIPBin Install - Startup"
     echo "=============================================="
 
     # Stale-.env / COMPOSE_PROFILES conflict guard (§2.5/§6). Must run before
