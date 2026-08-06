@@ -1,0 +1,1587 @@
+# Default log rotation for every service: without this, docker's json-file
+# driver grows without bound and eventually fills the disk on a long-lived
+# single-server deployment.
+x-logging: &default-logging
+  driver: json-file
+  options:
+    max-size: "10m"
+    max-file: "3"
+
+services:
+  # ===========================================================================
+  # Infrastructure Services
+  # ===========================================================================
+
+  # Database (Vanilla MySQL - run ./scripts/init_database.sh to initialize schema)
+  db:
+    image: mysql:8.0
+    container_name: voipbin-db
+    restart: always
+    logging: *default-logging
+    ports:
+      - "3306:3306"
+    environment:
+      - MYSQL_ROOT_PASSWORD=${MYSQL_ROOT_PASSWORD}
+    volumes:
+      - db_data:/var/lib/mysql
+    healthcheck:
+      test: ["CMD", "mysqladmin", "ping", "-h", "localhost", "-uroot", "-p${MYSQL_ROOT_PASSWORD}"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+      start_period: 30s
+
+  redis:
+    image: redis:alpine
+    container_name: voipbin-redis
+    restart: always
+    logging: *default-logging
+    command: ["redis-server", "--appendonly", "yes"]
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+
+  rabbitmq:
+    image: rabbitmq:3-management-alpine
+    # Fixed hostname: RabbitMQ keys its mnesia data dir as rabbit@<hostname>.
+    # Without this pin, every container recreate gets a new container-id
+    # hostname and ORPHANS the persisted data in rabbitmq_data.
+    hostname: voipbin-rabbitmq
+    restart: always
+    logging: *default-logging
+    ports:
+      - "5672:5672"
+      - "15672:15672"
+    # Delayed-message plugin lives in a host bind dir (config/rabbitmq/plugins)
+    # mounted at a SEPARATE path and added via RABBITMQ_PLUGINS_DIR, so:
+    # - container recreate does NOT re-download (offline-safe)
+    # - image upgrades are NOT shadowed by a stale named volume over /plugins
+    entrypoint: >
+      /bin/sh -c "
+      if [ ! -f /opt/rabbitmq-extra-plugins/rabbitmq_delayed_message_exchange-3.13.0.ez ]; then
+        rm -f /opt/rabbitmq-extra-plugins/rabbitmq_delayed_message_exchange-*.ez 2>/dev/null;
+        wget -P /opt/rabbitmq-extra-plugins/ https://github.com/rabbitmq/rabbitmq-delayed-message-exchange/releases/download/v3.13.0/rabbitmq_delayed_message_exchange-3.13.0.ez;
+      fi;
+      rabbitmq-plugins enable --offline rabbitmq_delayed_message_exchange;
+      exec docker-entrypoint.sh rabbitmq-server
+      "
+    environment:
+      - RABBITMQ_DEFAULT_USER=${RABBITMQ_DEFAULT_USER}
+      - RABBITMQ_DEFAULT_PASS=${RABBITMQ_DEFAULT_PASS}
+      - RABBITMQ_PLUGINS_DIR=/opt/rabbitmq/plugins:/opt/rabbitmq-extra-plugins
+    volumes:
+      - rabbitmq_data:/var/lib/rabbitmq
+      - ./config/rabbitmq/plugins:/opt/rabbitmq-extra-plugins
+    healthcheck:
+      test: ["CMD", "rabbitmq-diagnostics", "-q", "ping"]
+      interval: 10s
+      timeout: 10s
+      retries: 5
+      start_period: 30s
+
+  # PostgreSQL + pgvector - rag-manager's vector store.
+  #
+  # rag-manager runs its own golang-migrate at startup and its first migration
+  # opens with `CREATE EXTENSION IF NOT EXISTS vector`, which needs superuser —
+  # POSTGRES_USER is the initdb superuser, so connecting as `voipbin` satisfies
+  # that. No sandbox-side migration tooling is needed.
+  #
+  # Deliberately NOT published to the host, unlike db/redis/rabbitmq: those three
+  # predate this stack and operators exec/debug against them, whereas postgres is
+  # a single-consumer backing store for rag-manager and keeping it unpublished
+  # shrinks the surface. For troubleshooting use the docker exec form:
+  #   docker exec -it voipbin-postgres psql -U voipbin -d rag
+  postgres:
+    image: pgvector/pgvector:pg16@sha256:a36250871de0833b8757561c72f2477ef1ddd1101afa4e617fb552e0de514c6b
+    container_name: voipbin-postgres
+    restart: always
+    logging: *default-logging
+    environment:
+      - POSTGRES_USER=voipbin
+      - POSTGRES_PASSWORD=${POSTGRES_PASSWORD}
+      - POSTGRES_DB=rag
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U voipbin -d rag"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+      start_period: 30s
+
+  # ClickHouse - timeline-manager's analytics backend (its only consumer).
+  #
+  # timeline-manager runs its own migrations at boot and a migration failure is
+  # fatal, so its depends_on gate on this service is required, not cosmetic.
+  # Native protocol on 9000 (clickhouse-go/v2); 8123 is the HTTP port used only
+  # by the healthcheck here. Not published to the host, same rationale as
+  # postgres above.
+  clickhouse:
+    image: clickhouse/clickhouse-server:24.8@sha256:1ffa82edee000a42c09313bd9f1293d94c570aee74babc1b3ca9983a35fa597b
+    container_name: voipbin-clickhouse
+    restart: always
+    logging: *default-logging
+    environment:
+      # Without this, the official image's entrypoint writes a users.d override
+      # restricting the `default` user to localhost, and timeline-manager's
+      # cross-container connection is rejected with code 516 (auth failed) -
+      # fatal at its boot-time migration, so it crash-loops. timeline-manager
+      # builds its DSN from CLICKHOUSE_ADDRESS alone (no user/password config
+      # exists in that service), so a passwordless network-accessible `default`
+      # user is the only workable shape. Acceptable here: the port is not
+      # published to the host and the service is compose-network-internal,
+      # matching the sandbox's existing local-dev credential posture.
+      - CLICKHOUSE_SKIP_USER_SETUP=1
+    # ClickHouse wants a raised nofile limit; without this it warns loudly and
+    # caps its connection handling on hosts with a low default.
+    ulimits:
+      nofile:
+        soft: 262144
+        hard: 262144
+    volumes:
+      - clickhouse_data:/var/lib/clickhouse
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q -O - http://127.0.0.1:8123/ping | grep -q Ok"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 30s
+
+  # CoreDNS - Wildcard DNS for *.voipbin.test
+  # Resolves all voipbin.test domains to the host IP
+  # Also forwards other queries to upstream DNS (8.8.8.8)
+  # Note: Corefile is generated by start.sh before container starts
+  #
+  # DNS is accessible from:
+  #   - localhost (127.0.0.1:53) - for local machine via resolv.conf
+  #   - LAN (HOST_EXTERNAL_IP:53) - for SIP devices on the network
+  coredns:
+    image: coredns/coredns:latest
+    logging: *default-logging
+    container_name: voipbin-dns
+    # Internal mode only: .env sets COMPOSE_PROFILES=internal-dns (empty in
+    # external mode, where DNS is operator-managed) — dual-mode DNS, VOIP-1275.
+    profiles: ["internal-dns"]
+    restart: always
+    ports:
+      # Localhost - for local machine (resolv.conf points here)
+      - "127.0.0.1:53:53/udp"
+      - "127.0.0.1:53:53/tcp"
+      # LAN - for SIP devices on the network
+      - "${HOST_EXTERNAL_IP:-0.0.0.0}:53:53/udp"
+      - "${HOST_EXTERNAL_IP:-0.0.0.0}:53:53/tcp"
+    volumes:
+      - ./config/coredns/Corefile:/Corefile:ro
+    command: ["-conf", "/Corefile"]
+
+  # ===========================================================================
+  # SIP Edge Layer (Kamailio + RTPEngine)
+  # ===========================================================================
+
+  # RTPEngine - Media proxy for RTP/SRTP handling
+  # Uses host network for optimal media performance
+  rtpengine:
+    image: voipbin/voip-rtpengine@sha256:795adc2c6232af184267e6d4fc21ce87c32c285333a27273885ebe4a32c508de
+    logging: *default-logging
+    restart: unless-stopped
+    network_mode: host
+    environment:
+      - RTPENGINE_INTERFACE_MODE=manual
+      # Interface format: pub/<external-ip>;priv/<internal-ip>
+      # External: RTPEngine's dedicated external IP for RTP media traffic
+      # Internal: RTPEngine's own IP on internal network (setup via scripts/setup-voip-network.sh)
+      - RTPENGINE_INTERFACE=pub/${RTPENGINE_EXTERNAL_IP:-127.0.0.1};priv/10.100.0.201
+      - RTPENGINE_LISTEN_HTTP=${RTPENGINE_LISTEN_HTTP:-9101}
+      - RTPENGINE_LISTEN_CLI=127.0.0.1:2220
+      - RTPENGINE_PORT_MIN=${RTPENGINE_PORT_MIN:-20000}
+      - RTPENGINE_PORT_MAX=${RTPENGINE_PORT_MAX:-30000}
+      - RTPENGINE_TIMEOUT=60
+      - RTPENGINE_SILENT_TIMEOUT=3600
+      - RTPENGINE_LOG_LEVEL=6
+      - RTPENGINE_NUM_THREADS=4
+      - RTPENGINE_TOS=184
+    volumes:
+      - rtpengine-logs:/var/log/rtpengine
+      - rtpengine-run:/var/run/rtpengine
+    cap_add:
+      - NET_ADMIN
+      - NET_RAW
+      - SYS_NICE
+    ulimits:
+      nofile:
+        soft: 65536
+        hard: 65536
+    healthcheck:
+      test: ["CMD-SHELL", "curl -sf http://127.0.0.1:9101/ping || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+
+  # Kamailio SIP proxy - uses host network for SIP/RTP
+  # Config is generated at startup via environment variables
+  kamailio:
+    image: voipbin/voip-kamailio@sha256:68657d319fa71169e0709f9712467a6916f76c02be7f5c10028737fc78fcee93
+    container_name: voipbin-kamailio
+    restart: unless-stopped
+    network_mode: host
+    user: root  # Needed to create /config directory
+    volumes:
+      - kamailio-logs:/var/log/kamailio
+      - ${CERTS_PATH:-./certs}:/certs:ro
+    environment:
+      # Domain configuration
+      - BASE_DOMAIN=${BASE_DOMAIN:-voipbin.test}
+      # Network addresses
+      # EXTERNAL: Kamailio's dedicated external IP for SIP traffic (different from host IP)
+      # INTERNAL: Kamailio's own IP on internal network (setup via scripts/setup-voip-network.sh)
+      - KAMAILIO_EXTERNAL_LB_ADDR=${KAMAILIO_EXTERNAL_IP:-127.0.0.1}
+      - KAMAILIO_INTERNAL_LB_ADDR=10.100.0.200
+      - KAMAILIO_INTERNAL_ADDR=10.100.0.200
+      # Database for SIP authentication
+      # Kamailio runs on network_mode: host, so it cannot resolve compose
+      # service-name DNS (127.0.0.11) and must reach db/redis via a routable
+      # host/IP with the port published on the host. Default (127.0.0.1)
+      # preserves today's single-node behavior; operators splitting the state
+      # layer onto a separate host override KAMAILIO_DB_HOST/KAMAILIO_REDIS_HOST
+      # in .env instead of editing compose (Phase 1, address externalization).
+      - KAMAILIO_AUTH_DB_URL=mysql://root:${MYSQL_ROOT_PASSWORD}@${KAMAILIO_DB_HOST:-127.0.0.1}:3306/bin_manager
+      - KAMAILIO_AUTH_USER_COLUMN=username
+      - KAMAILIO_AUTH_DOMAIN_COLUMN=realm
+      - KAMAILIO_AUTH_PASSWORD_COLUMN=password
+      # Asterisk backends - using internal network with static IPs
+      - ASTERISK_CALL_LB_ADDR=10.100.0.210:5060
+      - ASTERISK_REGISTRAR_LB_ADDR=10.100.0.211:5060
+      - ASTERISK_LISTEN_PORT=5060
+      # RTPEngine WebSocket endpoint (on host network)
+      - RTPENGINE_SOCKS=ws://127.0.0.1:9101/ng
+      # Monitoring
+      - HOMER_URI=${HOMER_URI:-sip:127.0.0.1:9060}
+      # Redis for cache (exposed on host port 6379). See KAMAILIO_DB_HOST note above.
+      - REDIS_CACHE_ADDRESS=${KAMAILIO_REDIS_HOST:-127.0.0.1}
+      # PSTN whitelist - defaults to host IP so local PSTN-style calls work
+      - PSTN_WHITELIST_IPS=${PSTN_WHITELIST_IPS:-${HOST_EXTERNAL_IP:-127.0.0.1}}
+    depends_on:
+      rtpengine:
+        condition: service_healthy
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "/usr/bin/pgrep", "kamailio"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 40s
+    logging: *default-logging
+
+  # ===========================================================================
+  # Asterisk Media Servers
+  # ===========================================================================
+
+  # Asterisk Call Server - handles call routing and media
+  asterisk-call:
+    image: voipbin/voip-asterisk-call@sha256:b32ac7a4f52381b13906d3e60f1acd32b52ef709bcb701452418b9f68d52c8f1
+    logging: *default-logging
+    container_name: voipbin-ast-call
+    restart: unless-stopped
+    hostname: voipbin-ast-call
+    command: /k8s_start.sh
+    networks:
+      default:
+        ipv4_address: 10.100.0.210
+    environment:
+      # Kamailio outbound proxy address for routing calls through SIP proxy
+      # Use Kamailio's IP on the internal network (setup via scripts/setup-voip-network.sh)
+      - KAMAILIO_INTERNAL_LB_ADDRESS=10.100.0.200
+    healthcheck:
+      test: ["CMD", "asterisk", "-rx", "core show help"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
+    volumes:
+      - asterisk-call-recording:/var/spool/asterisk/recording
+    ports:
+      # RTP ports for direct media (when not using RTPEngine)
+      - "10000-10050:10000-10050/udp"
+    depends_on:
+      db:
+        condition: service_healthy
+      rabbitmq:
+        condition: service_healthy
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+
+  # Asterisk-to-RabbitMQ proxy (ARI/AMI bridge) for Call server
+  #
+  # IMPORTANT (VOIP-1237): network_mode: "service:asterisk-call" attaches this
+  # container to asterisk-call's kernel network namespace ONCE, at this
+  # container's own start time. It is NOT re-resolved dynamically. If
+  # asterisk-call is restarted alone (docker compose restart asterisk-call /
+  # docker restart), Docker gives it a brand-new namespace, but this proxy
+  # stays bound to the OLD, now-orphaned one — localhost:8088 (ARI) then
+  # resolves to nothing and the proxy never recovers on its own. Always
+  # restart this service TOGETHER with asterisk-call (see scripts/voipbin-cli.py
+  # cmd_restart, which enforces this pairing automatically). Never restart
+  # asterisk-call in isolation.
+  asterisk-call-proxy:
+    image: voipbin/voip-asterisk-proxy@sha256:be76507cb26cca237e5031e26019601579d6c35013d5d499a6e9128cbfbaade4
+    logging: *default-logging
+    restart: unless-stopped
+    network_mode: "service:asterisk-call"
+    command: ./asterisk-proxy
+    depends_on:
+      asterisk-call:
+        condition: service_healthy
+    environment:
+      - TARGET_SERVICE=call
+      - AMI_EVENT_FILTER=
+      - AMI_HOST=127.0.0.1
+      - AMI_PASSWORD=${AMI_PASSWORD}
+      - AMI_PORT=5038
+      - AMI_USERNAME=${AMI_USERNAME}
+      - ARI_ACCOUNT=${AMI_USERNAME}:${AMI_PASSWORD}
+      - ARI_ADDRESS=localhost:8088
+      - ARI_APPLICATION=voipbin
+      - ARI_SUBSCRIBE_ALL=true
+      - ASTERISK_ID=${ASTERISK_CALL_ID:-voipbin-ast-call}
+      - PROMETHEUS_ENDPOINT=/metrics
+      - PROMETHEUS_LISTEN_ADDRESS=:2113
+      - RABBITMQ_ADDRESS=amqp://${RABBITMQ_DEFAULT_USER}:${RABBITMQ_DEFAULT_PASS}@${RABBITMQ_HOST:-rabbitmq}:${RABBITMQ_PORT:-5672}
+      - RABBITMQ_QUEUE_LISTEN=asterisk.call.request
+      - RECORDING_ASTERISK_DIRECTORY=/var/spool/asterisk/recording
+      - RECORDING_BUCKET_DIRECTORY=recording
+      - RECORDING_BUCKET_NAME=${GCP_BUCKET_NAME_MEDIA:-voipbin-voip-media-bucket}
+      - REDIS_ADDRESS=${REDIS_HOST:-redis}:${REDIS_PORT:-6379}
+      - REDIS_DATABASE=1
+      - REDIS_PASSWORD=
+      - KUBERNETES_DISABLED=true
+    volumes:
+      - asterisk-call-recording:/var/spool/asterisk/recording
+
+  # Asterisk Conference Server - handles conference/confbridge calls
+  asterisk-conference:
+    image: voipbin/voip-asterisk-conference@sha256:9373e55da26ae4da02250543e94a5d1918e3cc7bda197c98ed712c21919a6780
+    logging: *default-logging
+    restart: unless-stopped
+    hostname: voipbin-ast-conf
+    command: /k8s_start.sh
+    networks:
+      default:
+        ipv4_address: 10.100.0.212
+    healthcheck:
+      test: ["CMD", "asterisk", "-rx", "core show help"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
+    volumes:
+      - asterisk-conf-recording:/var/spool/asterisk/recording
+    ports:
+      # RTP ports for conference media
+      - "10100-10150:10100-10150/udp"
+    depends_on:
+      db:
+        condition: service_healthy
+      rabbitmq:
+        condition: service_healthy
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+
+  # Asterisk-to-RabbitMQ proxy (ARI/AMI bridge) for Conference server
+  # IMPORTANT (VOIP-1237): shares asterisk-conference's network namespace via
+  # network_mode: "service:". See the identical note on asterisk-call-proxy
+  # above — always restart together with asterisk-conference, never alone.
+  asterisk-conference-proxy:
+    image: voipbin/voip-asterisk-proxy@sha256:be76507cb26cca237e5031e26019601579d6c35013d5d499a6e9128cbfbaade4
+    logging: *default-logging
+    restart: unless-stopped
+    network_mode: "service:asterisk-conference"
+    command: ./asterisk-proxy
+    depends_on:
+      asterisk-conference:
+        condition: service_healthy
+    environment:
+      - TARGET_SERVICE=conference
+      - AMI_EVENT_FILTER=
+      - AMI_HOST=127.0.0.1
+      - AMI_PASSWORD=${AMI_PASSWORD}
+      - AMI_PORT=5038
+      - AMI_USERNAME=${AMI_USERNAME}
+      - ARI_ACCOUNT=${AMI_USERNAME}:${AMI_PASSWORD}
+      - ARI_ADDRESS=localhost:8088
+      - ARI_APPLICATION=voipbin
+      - ARI_SUBSCRIBE_ALL=true
+      - ASTERISK_ID=${ASTERISK_CONF_ID:-voipbin-ast-conf}
+      - PROMETHEUS_ENDPOINT=/metrics
+      - PROMETHEUS_LISTEN_ADDRESS=:2113
+      - RABBITMQ_ADDRESS=amqp://${RABBITMQ_DEFAULT_USER}:${RABBITMQ_DEFAULT_PASS}@${RABBITMQ_HOST:-rabbitmq}:${RABBITMQ_PORT:-5672}
+      - RABBITMQ_QUEUE_LISTEN=asterisk.conference.request
+      - RECORDING_ASTERISK_DIRECTORY=/var/spool/asterisk/recording
+      - RECORDING_BUCKET_DIRECTORY=recording
+      - RECORDING_BUCKET_NAME=${GCP_BUCKET_NAME_MEDIA:-voipbin-voip-media-bucket}
+      - REDIS_ADDRESS=${REDIS_HOST:-redis}:${REDIS_PORT:-6379}
+      - REDIS_DATABASE=1
+      - REDIS_PASSWORD=
+      - KUBERNETES_DISABLED=true
+    volumes:
+      - asterisk-conf-recording:/var/spool/asterisk/recording
+
+  # Asterisk Registrar Server - handles SIP registration for extensions
+  asterisk-registrar:
+    image: voipbin/voip-asterisk-registrar@sha256:8e008c0704c9eee46e2675e69cbc9766fd1f5bdaebd58ecd029a2a135ea42466
+    logging: *default-logging
+    container_name: voipbin-ast-registrar
+    restart: unless-stopped
+    hostname: voipbin-ast-registrar
+    command: /start.sh
+    networks:
+      default:
+        ipv4_address: 10.100.0.211
+    environment:
+      - DATABASE_ASTERISK_HOST=${DB_HOST:-db}
+      - DATABASE_ASTERISK_PORT=3306
+      - DATABASE_ASTERISK_DATABASE=asterisk
+      - DATABASE_ASTERISK_USERNAME=root
+      - DATABASE_ASTERISK_PASSWORD=${MYSQL_ROOT_PASSWORD}
+    healthcheck:
+      test: ["CMD", "asterisk", "-rx", "core show help"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
+    ports:
+      # RTP ports for registrar media
+      - "10200-10250:10200-10250/udp"
+    depends_on:
+      db:
+        condition: service_healthy
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+
+  # Asterisk-to-RabbitMQ proxy (ARI/AMI bridge) for Registrar server
+  # IMPORTANT (VOIP-1237): shares asterisk-registrar's network namespace via
+  # network_mode: "service:". See the identical note on asterisk-call-proxy
+  # above — always restart together with asterisk-registrar, never alone.
+  asterisk-registrar-proxy:
+    image: voipbin/voip-asterisk-proxy@sha256:be76507cb26cca237e5031e26019601579d6c35013d5d499a6e9128cbfbaade4
+    logging: *default-logging
+    restart: unless-stopped
+    network_mode: "service:asterisk-registrar"
+    command: ./asterisk-proxy
+    depends_on:
+      asterisk-registrar:
+        condition: service_healthy
+      rabbitmq:
+        condition: service_healthy
+    environment:
+      - TARGET_SERVICE=registrar
+      - AMI_EVENT_FILTER=
+      - AMI_HOST=127.0.0.1
+      - AMI_PASSWORD=${AMI_PASSWORD}
+      - AMI_PORT=5038
+      - AMI_USERNAME=${AMI_USERNAME}
+      - ARI_ACCOUNT=${AMI_USERNAME}:${AMI_PASSWORD}
+      - ARI_ADDRESS=localhost:8088
+      - ARI_APPLICATION=voipbin
+      - ARI_SUBSCRIBE_ALL=true
+      - ASTERISK_ID=${ASTERISK_REGISTRAR_ID:-voipbin-ast-registrar}
+      - PROMETHEUS_ENDPOINT=/metrics
+      - PROMETHEUS_LISTEN_ADDRESS=:2113
+      - RABBITMQ_ADDRESS=amqp://${RABBITMQ_DEFAULT_USER}:${RABBITMQ_DEFAULT_PASS}@${RABBITMQ_HOST:-rabbitmq}:${RABBITMQ_PORT:-5672}
+      - RABBITMQ_QUEUE_LISTEN=asterisk.registrar.request
+      - REDIS_ADDRESS=${REDIS_HOST:-redis}:${REDIS_PORT:-6379}
+      - REDIS_DATABASE=1
+      - REDIS_PASSWORD=
+      - KUBERNETES_DISABLED=true
+
+  # ===========================================================================
+  # Backend Manager Services
+  # ===========================================================================
+
+  agent-manager:
+    image: voipbin/bin-agent-manager@sha256:c225f5b4884e51f484944ec45e668a56a1c2f9219703e9c13b1e459a8efdaabe
+    logging: *default-logging
+    healthcheck:
+      test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://127.0.0.1:2112/metrics"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 20s
+    container_name: voipbin-agent-mgr
+    restart: always
+    depends_on:
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      rabbitmq:
+        condition: service_healthy
+    environment:
+      - DATABASE_DSN=root:${MYSQL_ROOT_PASSWORD}@tcp(${DB_HOST:-db}:${DB_PORT:-3306})/bin_manager
+      - RABBITMQ_ADDRESS=amqp://${RABBITMQ_DEFAULT_USER}:${RABBITMQ_DEFAULT_PASS}@${RABBITMQ_HOST:-rabbitmq}:${RABBITMQ_PORT:-5672}
+      - REDIS_ADDRESS=${REDIS_HOST:-redis}:${REDIS_PORT:-6379}
+      - REDIS_DATABASE=1
+      - PROMETHEUS_ENDPOINT=/metrics
+      - PROMETHEUS_LISTEN_ADDRESS=:2112
+    command: ./agent-manager
+
+  ai-manager:
+    image: voipbin/bin-ai-manager@sha256:cb3e370d0d32aa2e7fc91ebc47e497f20baa27a3b76796ae7e972cd3fdd473d0
+    logging: *default-logging
+    healthcheck:
+      test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://127.0.0.1:2112/metrics"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 20s
+    restart: always
+    depends_on:
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      rabbitmq:
+        condition: service_healthy
+    environment:
+      - DATABASE_DSN=root:${MYSQL_ROOT_PASSWORD}@tcp(${DB_HOST:-db}:${DB_PORT:-3306})/bin_manager
+      - RABBITMQ_ADDRESS=amqp://${RABBITMQ_DEFAULT_USER}:${RABBITMQ_DEFAULT_PASS}@${RABBITMQ_HOST:-rabbitmq}:${RABBITMQ_PORT:-5672}
+      - REDIS_ADDRESS=${REDIS_HOST:-redis}:${REDIS_PORT:-6379}
+      - REDIS_DATABASE=1
+      - PROMETHEUS_ENDPOINT=/metrics
+      - PROMETHEUS_LISTEN_ADDRESS=:2112
+      - ENGINE_KEY_CHATGPT=${OPENAI_API_KEY:-}
+    command: ./ai-manager
+
+  api-manager:
+    image: voipbin/bin-api-manager@sha256:ff89e274b9afe3fe455ca1e978b7d3d34525d6323c2ad62d05320a5945fdcac1
+    logging: *default-logging
+    healthcheck:
+      test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://127.0.0.1:2112/metrics"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 20s
+    container_name: voipbin-api-mgr
+    restart: always
+    depends_on:
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      rabbitmq:
+        condition: service_healthy
+    networks:
+      - default
+    environment:
+      - DATABASE_DSN=root:${MYSQL_ROOT_PASSWORD}@tcp(${DB_HOST:-db}:${DB_PORT:-3306})/bin_manager
+      - RABBITMQ_ADDRESS=amqp://${RABBITMQ_DEFAULT_USER}:${RABBITMQ_DEFAULT_PASS}@${RABBITMQ_HOST:-rabbitmq}:${RABBITMQ_PORT:-5672}
+      - REDIS_ADDRESS=${REDIS_HOST:-redis}:${REDIS_PORT:-6379}
+      - REDIS_DATABASE=1
+      - PROMETHEUS_ENDPOINT=/metrics
+      - PROMETHEUS_LISTEN_ADDRESS=:2112
+      - SSL_CERT_BASE64=${API_SSL_CERT_BASE64:-}
+      - SSL_PRIVKEY_BASE64=${API_SSL_PRIVKEY_BASE64:-}
+      - GCP_PROJECT_ID=${GCP_PROJECT_ID:-}
+      - GCP_BUCKET_NAME=${GCP_BUCKET_NAME_TMP:-}
+      - JWT_KEY=${JWT_KEY:-${STORAGE_JWT_KEY:-}}
+      - GOOGLE_APPLICATION_CREDENTIALS=/tmp/google_service_account.json
+    ports:
+      - "0.0.0.0:8443:443"
+    volumes:
+      - ${GOOGLE_APPLICATION_CREDENTIALS:-./config/dummy-gcp-credentials.json}:/tmp/google_service_account.json:ro
+    command: ./api-manager
+
+  billing-manager:
+    image: voipbin/bin-billing-manager@sha256:abf4efa53177986f39aeba496008fff1958573b86278db31fb5dbdde278b6333
+    logging: *default-logging
+    healthcheck:
+      test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://127.0.0.1:2112/metrics"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 20s
+    container_name: voipbin-billing-mgr
+    restart: always
+    depends_on:
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      rabbitmq:
+        condition: service_healthy
+    environment:
+      - DATABASE_DSN=root:${MYSQL_ROOT_PASSWORD}@tcp(${DB_HOST:-db}:${DB_PORT:-3306})/bin_manager
+      - RABBITMQ_ADDRESS=amqp://${RABBITMQ_DEFAULT_USER}:${RABBITMQ_DEFAULT_PASS}@${RABBITMQ_HOST:-rabbitmq}:${RABBITMQ_PORT:-5672}
+      - REDIS_ADDRESS=${REDIS_HOST:-redis}:${REDIS_PORT:-6379}
+      - REDIS_DATABASE=1
+      - PROMETHEUS_ENDPOINT=/metrics
+      - PROMETHEUS_LISTEN_ADDRESS=:2112
+    command: ./billing-manager
+
+  call-manager:
+    image: voipbin/bin-call-manager@sha256:d17e5dadd1cafa97f681ed676a4a92cfc385e4c6bfe048e86e45390197ad74b0
+    logging: *default-logging
+    healthcheck:
+      test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://127.0.0.1:2112/metrics"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 20s
+    container_name: voipbin-call-mgr
+    restart: always
+    depends_on:
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      rabbitmq:
+        condition: service_healthy
+      asterisk-call-proxy:
+        condition: service_started
+    environment:
+      - DATABASE_DSN=root:${MYSQL_ROOT_PASSWORD}@tcp(${DB_HOST:-db}:${DB_PORT:-3306})/bin_manager
+      - RABBITMQ_ADDRESS=amqp://${RABBITMQ_DEFAULT_USER}:${RABBITMQ_DEFAULT_PASS}@${RABBITMQ_HOST:-rabbitmq}:${RABBITMQ_PORT:-5672}
+      - REDIS_ADDRESS=${REDIS_HOST:-redis}:${REDIS_PORT:-6379}
+      - REDIS_DATABASE=1
+      - PROMETHEUS_ENDPOINT=/metrics
+      - PROMETHEUS_LISTEN_ADDRESS=:2112
+      # Project configuration (from common-handler/pkg/projectconfig)
+      - PROJECT_BASE_DOMAIN=${BASE_DOMAIN:-voipbin.test}
+      - PROJECT_BUCKET_NAME=${GCP_BUCKET_NAME_MEDIA:-voipbin-voip-media-bucket}
+      - HOMER_API_ADDRESS=${HOMER_API_ADDRESS:-}
+      - HOMER_AUTH_TOKEN=${HOMER_AUTH_TOKEN:-}
+      - HOMER_WHITELIST=${HOMER_WHITELIST:-}
+    command: ./call-manager
+
+  campaign-manager:
+    image: voipbin/bin-campaign-manager@sha256:9d6e58a6bb6a0c98546e2ef371d4d9ecd88d639a683b2cb56a8aaa018be1b531
+    logging: *default-logging
+    healthcheck:
+      test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://127.0.0.1:2112/metrics"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 20s
+    container_name: voipbin-campaign-mgr
+    restart: always
+    depends_on:
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      rabbitmq:
+        condition: service_healthy
+    environment:
+      - DATABASE_DSN=root:${MYSQL_ROOT_PASSWORD}@tcp(${DB_HOST:-db}:${DB_PORT:-3306})/bin_manager
+      - RABBITMQ_ADDRESS=amqp://${RABBITMQ_DEFAULT_USER}:${RABBITMQ_DEFAULT_PASS}@${RABBITMQ_HOST:-rabbitmq}:${RABBITMQ_PORT:-5672}
+      - REDIS_ADDRESS=${REDIS_HOST:-redis}:${REDIS_PORT:-6379}
+      - REDIS_DATABASE=1
+      - PROMETHEUS_ENDPOINT=/metrics
+      - PROMETHEUS_LISTEN_ADDRESS=:2112
+    command: ./campaign-manager
+
+  contact-manager:
+    image: voipbin/bin-contact-manager@sha256:3584877e61eeab37909fb89cb3640868a13a4d0eb2aaf288ff764c7a4fdf4e30
+    logging: *default-logging
+    healthcheck:
+      test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://127.0.0.1:2112/metrics"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 20s
+    restart: always
+    depends_on:
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      rabbitmq:
+        condition: service_healthy
+    environment:
+      - DATABASE_DSN=root:${MYSQL_ROOT_PASSWORD}@tcp(${DB_HOST:-db}:${DB_PORT:-3306})/bin_manager
+      - RABBITMQ_ADDRESS=amqp://${RABBITMQ_DEFAULT_USER}:${RABBITMQ_DEFAULT_PASS}@${RABBITMQ_HOST:-rabbitmq}:${RABBITMQ_PORT:-5672}
+      - REDIS_ADDRESS=${REDIS_HOST:-redis}:${REDIS_PORT:-6379}
+      - REDIS_DATABASE=1
+      - PROMETHEUS_ENDPOINT=/metrics
+      - PROMETHEUS_LISTEN_ADDRESS=:2112
+    command: ./contact-manager
+
+  conference-manager:
+    image: voipbin/bin-conference-manager@sha256:93cd5ccfecdebb151c44776b3c32b7af5e6cd653ba57fc1adc55bd6af0bc0774
+    logging: *default-logging
+    healthcheck:
+      test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://127.0.0.1:2112/metrics"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 20s
+    container_name: voipbin-conference-mgr
+    restart: always
+    depends_on:
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      rabbitmq:
+        condition: service_healthy
+    environment:
+      - DATABASE_DSN=root:${MYSQL_ROOT_PASSWORD}@tcp(${DB_HOST:-db}:${DB_PORT:-3306})/bin_manager
+      - RABBITMQ_ADDRESS=amqp://${RABBITMQ_DEFAULT_USER}:${RABBITMQ_DEFAULT_PASS}@${RABBITMQ_HOST:-rabbitmq}:${RABBITMQ_PORT:-5672}
+      - REDIS_ADDRESS=${REDIS_HOST:-redis}:${REDIS_PORT:-6379}
+      - REDIS_DATABASE=1
+      - PROMETHEUS_ENDPOINT=/metrics
+      - PROMETHEUS_LISTEN_ADDRESS=:2112
+    command: ./conference-manager
+
+  conversation-manager:
+    image: voipbin/bin-conversation-manager@sha256:a49ed11cecd08f58349bde52504f6af939b4feeb254ee0a722b0bab8eedae4b5
+    logging: *default-logging
+    healthcheck:
+      test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://127.0.0.1:2112/metrics"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 20s
+    container_name: voipbin-conversation-mgr
+    restart: always
+    depends_on:
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      rabbitmq:
+        condition: service_healthy
+    environment:
+      - DATABASE_DSN=root:${MYSQL_ROOT_PASSWORD}@tcp(${DB_HOST:-db}:${DB_PORT:-3306})/bin_manager
+      - RABBITMQ_ADDRESS=amqp://${RABBITMQ_DEFAULT_USER}:${RABBITMQ_DEFAULT_PASS}@${RABBITMQ_HOST:-rabbitmq}:${RABBITMQ_PORT:-5672}
+      - REDIS_ADDRESS=${REDIS_HOST:-redis}:${REDIS_PORT:-6379}
+      - REDIS_DATABASE=1
+      - PROMETHEUS_ENDPOINT=/metrics
+      - PROMETHEUS_LISTEN_ADDRESS=:2112
+    command: ./conversation-manager
+
+  customer-manager:
+    image: voipbin/bin-customer-manager@sha256:d58493654f8734ea0fd6892eb1baefe3ba530d3be7d651519d0f84fe374f7f59
+    logging: *default-logging
+    healthcheck:
+      test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://127.0.0.1:2112/metrics"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 20s
+    container_name: voipbin-customer-mgr
+    restart: always
+    depends_on:
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      rabbitmq:
+        condition: service_healthy
+    environment:
+      - DATABASE_DSN=root:${MYSQL_ROOT_PASSWORD}@tcp(${DB_HOST:-db}:${DB_PORT:-3306})/bin_manager
+      - RABBITMQ_ADDRESS=amqp://${RABBITMQ_DEFAULT_USER}:${RABBITMQ_DEFAULT_PASS}@${RABBITMQ_HOST:-rabbitmq}:${RABBITMQ_PORT:-5672}
+      - REDIS_ADDRESS=${REDIS_HOST:-redis}:${REDIS_PORT:-6379}
+      - REDIS_DATABASE=1
+      - PROMETHEUS_ENDPOINT=/metrics
+      - PROMETHEUS_LISTEN_ADDRESS=:2112
+      - EMAIL_VERIFY_BASE_URL=${EMAIL_VERIFY_BASE_URL:-https://api.voipbin.test:8443}
+    command: ./customer-manager
+
+  # direct-manager: pure RabbitMQ-RPC + MySQL + Redis service, no HTTP listener.
+  # agent-manager RPCs bin-manager.direct-manager.request during agent creation,
+  # so without this the admin-agent bootstrap (setup_test_customer.sh) times out.
+  # container_name is pinned because the image ships a direct-control CLI that
+  # ops scripts docker-exec into, same precedent as voipbin-customer-mgr.
+  direct-manager:
+    image: voipbin/bin-direct-manager@sha256:05afd0105b652af1b21262b1372f3a6d3bf087860511ef8c337dd2325b0b39e2
+    logging: *default-logging
+    healthcheck:
+      test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://127.0.0.1:2112/metrics"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 20s
+    container_name: voipbin-direct-mgr
+    restart: always
+    depends_on:
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      rabbitmq:
+        condition: service_healthy
+    environment:
+      - DATABASE_DSN=root:${MYSQL_ROOT_PASSWORD}@tcp(${DB_HOST:-db}:${DB_PORT:-3306})/bin_manager
+      - RABBITMQ_ADDRESS=amqp://${RABBITMQ_DEFAULT_USER}:${RABBITMQ_DEFAULT_PASS}@${RABBITMQ_HOST:-rabbitmq}:${RABBITMQ_PORT:-5672}
+      - REDIS_ADDRESS=${REDIS_HOST:-redis}:${REDIS_PORT:-6379}
+      - REDIS_DATABASE=1
+      - PROMETHEUS_ENDPOINT=/metrics
+      - PROMETHEUS_LISTEN_ADDRESS=:2112
+    command: ./direct-manager
+
+  email-manager:
+    image: voipbin/bin-email-manager@sha256:9869e4e39ad1dc8518a95b343fff29c6e35722bd9bfc09e150dfbcb3e493cdea
+    logging: *default-logging
+    healthcheck:
+      test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://127.0.0.1:2112/metrics"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 20s
+    restart: always
+    depends_on:
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      rabbitmq:
+        condition: service_healthy
+    environment:
+      - DATABASE_DSN=root:${MYSQL_ROOT_PASSWORD}@tcp(${DB_HOST:-db}:${DB_PORT:-3306})/bin_manager
+      - RABBITMQ_ADDRESS=amqp://${RABBITMQ_DEFAULT_USER}:${RABBITMQ_DEFAULT_PASS}@${RABBITMQ_HOST:-rabbitmq}:${RABBITMQ_PORT:-5672}
+      - REDIS_ADDRESS=${REDIS_HOST:-redis}:${REDIS_PORT:-6379}
+      - REDIS_DATABASE=1
+      - PROMETHEUS_ENDPOINT=/metrics
+      - PROMETHEUS_LISTEN_ADDRESS=:2112
+      - SENDGRID_API_KEY=${SENDGRID_API_KEY:-}
+      - MAILGUN_API_KEY=${MAILGUN_API_KEY:-}
+    command: ./email-manager
+
+  flow-manager:
+    image: voipbin/bin-flow-manager@sha256:4d16a9400bdc0a5aefc0881cae0eec401061970e9de118f33c03cd2f4be11b5f
+    logging: *default-logging
+    healthcheck:
+      test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://127.0.0.1:2112/metrics"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 20s
+    container_name: voipbin-flow-mgr
+    restart: always
+    depends_on:
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      rabbitmq:
+        condition: service_healthy
+    environment:
+      - DATABASE_DSN=root:${MYSQL_ROOT_PASSWORD}@tcp(${DB_HOST:-db}:${DB_PORT:-3306})/bin_manager
+      - RABBITMQ_ADDRESS=amqp://${RABBITMQ_DEFAULT_USER}:${RABBITMQ_DEFAULT_PASS}@${RABBITMQ_HOST:-rabbitmq}:${RABBITMQ_PORT:-5672}
+      - REDIS_ADDRESS=${REDIS_HOST:-redis}:${REDIS_PORT:-6379}
+      - REDIS_DATABASE=1
+      - PROMETHEUS_ENDPOINT=/metrics
+      - PROMETHEUS_LISTEN_ADDRESS=:2112
+    command: ./flow-manager
+
+  hook-manager:
+    image: voipbin/bin-hook-manager@sha256:bcf989d1b358f54130e231cf777ece1b0a999cbbf10ff1d55fb3e42cfd241462
+    logging: *default-logging
+    healthcheck:
+      test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://127.0.0.1:2112/metrics"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 20s
+    container_name: voipbin-hook-mgr
+    restart: always
+    depends_on:
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      rabbitmq:
+        condition: service_healthy
+    environment:
+      - DATABASE_DSN=root:${MYSQL_ROOT_PASSWORD}@tcp(${DB_HOST:-db}:${DB_PORT:-3306})/bin_manager
+      - RABBITMQ_ADDRESS=amqp://${RABBITMQ_DEFAULT_USER}:${RABBITMQ_DEFAULT_PASS}@${RABBITMQ_HOST:-rabbitmq}:${RABBITMQ_PORT:-5672}
+      - REDIS_ADDRESS=${REDIS_HOST:-redis}:${REDIS_PORT:-6379}
+      - REDIS_DATABASE=1
+      - PROMETHEUS_ENDPOINT=/metrics
+      - PROMETHEUS_LISTEN_ADDRESS=:2112
+      - SSL_PRIVKEY_BASE64=${HOOK_SSL_PRIVKEY_BASE64:-}
+      - SSL_CERT_BASE64=${HOOK_SSL_CERT_BASE64:-}
+    command: ./hook-manager
+
+  message-manager:
+    image: voipbin/bin-message-manager@sha256:461f00503d07640599a47e671c32ba024ff1532f8611fdb0084795fed89e29d2
+    logging: *default-logging
+    healthcheck:
+      test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://127.0.0.1:2112/metrics"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 20s
+    restart: always
+    depends_on:
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      rabbitmq:
+        condition: service_healthy
+    environment:
+      - DATABASE_DSN=root:${MYSQL_ROOT_PASSWORD}@tcp(${DB_HOST:-db}:${DB_PORT:-3306})/bin_manager
+      - RABBITMQ_ADDRESS=amqp://${RABBITMQ_DEFAULT_USER}:${RABBITMQ_DEFAULT_PASS}@${RABBITMQ_HOST:-rabbitmq}:${RABBITMQ_PORT:-5672}
+      - REDIS_ADDRESS=${REDIS_HOST:-redis}:${REDIS_PORT:-6379}
+      - REDIS_DATABASE=1
+      - PROMETHEUS_ENDPOINT=/metrics
+      - PROMETHEUS_LISTEN_ADDRESS=:2112
+      - AUTHTOKEN_MESSAGEBIRD=${MESSAGEBIRD_API_KEY:-}
+      - AUTHTOKEN_TELNYX=${TELNYX_API_KEY:-}
+    command: ./message-manager
+
+  number-manager:
+    image: voipbin/bin-number-manager@sha256:6db58f264b850a15ef39274467693b63c62fac37154f146fe3ed280755f3d240
+    logging: *default-logging
+    healthcheck:
+      test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://127.0.0.1:2112/metrics"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 20s
+    container_name: voipbin-number-mgr
+    restart: always
+    depends_on:
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      rabbitmq:
+        condition: service_healthy
+    environment:
+      - DATABASE_DSN=root:${MYSQL_ROOT_PASSWORD}@tcp(${DB_HOST:-db}:${DB_PORT:-3306})/bin_manager
+      - RABBITMQ_ADDRESS=amqp://${RABBITMQ_DEFAULT_USER}:${RABBITMQ_DEFAULT_PASS}@${RABBITMQ_HOST:-rabbitmq}:${RABBITMQ_PORT:-5672}
+      - REDIS_ADDRESS=${REDIS_HOST:-redis}:${REDIS_PORT:-6379}
+      - REDIS_DATABASE=1
+      - PROMETHEUS_ENDPOINT=/metrics
+      - PROMETHEUS_LISTEN_ADDRESS=:2112
+      - TWILIO_SID=${TWILIO_SID:-}
+      - TWILIO_TOKEN=${TWILIO_API_KEY:-}
+      - TELNYX_CONNECTION_ID=${TELNYX_CONNECTION_ID:-}
+      - TELNYX_PROFILE_ID=${TELNYX_PROFILE_ID:-}
+      - TELNYX_TOKEN=${TELNYX_API_KEY:-}
+    command: ./number-manager
+
+  outdial-manager:
+    image: voipbin/bin-outdial-manager@sha256:817e7d5f50a5d1c98fd8b775b3d5c4b94707a24abc76d98caa10389224fcdd46
+    logging: *default-logging
+    healthcheck:
+      test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://127.0.0.1:2112/metrics"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 20s
+    container_name: voipbin-outdial-mgr
+    restart: always
+    depends_on:
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      rabbitmq:
+        condition: service_healthy
+    environment:
+      - DATABASE_DSN=root:${MYSQL_ROOT_PASSWORD}@tcp(${DB_HOST:-db}:${DB_PORT:-3306})/bin_manager
+      - RABBITMQ_ADDRESS=amqp://${RABBITMQ_DEFAULT_USER}:${RABBITMQ_DEFAULT_PASS}@${RABBITMQ_HOST:-rabbitmq}:${RABBITMQ_PORT:-5672}
+      - REDIS_ADDRESS=${REDIS_HOST:-redis}:${REDIS_PORT:-6379}
+      - REDIS_DATABASE=1
+      - PROMETHEUS_ENDPOINT=/metrics
+      - PROMETHEUS_LISTEN_ADDRESS=:2112
+    command: ./outdial-manager
+
+  pipecat-manager:
+    image: voipbin/bin-pipecat-manager@sha256:e886a022d6ea5cba537482faadb0b6b0078daa90d1e25134cd1c73351a8956d0
+    logging: *default-logging
+    healthcheck:
+      # python image (Debian trixie) ships NEITHER wget nor curl - use python3.
+      test: ["CMD", "python3", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:2112/metrics', timeout=4)"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 20s
+    restart: always
+    depends_on:
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      rabbitmq:
+        condition: service_healthy
+    environment:
+      - DATABASE_DSN=root:${MYSQL_ROOT_PASSWORD}@tcp(${DB_HOST:-db}:${DB_PORT:-3306})/bin_manager
+      - RABBITMQ_ADDRESS=amqp://${RABBITMQ_DEFAULT_USER}:${RABBITMQ_DEFAULT_PASS}@${RABBITMQ_HOST:-rabbitmq}:${RABBITMQ_PORT:-5672}
+      - REDIS_ADDRESS=${REDIS_HOST:-redis}:${REDIS_PORT:-6379}
+      - REDIS_DATABASE=1
+      - PROMETHEUS_ENDPOINT=/metrics
+      - PROMETHEUS_LISTEN_ADDRESS=:2112
+      - CARTESIA_API_KEY=${CARTESIA_API_KEY:-}
+      - ELEVENLABS_API_KEY=${ELEVENLABS_API_KEY:-}
+      - OPENAI_API_KEY=${OPENAI_API_KEY:-}
+      - DEEPGRAM_API_KEY=${DEEPGRAM_API_KEY:-}
+      - XAI_API_KEY=${XAI_API_KEY:-}
+      - POD_IP=${POD_IP:-pipecat-manager}
+    command: ./pipecat-manager
+
+  queue-manager:
+    image: voipbin/bin-queue-manager@sha256:28e9d654d671de105175010f6697cf5b6b7b154ef62dd1bbcb3f13992dfbde4b
+    logging: *default-logging
+    healthcheck:
+      test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://127.0.0.1:2112/metrics"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 20s
+    container_name: voipbin-queue-mgr
+    restart: always
+    depends_on:
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      rabbitmq:
+        condition: service_healthy
+    environment:
+      - DATABASE_DSN=root:${MYSQL_ROOT_PASSWORD}@tcp(${DB_HOST:-db}:${DB_PORT:-3306})/bin_manager
+      - RABBITMQ_ADDRESS=amqp://${RABBITMQ_DEFAULT_USER}:${RABBITMQ_DEFAULT_PASS}@${RABBITMQ_HOST:-rabbitmq}:${RABBITMQ_PORT:-5672}
+      - REDIS_ADDRESS=${REDIS_HOST:-redis}:${REDIS_PORT:-6379}
+      - REDIS_DATABASE=1
+      - PROMETHEUS_ENDPOINT=/metrics
+      - PROMETHEUS_LISTEN_ADDRESS=:2112
+    command: ./queue-manager
+
+  rag-manager:
+    image: voipbin/bin-rag-manager@sha256:753e42d43ed572d77fec2fad32a3ae8b4e8349f819efa91a4fc4295594284eb0
+    logging: *default-logging
+    healthcheck:
+      test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://127.0.0.1:2112/metrics"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 20s
+    restart: always
+    depends_on:
+      rabbitmq:
+        condition: service_healthy
+      postgres:
+        condition: service_healthy
+    # rag-manager was re-founded upstream: OpenAI embeddings + GCS .gob blobs ->
+    # Vertex AI embeddings + PostgreSQL/pgvector. Its Validate() hard-fails at
+    # boot on an empty RABBITMQ_ADDRESS, GCP_PROJECT_ID, GCP_REGION or
+    # POSTGRESQL_DSN, which is why init.sh writes non-empty placeholders for the
+    # GCP trio AND all three carry non-empty compose fallbacks below: an
+    # existing install upgrading via `voipbin update all` keeps its old .env
+    # (which has GCP_PROJECT_ID= / GCP_BUCKET_NAME_MEDIA= as empty strings and
+    # no GCP_REGION at all), and compose's :- operator substitutes the fallback
+    # for empty-or-unset either way. These fallbacks are scoped to this service
+    # block only - other consumers of the same vars keep their own semantics.
+    # Boot vs. function: with placeholder project/region/bucket and the
+    # dummy credential the service starts, but actual ingestion/query calls fail
+    # at Vertex AI / GCS until a real GCP project and service-account key are
+    # supplied.
+    environment:
+      - RABBITMQ_ADDRESS=amqp://${RABBITMQ_DEFAULT_USER}:${RABBITMQ_DEFAULT_PASS}@${RABBITMQ_HOST:-rabbitmq}:${RABBITMQ_PORT:-5672}
+      - GCP_PROJECT_ID=${GCP_PROJECT_ID:-sandbox-placeholder}
+      - GCP_REGION=${GCP_REGION:-us-central1}
+      - GCP_BUCKET_NAME_MEDIA=${GCP_BUCKET_NAME_MEDIA:-sandbox-placeholder-media}
+      - POSTGRESQL_DSN=postgres://voipbin:${POSTGRES_PASSWORD}@postgres:5432/rag?sslmode=disable
+      - RAG_TOP_K=${RAG_TOP_K:-5}
+      - PROMETHEUS_ENDPOINT=/metrics
+      - PROMETHEUS_LISTEN_ADDRESS=:2112
+      - GOOGLE_APPLICATION_CREDENTIALS=/tmp/google_service_account.json
+    volumes:
+      - ${GOOGLE_APPLICATION_CREDENTIALS:-./config/dummy-gcp-credentials.json}:/tmp/google_service_account.json:ro
+    command: ./rag-manager
+
+  registrar-manager:
+    image: voipbin/bin-registrar-manager@sha256:393f8f7ff09c89f039bae62408d95e12b728861430212420792b40493ac27fad
+    logging: *default-logging
+    healthcheck:
+      test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://127.0.0.1:2112/metrics"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 20s
+    container_name: voipbin-registrar-mgr
+    restart: always
+    depends_on:
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      rabbitmq:
+        condition: service_healthy
+    environment:
+      - DATABASE_DSN_BIN=root:${MYSQL_ROOT_PASSWORD}@tcp(${DB_HOST:-db}:${DB_PORT:-3306})/bin_manager
+      - DATABASE_DSN_ASTERISK=root:${MYSQL_ROOT_PASSWORD}@tcp(${DB_HOST:-db}:${DB_PORT:-3306})/asterisk
+      - RABBITMQ_ADDRESS=amqp://${RABBITMQ_DEFAULT_USER}:${RABBITMQ_DEFAULT_PASS}@${RABBITMQ_HOST:-rabbitmq}:${RABBITMQ_PORT:-5672}
+      - REDIS_ADDRESS=${REDIS_HOST:-redis}:${REDIS_PORT:-6379}
+      - REDIS_DATABASE=1
+      - PROMETHEUS_ENDPOINT=/metrics
+      - PROMETHEUS_LISTEN_ADDRESS=:2112
+      - DOMAIN_NAME_EXTENSION=${DOMAIN_NAME_EXTENSION:-registrar.voipbin.test}
+      - DOMAIN_NAME_TRUNK=${DOMAIN_NAME_TRUNK:-trunk.voipbin.test}
+    command: ./registrar-manager
+
+  route-manager:
+    image: voipbin/bin-route-manager@sha256:b5ace11ccf5f0d4a1bf20884436c5dfe13e47fde8add76de4449511494c02d8a
+    logging: *default-logging
+    healthcheck:
+      test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://127.0.0.1:2112/metrics"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 20s
+    container_name: voipbin-route-mgr
+    restart: always
+    depends_on:
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      rabbitmq:
+        condition: service_healthy
+    environment:
+      - DATABASE_DSN=root:${MYSQL_ROOT_PASSWORD}@tcp(${DB_HOST:-db}:${DB_PORT:-3306})/bin_manager
+      - RABBITMQ_ADDRESS=amqp://${RABBITMQ_DEFAULT_USER}:${RABBITMQ_DEFAULT_PASS}@${RABBITMQ_HOST:-rabbitmq}:${RABBITMQ_PORT:-5672}
+      - REDIS_ADDRESS=${REDIS_HOST:-redis}:${REDIS_PORT:-6379}
+      - REDIS_DATABASE=1
+      - PROMETHEUS_ENDPOINT=/metrics
+      - PROMETHEUS_LISTEN_ADDRESS=:2112
+    command: ./route-manager
+
+  schedule-manager:
+    image: voipbin/bin-schedule-manager@sha256:389535e5007a12cdf1730c8872179af286797745948393316380260dcaf3fa0c
+    logging: *default-logging
+    healthcheck:
+      test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://127.0.0.1:2112/metrics"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 20s
+    container_name: voipbin-schedule-mgr
+    restart: always
+    depends_on:
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      rabbitmq:
+        condition: service_healthy
+    environment:
+      - DATABASE_DSN=root:${MYSQL_ROOT_PASSWORD}@tcp(${DB_HOST:-db}:${DB_PORT:-3306})/bin_manager
+      - RABBITMQ_ADDRESS=amqp://${RABBITMQ_DEFAULT_USER}:${RABBITMQ_DEFAULT_PASS}@${RABBITMQ_HOST:-rabbitmq}:${RABBITMQ_PORT:-5672}
+      - REDIS_ADDRESS=${REDIS_HOST:-redis}:${REDIS_PORT:-6379}
+      - REDIS_DATABASE=1
+      - PROMETHEUS_ENDPOINT=/metrics
+      - PROMETHEUS_LISTEN_ADDRESS=:2112
+      # In-stack scheduled DB backup (VOIP-1281): a narrower, mysqldump-only
+      # complement to `voipbin backup`'s full manual snapshot (which also
+      # captures recording volumes, config/, and a manifest.json). Deliberately
+      # a separate subdirectory under backups/ so the two never collide or get
+      # pruned by each other's retention count. See README.md "Scheduled Jobs".
+      - SCHEDULE_BACKUP_DIR=/backups
+      - SCHEDULE_BACKUP_RETENTION_COUNT=7
+    volumes:
+      - ${SCHEDULE_BACKUP_HOST_DIR:-./backups/scheduled-db}:/backups
+    command: ./schedule-manager
+
+  # sentinel-manager is intentionally NOT run here: it requires the
+  # Kubernetes API (rest.InClusterConfig) and crash-loops in compose.
+  # Its role (watching Asterisk pods to trigger call recovery) is a
+  # planned docker-events bridge; see docs/plans/2026-07-04-single-
+  # server-production-mode-design.md section 3.6.
+
+  storage-manager:
+    image: voipbin/bin-storage-manager@sha256:eb931dac09b36c3825bee51c34a34540c5b38ad324eb4cb5f2c82a55b180fb10
+    logging: *default-logging
+    healthcheck:
+      test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://127.0.0.1:2112/metrics"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 20s
+    container_name: voipbin-storage-mgr
+    restart: always
+    depends_on:
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      rabbitmq:
+        condition: service_healthy
+    environment:
+      - DATABASE_DSN=root:${MYSQL_ROOT_PASSWORD}@tcp(${DB_HOST:-db}:${DB_PORT:-3306})/bin_manager
+      - RABBITMQ_ADDRESS=amqp://${RABBITMQ_DEFAULT_USER}:${RABBITMQ_DEFAULT_PASS}@${RABBITMQ_HOST:-rabbitmq}:${RABBITMQ_PORT:-5672}
+      - REDIS_ADDRESS=${REDIS_HOST:-redis}:${REDIS_PORT:-6379}
+      - REDIS_DATABASE=1
+      - PROMETHEUS_ENDPOINT=/metrics
+      - PROMETHEUS_LISTEN_ADDRESS=:2112
+      - GCP_PROJECT_ID=${GCP_PROJECT_ID:-}
+      - GCP_BUCKET_NAME_TMP=${GCP_BUCKET_NAME_TMP:-}
+      - GCP_BUCKET_NAME_MEDIA=${GCP_BUCKET_NAME_MEDIA:-}
+      - JWT_KEY=${JWT_KEY:-${STORAGE_JWT_KEY:-}}
+      # storage-manager makes a missing GOOGLE_APPLICATION_CREDENTIALS fatal at
+      # boot (monorepo 1f9002953 removed the workload-identity fallback), so the
+      # credential env line AND the mount are both required for it to start here.
+      # The dummy key satisfies google.JWTConfigFromJSON (which only unmarshals
+      # and checks type == service_account); it does NOT satisfy actual signing,
+      # so signed download URLs and file Create stay non-functional until a real
+      # service-account key is supplied.
+      - GOOGLE_APPLICATION_CREDENTIALS=/tmp/google_service_account.json
+    volumes:
+      - ${GOOGLE_APPLICATION_CREDENTIALS:-./config/dummy-gcp-credentials.json}:/tmp/google_service_account.json:ro
+    command: ./storage-manager
+
+  tag-manager:
+    image: voipbin/bin-tag-manager@sha256:59ae33d9be8dbf254d9aecff2c591e2c275f3561edc5a266a0bdb187eaf21712
+    logging: *default-logging
+    healthcheck:
+      test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://127.0.0.1:2112/metrics"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 20s
+    container_name: voipbin-tag-mgr
+    restart: always
+    depends_on:
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      rabbitmq:
+        condition: service_healthy
+    environment:
+      - DATABASE_DSN=root:${MYSQL_ROOT_PASSWORD}@tcp(${DB_HOST:-db}:${DB_PORT:-3306})/bin_manager
+      - RABBITMQ_ADDRESS=amqp://${RABBITMQ_DEFAULT_USER}:${RABBITMQ_DEFAULT_PASS}@${RABBITMQ_HOST:-rabbitmq}:${RABBITMQ_PORT:-5672}
+      - REDIS_ADDRESS=${REDIS_HOST:-redis}:${REDIS_PORT:-6379}
+      - REDIS_DATABASE=1
+      - PROMETHEUS_ENDPOINT=/metrics
+      - PROMETHEUS_LISTEN_ADDRESS=:2112
+    command: ./tag-manager
+
+  talk-manager:
+    image: voipbin/bin-talk-manager@sha256:55237785e4557f0923bb31f4dbfaecb94d6fd56efff920294dd139dc3f19860e
+    logging: *default-logging
+    healthcheck:
+      test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://127.0.0.1:2112/metrics"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 20s
+    container_name: voipbin-talk-mgr
+    restart: always
+    depends_on:
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      rabbitmq:
+        condition: service_healthy
+    environment:
+      - DATABASE_DSN=root:${MYSQL_ROOT_PASSWORD}@tcp(${DB_HOST:-db}:${DB_PORT:-3306})/bin_manager
+      - RABBITMQ_ADDRESS=amqp://${RABBITMQ_DEFAULT_USER}:${RABBITMQ_DEFAULT_PASS}@${RABBITMQ_HOST:-rabbitmq}:${RABBITMQ_PORT:-5672}
+      - REDIS_ADDRESS=${REDIS_HOST:-redis}:${REDIS_PORT:-6379}
+      - REDIS_DATABASE=1
+      - PROMETHEUS_ENDPOINT=/metrics
+      - PROMETHEUS_LISTEN_ADDRESS=:2112
+    command: ./talk-manager
+
+  timeline-manager:
+    image: voipbin/bin-timeline-manager@sha256:4a7788ff894b6e5669673cda583666aef530db9db4fd4810bbebfaee5ea95aec
+    logging: *default-logging
+    healthcheck:
+      test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://127.0.0.1:2112/metrics"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 20s
+    restart: always
+    # The clickhouse gate is REQUIRED, not cosmetic: with CLICKHOUSE_ADDRESS set,
+    # timeline-manager always runs its migrations at boot and a migration failure
+    # is fatal (os.Exit(1)). Racing ClickHouse to readiness would make it exit
+    # non-zero on every fresh `up` and only recover via restart: always.
+    depends_on:
+      rabbitmq:
+        condition: service_healthy
+      clickhouse:
+        condition: service_healthy
+    environment:
+      - RABBITMQ_ADDRESS=amqp://${RABBITMQ_DEFAULT_USER}:${RABBITMQ_DEFAULT_PASS}@${RABBITMQ_HOST:-rabbitmq}:${RABBITMQ_PORT:-5672}
+      # 9000 is ClickHouse's native protocol port (clickhouse-go/v2), not HTTP.
+      - CLICKHOUSE_ADDRESS=${CLICKHOUSE_ADDRESS:-clickhouse:9000}
+      - CLICKHOUSE_DATABASE=${CLICKHOUSE_DATABASE:-default}
+      - HOMER_API_ADDRESS=${HOMER_API_ADDRESS:-}
+      - HOMER_AUTH_TOKEN=${HOMER_AUTH_TOKEN:-}
+      - PROMETHEUS_ENDPOINT=/metrics
+      - PROMETHEUS_LISTEN_ADDRESS=:2112
+    command: ./timeline-manager
+
+  transcribe-manager:
+    image: voipbin/bin-transcribe-manager@sha256:79d36da25599eb3215c6cf9663b583ef8b5ec08d7170902a49e3eb460aa020c9
+    logging: *default-logging
+    healthcheck:
+      test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://127.0.0.1:2112/metrics"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 20s
+    restart: always
+    depends_on:
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      rabbitmq:
+        condition: service_healthy
+    environment:
+      - DATABASE_DSN=root:${MYSQL_ROOT_PASSWORD}@tcp(${DB_HOST:-db}:${DB_PORT:-3306})/bin_manager
+      - RABBITMQ_ADDRESS=amqp://${RABBITMQ_DEFAULT_USER}:${RABBITMQ_DEFAULT_PASS}@${RABBITMQ_HOST:-rabbitmq}:${RABBITMQ_PORT:-5672}
+      - REDIS_ADDRESS=${REDIS_HOST:-redis}:${REDIS_PORT:-6379}
+      - REDIS_DATABASE=1
+      - PROMETHEUS_ENDPOINT=/metrics
+      - PROMETHEUS_LISTEN_ADDRESS=:2112
+      - AWS_ACCESS_KEY=${AWS_ACCESS_KEY:-}
+      - AWS_SECRET_KEY=${AWS_SECRET_KEY:-}
+      - POD_IP=${POD_IP:-127.0.0.1}
+      - GOOGLE_APPLICATION_CREDENTIALS=/tmp/google_service_account.json
+    command: ./transcribe-manager
+    volumes:
+      - ${GOOGLE_APPLICATION_CREDENTIALS:-./config/dummy-gcp-credentials.json}:/tmp/google_service_account.json:ro
+
+  transfer-manager:
+    image: voipbin/bin-transfer-manager@sha256:ab9a042fbed4713c6db954757e5a06a412aa8d95722c5d38768a57be8a7a0e62
+    logging: *default-logging
+    healthcheck:
+      test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://127.0.0.1:2112/metrics"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 20s
+    container_name: voipbin-transfer-mgr
+    restart: always
+    depends_on:
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      rabbitmq:
+        condition: service_healthy
+    environment:
+      - DATABASE_DSN=root:${MYSQL_ROOT_PASSWORD}@tcp(${DB_HOST:-db}:${DB_PORT:-3306})/bin_manager
+      - RABBITMQ_ADDRESS=amqp://${RABBITMQ_DEFAULT_USER}:${RABBITMQ_DEFAULT_PASS}@${RABBITMQ_HOST:-rabbitmq}:${RABBITMQ_PORT:-5672}
+      - REDIS_ADDRESS=${REDIS_HOST:-redis}:${REDIS_PORT:-6379}
+      - REDIS_DATABASE=1
+      - PROMETHEUS_ENDPOINT=/metrics
+      - PROMETHEUS_LISTEN_ADDRESS=:2112
+    command: ./transfer-manager
+
+  tts-manager:
+    image: voipbin/bin-tts-manager@sha256:f6ac3fed699b89ee9d60e00665ba873879d7fef474b29c1b648faea5dd8942fd
+    logging: *default-logging
+    healthcheck:
+      test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://127.0.0.1:2112/metrics"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 20s
+    container_name: voipbin-tts-mgr
+    restart: always
+    depends_on:
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      rabbitmq:
+        condition: service_healthy
+    environment:
+      - DATABASE_DSN=root:${MYSQL_ROOT_PASSWORD}@tcp(${DB_HOST:-db}:${DB_PORT:-3306})/bin_manager
+      - RABBITMQ_ADDRESS=amqp://${RABBITMQ_DEFAULT_USER}:${RABBITMQ_DEFAULT_PASS}@${RABBITMQ_HOST:-rabbitmq}:${RABBITMQ_PORT:-5672}
+      - REDIS_ADDRESS=${REDIS_HOST:-redis}:${REDIS_PORT:-6379}
+      - REDIS_DATABASE=1
+      - PROMETHEUS_ENDPOINT=/metrics
+      - PROMETHEUS_LISTEN_ADDRESS=:2112
+      - AWS_ACCESS_KEY=${AWS_ACCESS_KEY:-}
+      - AWS_SECRET_KEY=${AWS_SECRET_KEY:-}
+      - ELEVENLABS_API_KEY=${ELEVENLABS_API_KEY:-}
+    command: ./tts-manager
+
+  # webchat-manager: pure RabbitMQ-RPC + MySQL + Redis service. The user-facing
+  # webchat websocket lives in api-manager, not here, so no port is published and
+  # no container_name is pinned (it ships no CLI for ops scripts to exec into).
+  # Its widgets carry a direct_hash column, so it depends on direct-manager's
+  # schema (supplied by the dbscheme pin) rather than on the container.
+  webchat-manager:
+    image: voipbin/bin-webchat-manager@sha256:dccaeb9c424a285c83e438f10c73d6d7be9e807e779cf66f3689ef518fb8dbbe
+    logging: *default-logging
+    healthcheck:
+      test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://127.0.0.1:2112/metrics"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 20s
+    restart: always
+    depends_on:
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      rabbitmq:
+        condition: service_healthy
+    environment:
+      - DATABASE_DSN=root:${MYSQL_ROOT_PASSWORD}@tcp(${DB_HOST:-db}:${DB_PORT:-3306})/bin_manager
+      - RABBITMQ_ADDRESS=amqp://${RABBITMQ_DEFAULT_USER}:${RABBITMQ_DEFAULT_PASS}@${RABBITMQ_HOST:-rabbitmq}:${RABBITMQ_PORT:-5672}
+      - REDIS_ADDRESS=${REDIS_HOST:-redis}:${REDIS_PORT:-6379}
+      - REDIS_DATABASE=1
+      - PROMETHEUS_ENDPOINT=/metrics
+      - PROMETHEUS_LISTEN_ADDRESS=:2112
+    command: ./webchat-manager
+
+  webhook-manager:
+    image: voipbin/bin-webhook-manager@sha256:9227d2a609f1b8b79c95b0878075798d4d2cf7f8531e93d4f39c2c3a4b80be3c
+    logging: *default-logging
+    healthcheck:
+      test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://127.0.0.1:2112/metrics"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 20s
+    container_name: voipbin-webhook-mgr
+    restart: always
+    depends_on:
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      rabbitmq:
+        condition: service_healthy
+    environment:
+      - DATABASE_DSN=root:${MYSQL_ROOT_PASSWORD}@tcp(${DB_HOST:-db}:${DB_PORT:-3306})/bin_manager
+      - RABBITMQ_ADDRESS=amqp://${RABBITMQ_DEFAULT_USER}:${RABBITMQ_DEFAULT_PASS}@${RABBITMQ_HOST:-rabbitmq}:${RABBITMQ_PORT:-5672}
+      - REDIS_ADDRESS=${REDIS_HOST:-redis}:${REDIS_PORT:-6379}
+      - REDIS_DATABASE=1
+      - PROMETHEUS_ENDPOINT=/metrics
+      - PROMETHEUS_LISTEN_ADDRESS=:2112
+    command: ./webhook-manager
+
+  # ===========================================================================
+  # Frontend
+  # ===========================================================================
+  # Web services share HOST_IP with different ports (Docker port mapping):
+  #   - https://api.voipbin.test:8443   -> HOST_IP:8443
+  #   - http://admin.voipbin.test:3003  -> HOST_IP:3003
+  #   - http://meet.voipbin.test:3004   -> HOST_IP:3004
+  #   - http://talk.voipbin.test:3005   -> HOST_IP:3005
+  # SIP domains (sip.voipbin.test, etc.) resolve to KAMAILIO_EXTERNAL_IP.
+  #
+  # NOTE: If using self-signed certificates, you must accept the API certificate first:
+  #   1. Visit https://api.voipbin.test:8443 in your browser
+  #   2. Accept the certificate warning ("Proceed to api.voipbin.test")
+  #   3. Then access admin/meet/talk - otherwise you'll get ERR_CERT_AUTHORITY_INVALID
+  # To avoid this, install mkcert: mkcert -install && rm -rf certs/ && ./scripts/init.sh
+
+  square-admin:
+    image: voipbin/square-admin@sha256:7d669682dee77925f765d4171332b58a5d1ce8d8c3633b46069556222f1f4eed
+    logging: *default-logging
+    healthcheck:
+      test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://127.0.0.1:80/"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+    hostname: voipbin-admin-host
+    restart: always
+    networks:
+      - default
+    ports:
+      - "0.0.0.0:3003:80"
+    depends_on:
+      - api-manager
+    environment:
+      # Base hostname (used as fallback if per-service URLs not set)
+      - REACT_APP_BASE_HOSTNAME=${BASE_HOSTNAME:-voipbin.test}
+      # Per-service URL overrides for local development
+      - REACT_APP_API_URL=${API_URL:-https://api.voipbin.test:8443/}
+      - REACT_APP_WEBSOCKET_URL=${WEBSOCKET_URL:-wss://api.voipbin.test:8443/v1.0/ws}
+      - REACT_APP_REGISTRAR_DOMAIN=${REGISTRAR_DOMAIN:-registrar.voipbin.test}
+
+  square-meet:
+    image: voipbin/square-meet@sha256:56ccd44d7cabc0c02724d17b39c2bc2c9e8e5fd1dd94365076ee8247821d6c8c
+    logging: *default-logging
+    healthcheck:
+      test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://127.0.0.1:80/"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+    hostname: voipbin-meet-host
+    restart: always
+    networks:
+      - default
+    ports:
+      - "0.0.0.0:3004:80"
+    depends_on:
+      - api-manager
+    environment:
+      # Base hostname (used as fallback if per-service URLs not set)
+      - REACT_APP_BASE_HOSTNAME=${BASE_HOSTNAME:-voipbin.test}
+      # Per-service URL overrides for conference
+      - REACT_APP_CONFERENCE_URL=${CONFERENCE_URL:-wss://conference.voipbin.test}
+      - REACT_APP_CONFERENCE_DOMAIN=${CONFERENCE_DOMAIN:-conference.voipbin.test}
+
+  square-talk:
+    image: voipbin/square-talk@sha256:e3f7f6be89a02576b50093ce7ca1c8d0730626bae717e0c943af82794991a252
+    logging: *default-logging
+    healthcheck:
+      test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://127.0.0.1:80/"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+    container_name: voipbin-talk
+    hostname: voipbin-talk-host
+    restart: always
+    networks:
+      - default
+    ports:
+      - "0.0.0.0:3005:80"
+    depends_on:
+      - api-manager
+    environment:
+      # Base hostname (used as fallback if per-service URLs not set)
+      - REACT_APP_BASE_HOSTNAME=${BASE_HOSTNAME:-voipbin.test}
+      # Per-service URL overrides for talk
+      - REACT_APP_API_URL=${API_URL:-https://api.voipbin.test:8443/}
+      - REACT_APP_WEBSOCKET_URL=${WEBSOCKET_URL:-wss://api.voipbin.test:8443/v1.0/ws}
+      - REACT_APP_REGISTRAR_URL=${REGISTRAR_URL:-wss://sip.voipbin.test:5066}
+      - REACT_APP_REGISTRAR_DOMAIN=${REGISTRAR_DOMAIN:-registrar.voipbin.test}
+
+volumes:
+  redis_data:
+  rabbitmq_data:
+  db_data:
+  postgres_data:
+  clickhouse_data:
+  asterisk-call-recording:
+  asterisk-conf-recording:
+  kamailio-logs:
+  rtpengine-logs:
+  rtpengine-run:
+
+# Default network for services that don't use host mode
+networks:
+  default:
+    driver: bridge
+    ipam:
+      config:
+        - subnet: 10.100.0.0/16
