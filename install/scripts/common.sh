@@ -280,13 +280,28 @@ update_env_ips() {
     log_info "Updating .env with new IPs:"
     log_info "  HOST_EXTERNAL_IP: $new_host_ip"
 
+    # Declared here (not inside the branches below) so the function's
+    # return-value contract (the final `echo "$new_kamailio_ip"`) holds on
+    # both paths — bash `local` is function-scoped, not block-scoped, but a
+    # variable only assigned inside a branch that never runs is simply
+    # unset, not merely empty-string, which previously made the pinned
+    # branch's return value leak whatever was left over from an unrelated
+    # earlier variable instead of the actual (unchanged) Kamailio IP.
+    local new_kamailio_ip new_rtpengine_ip
+
     if [[ "$ip_pinned" == "true" ]]; then
+        # Unchanged by design (see comment above) — read the current values
+        # back so callers relying on this function's return value (e.g.
+        # regenerate_ip_config's CoreDNS regeneration) still get the real,
+        # working IP instead of an empty string.
+        new_kamailio_ip=$(get_env_var "$env_file" KAMAILIO_EXTERNAL_IP)
+        new_rtpengine_ip=$(get_env_var "$env_file" RTPENGINE_EXTERNAL_IP)
         log_info "  KAMAILIO_EXTERNAL_IP / RTPENGINE_EXTERNAL_IP: unchanged (EXTERNAL_IP_PINNED=true)"
     else
         # Generate new secondary IPs
         local secondary_ips=$(generate_secondary_ips "$new_host_ip")
-        local new_kamailio_ip=$(echo "$secondary_ips" | grep KAMAILIO | cut -d'=' -f2)
-        local new_rtpengine_ip=$(echo "$secondary_ips" | grep RTPENGINE | cut -d'=' -f2)
+        new_kamailio_ip=$(echo "$secondary_ips" | grep KAMAILIO | cut -d'=' -f2)
+        new_rtpengine_ip=$(echo "$secondary_ips" | grep RTPENGINE | cut -d'=' -f2)
         log_info "  KAMAILIO_EXTERNAL_IP: $new_kamailio_ip"
         log_info "  RTPENGINE_EXTERNAL_IP: $new_rtpengine_ip"
         sed -i "s|^KAMAILIO_EXTERNAL_IP=.*|KAMAILIO_EXTERNAL_IP=$new_kamailio_ip|" "$env_file"

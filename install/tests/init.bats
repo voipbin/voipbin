@@ -445,6 +445,54 @@ teardown() {
     [[ "$output" == *'invalid --kamailio-ip: not-an-ip'* ]]
 }
 
+@test "parse_args accepts a leading-zero octet without crashing, interpreting it as decimal" {
+    load_init_functions
+
+    # "099" is invalid octal in bash's [[ -le ]] arithmetic comparison and
+    # previously leaked a raw "value too great for base" error instead of
+    # evaluating the octet at all; provider control panels plausibly
+    # zero-pad octets, and 099 decimal (99) is a legitimately valid octet,
+    # so the fix must accept it — not merely fail cleanly. Not run under
+    # `run` (a subshell): INIT_KAMAILIO_IP must persist to this scope.
+    parse_args --mode external --domain example.com --tls byo --cert c.pem --key k.pem \
+        --kamailio-ip 199.099.008.042 --rtpengine-ip 199.127.61.134 --yes
+
+    assert_equal "$INIT_KAMAILIO_IP" "199.099.008.042"
+}
+
+@test "parse_args's leading-zero acceptance does not leak a raw bash arithmetic error" {
+    load_init_functions
+
+    # Same case as above, this time captured via `run` specifically to
+    # inspect $output for the crash message — deliberately a separate test
+    # since `run`'s subshell would otherwise swallow INIT_KAMAILIO_IP above.
+    run parse_args --mode external --domain example.com --tls byo --cert c.pem --key k.pem \
+        --kamailio-ip 199.099.008.042 --rtpengine-ip 199.127.61.134 --yes
+
+    [[ "$status" -eq 0 ]]
+    [[ "$output" != *'value too great for base'* ]]
+}
+
+@test "parse_args accepts octets that are valid base-10 but would misparse as octal if not guarded" {
+    load_init_functions
+
+    # 010 = 8 in octal but must validate as the decimal value 10 (<=255).
+    parse_args --mode external --domain example.com --tls byo --cert c.pem --key k.pem \
+        --kamailio-ip 010.010.010.010 --rtpengine-ip 199.127.61.134 --yes
+
+    assert_equal "$INIT_KAMAILIO_IP" "010.010.010.010"
+}
+
+@test "parse_args still rejects a genuinely out-of-range octet (base-10, not an octal artifact)" {
+    load_init_functions
+
+    run parse_args --mode external --domain example.com --tls byo --cert c.pem --key k.pem \
+        --kamailio-ip 199.256.1.1 --rtpengine-ip 199.127.61.134
+
+    [[ "$status" -eq 1 ]]
+    [[ "$output" == *'invalid --kamailio-ip: 199.256.1.1'* ]]
+}
+
 @test "parse_args rejects --kamailio-ip and --rtpengine-ip set to the same address" {
     load_init_functions
 
@@ -603,6 +651,49 @@ teardown() {
 
     [[ "$status" -eq 0 ]]
     [[ "$output" == *'--force-reinit: rewriting .env/certs/Corefile'* ]]
+}
+
+@test "check_existing_env_compat refuses --force-reinit on a pinned install without re-passing --kamailio-ip" {
+    load_init_functions
+    create_env_file "DOMAIN_MODE=external" "BASE_DOMAIN=example.com" "EXTERNAL_IP_PINNED=true" \
+        "KAMAILIO_EXTERNAL_IP=199.127.61.42" "RTPENGINE_EXTERNAL_IP=199.127.61.134"
+    mock_command "docker" ""
+    RESOLV_BACKUP="$TEST_TEMP_DIR/no-such-backup"
+    parse_args --mode external --domain example.com --tls byo --cert c.pem --key k.pem --force-reinit --yes
+
+    run check_existing_env_compat
+
+    [[ "$status" -eq 1 ]]
+    [[ "$output" == *'pinned external IPs'* ]]
+    [[ "$output" == *'--force-reinit requires re-passing --kamailio-ip/--rtpengine-ip'* ]]
+    [[ "$output" == *'VOIPBIN_INIT: status=error'* ]]
+}
+
+@test "check_existing_env_compat allows --force-reinit on a pinned install when IPs are re-passed" {
+    load_init_functions
+    create_env_file "DOMAIN_MODE=external" "BASE_DOMAIN=example.com" "EXTERNAL_IP_PINNED=true" \
+        "KAMAILIO_EXTERNAL_IP=199.127.61.42" "RTPENGINE_EXTERNAL_IP=199.127.61.134"
+    mock_command "docker" ""
+    RESOLV_BACKUP="$TEST_TEMP_DIR/no-such-backup"
+    parse_args --mode external --domain example.com --tls byo --cert c.pem --key k.pem \
+        --kamailio-ip 199.127.61.42 --rtpengine-ip 199.127.61.134 --force-reinit --yes
+
+    run check_existing_env_compat
+
+    [[ "$status" -eq 0 ]]
+    [[ "$output" == *'--force-reinit: rewriting .env/certs/Corefile'* ]]
+}
+
+@test "check_existing_env_compat with --force-reinit proceeds on a non-pinned existing install (no EXTERNAL_IP_PINNED guard triggered)" {
+    load_init_functions
+    create_env_file "DOMAIN_MODE=external" "BASE_DOMAIN=example.com" "EXTERNAL_IP_PINNED=false"
+    mock_command "docker" ""
+    RESOLV_BACKUP="$TEST_TEMP_DIR/no-such-backup"
+    parse_args --mode external --domain example.com --tls byo --cert c.pem --key k.pem --force-reinit --yes
+
+    run check_existing_env_compat
+
+    [[ "$status" -eq 0 ]]
 }
 
 @test "check_existing_env_compat refuses --force-reinit without explicit --mode on differing install" {

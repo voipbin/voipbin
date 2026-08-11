@@ -350,6 +350,7 @@ Key variables:
 | `HOST_EXTERNAL_IP` | Host's LAN IP (auto-detected); web-facing domains (api/admin/meet/talk.voipbin.test) resolve here, Docker's published host ports route to the right service |
 | `KAMAILIO_EXTERNAL_IP` | Kamailio's dedicated external IP for SIP signaling (auto-generated, MUST differ from host) |
 | `RTPENGINE_EXTERNAL_IP` | RTPEngine's dedicated external IP for RTP media (auto-generated) |
+| `EXTERNAL_IP_PINNED` | `true` when `KAMAILIO_EXTERNAL_IP`/`RTPENGINE_EXTERNAL_IP` were set explicitly via `init.sh --kamailio-ip`/`--rtpengine-ip` (hosting-provider-registered routed IPs — see README.md "Hosting-provider routed IPs"). `false` (default) means the classic host+8-offset auto-generation applies and is safe to recompute on host-IP change |
 | `BASE_HOSTNAME` | Base hostname for frontend apps (default: `voipbin.test`) |
 | `API_URL` | API endpoint URL for admin/talk (default: `https://api.voipbin.test:8443/`) |
 | `WEBSOCKET_URL` | WebSocket URL for admin/talk (default: `wss://api.voipbin.test:8443/v1.0/ws`) |

@@ -385,6 +385,26 @@ teardown() {
     assert_file_contains "$PROJECT_DIR/.env" "RTPENGINE_EXTERNAL_IP=199.127.61.134"
 }
 
+@test "update_env_ips returns the pinned Kamailio IP as its actual value (not empty)" {
+    # Regression test: the pinned branch previously never assigned
+    # new_kamailio_ip, so the function's `echo "$new_kamailio_ip"` return
+    # value (consumed by regenerate_ip_config() for CoreDNS regeneration in
+    # internal mode) was empty instead of the real, unchanged IP.
+    create_env_file \
+        "DOMAIN_MODE=internal" \
+        "BASE_DOMAIN=voipbin.test" \
+        "HOST_EXTERNAL_IP=104.243.38.39" \
+        "KAMAILIO_EXTERNAL_IP=199.127.61.42" \
+        "RTPENGINE_EXTERNAL_IP=199.127.61.134" \
+        "EXTERNAL_IP_PINNED=true"
+    load_common
+
+    result="$(update_env_ips "104.243.38.99")"
+    last_line="$(echo "$result" | tail -1)"
+
+    [[ "$last_line" == "199.127.61.42" ]]
+}
+
 @test "update_env_ips legacy .env (no mode, no BASE_DOMAIN) falls back to voipbin.test" {
     create_env_file \
         "HOST_EXTERNAL_IP=192.168.1.100" \

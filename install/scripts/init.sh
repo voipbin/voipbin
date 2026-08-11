@@ -117,7 +117,11 @@ validate_ipv4() {
     [[ "$ip" =~ ^[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}$ ]] || return 1
     local octet
     for octet in ${ip//./ }; do
-        [[ "$octet" -le 255 ]] || return 1
+        # Force base-10: bash's arithmetic comparison treats a leading-zero
+        # operand as octal, so e.g. "099" throws "value too great for base"
+        # instead of failing this validator cleanly (leading-zero octets are
+        # plausible copy-pasted from a hosting provider's control panel).
+        [[ "$((10#$octet))" -le 255 ]] || return 1
     done
     return 0
 }
@@ -329,6 +333,21 @@ check_existing_env_compat() {
         if [[ "$existing_mode" == "internal" && "$INIT_MODE" == "external" ]]; then
             check_force_reinit_preconditions
         fi
+
+        # Footgun guard: an existing pinned install (--kamailio-ip/
+        # --rtpengine-ip at some earlier init) has KAMAILIO_EXTERNAL_IP/
+        # RTPENGINE_EXTERNAL_IP that came from the hosting provider's own
+        # allocation, not from HOST_EXTERNAL_IP. --force-reinit without
+        # re-passing both flags would silently fall through to the
+        # host+8-offset auto-generation and overwrite them with an address
+        # nobody owns — exactly what pinning exists to prevent. Require the
+        # operator to restate the pin (or explicitly accept losing it) on
+        # every --force-reinit, the same way the mode/domain guard above
+        # requires explicit --mode.
+        if [[ "$(get_env_var "$ENV_FILE" EXTERNAL_IP_PINNED)" == "true" && -z "$INIT_KAMAILIO_IP" ]]; then
+            die 1 "existing install has pinned external IPs (EXTERNAL_IP_PINNED=true); --force-reinit requires re-passing --kamailio-ip/--rtpengine-ip explicitly, or the auto-generated host+8 offset will silently replace them with an address you don't own"
+        fi
+
         log_warn "--force-reinit: rewriting .env/certs/Corefile for mode=$INIT_MODE domain=$TARGET_DOMAIN"
         return 0
     fi
