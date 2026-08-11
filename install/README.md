@@ -212,15 +212,16 @@ of its own).
 
 4. **Do NOT run `./scripts/init.sh --yes`** on the copied `.env`. Reading
    `init.sh`'s `check_existing_env_compat()`: when the requested mode/domain
-   match what's already in `.env`, `--yes` silently overwrites it,
-   including regenerating `JWT_KEY`, `MYSQL_ROOT_PASSWORD`,
-   `RABBITMQ_DEFAULT_PASS`, `AMI_PASSWORD`, and `POSTGRES_PASSWORD` with
-   brand-new random values. Those new values will not match the credentials
-   already baked into your existing database and RabbitMQ Docker volumes,
-   so your services will fail to authenticate against your own (otherwise
-   intact) data. There is no dedicated flag to skip credential rotation
-   while still touching `.env`, so the correct move is to skip `init.sh`
-   entirely once `.env` has been copied over.
+   match what's already in `.env`, `--yes` silently overwrites it, including
+   regenerating `JWT_KEY`, `MYSQL_ROOT_PASSWORD`, `RABBITMQ_DEFAULT_PASS`,
+   `DATABASE_ASTERISK_PASSWORD`, and `POSTGRES_PASSWORD` with brand-new
+   random values (`AMI_PASSWORD` is the one exception since VOIP-1329 — it's
+   always the fixed `asterisk`, never regenerated). Those new values will
+   not match the credentials already baked into your existing database and
+   RabbitMQ Docker volumes, so your services will fail to authenticate
+   against your own (otherwise intact) data. There is no dedicated flag to
+   skip credential rotation while still touching `.env`, so the correct
+   move is to skip `init.sh` entirely once `.env` has been copied over.
 
 5. **Skip straight to host setup, start, and verify:**
 

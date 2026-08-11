@@ -947,6 +947,39 @@ exit 0'
 }
 
 # =============================================================================
+# VOIP-1329: AMI_USERNAME/AMI_PASSWORD must be the fixed "asterisk"/"asterisk"
+# pair, NOT randomly generated - they must match the voip-asterisk-call/
+# -conference/-registrar images' static baked-in manager.conf/ari.conf
+# account, which nothing in those images' entrypoints or k8s manifests
+# templates from an env var. A random value here would authenticate as a
+# user that doesn't exist, silently breaking call origination/control while
+# SIP registration keeps working.
+# =============================================================================
+
+@test "init.sh sets AMI_USERNAME/AMI_PASSWORD to the fixed asterisk/asterisk pair (not randomly generated)" {
+    load_init_functions
+    mock_ip_route "192.168.1.100"
+    mock_command_script "mkcert" '
+while [[ $# -gt 0 ]]; do
+    case "$1" in
+        -cert-file) echo "stub-cert" > "$2"; shift 2 ;;
+        -key-file) echo "stub-key" > "$2"; shift 2 ;;
+        -CAROOT) echo "/stub/caroot"; exit 0 ;;
+        -check) exit 0 ;;
+        -install) exit 0 ;;
+        *) shift ;;
+    esac
+done
+exit 0'
+
+    run main --yes
+
+    [[ "$status" -eq 0 ]]
+    grep -q '^AMI_USERNAME=asterisk$' "$TEST_TEMP_DIR/.env"
+    grep -q '^AMI_PASSWORD=asterisk$' "$TEST_TEMP_DIR/.env"
+}
+
+# =============================================================================
 # .env permission hardening (VOIP-1275 follow-up): .env carries real,
 # randomly generated credentials (MySQL/RabbitMQ/AMI/Postgres/JWT), so it
 # must land at mode 600 - matching the chmod 600 treatment already applied

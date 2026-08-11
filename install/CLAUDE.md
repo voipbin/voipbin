@@ -237,6 +237,50 @@ reverse proxy or restrict them to trusted networks.
 
 The `./scripts/init.sh` script auto-generates `.env` with detected values. If `mkcert` is installed, it creates browser-trusted certificates. Otherwise, it falls back to self-signed certificates (browser will show warnings).
 
+### `AMI_USERNAME`/`AMI_PASSWORD` are fixed, not random (VOIP-1329)
+
+Unlike every other secret `init.sh` generates, `AMI_USERNAME`/`AMI_PASSWORD`
+are always `asterisk`/`asterisk` — they must match the static account baked
+into `voip-asterisk-call`/`-conference`/`-registrar`'s `manager.conf` (AMI)
+and `ari.conf` (ARI). Nothing in those images' `k8s_start.sh` entrypoint or
+their k8s deployment manifests templates AMI credentials from an env var, so
+a randomly generated value here would authenticate as a user that doesn't
+exist — breaking call origination/control via the `asterisk-*-proxy`
+sidecars (AMI/ARI-to-RabbitMQ bridge) while SIP registration keeps working
+fine (that path is pjsip + realtime MySQL, not AMI/ARI — `asterisk-registrar-proxy`
+is just as broken by a credential mismatch as the other two).
+
+Security note: AMI (port 5038) IS bound to `127.0.0.1` inside each asterisk
+container's own namespace (`network_mode: "service:asterisk-*"` for the
+proxy), but the same account is also the ARI credential, and ARI (port
+8088, HTTP+websocket) listens on `0.0.0.0` in these images — reachable from
+any other container on the internal `10.100.0.0/16` compose network, and
+from the host. That exposure is a property of the images, not of this
+value; randomizing `AMI_USERNAME`/`AMI_PASSWORD` cannot mitigate it and
+only re-breaks authentication. Do not change these two values unless the
+images themselves change what account they ship. Fixing the actual
+exposure would mean the images shipping `http.conf` with
+`bindaddr=127.0.0.1` (the proxy only ever reaches it via
+`ARI_ADDRESS=localhost:8088` inside the shared network namespace, so this
+would have zero functional impact) — out of scope for this repo (the
+images are built and digest-pinned from `monorepo-voip`); track as a
+follow-up ticket there rather than treating it as accepted forever.
+
+**Existing installs**: an install created before VOIP-1329 has
+`AMI_USERNAME=voipbin` plus a random `AMI_PASSWORD` sitting in `.env` and
+stays silently broken (SIP registration works, calls fail) until manually
+fixed — there is no automatic migration path like VOIP-1328's Step 6.5 (no
+consumer of these two vars has a `${VAR:-asterisk}` fallback). To fix an
+existing install: set `AMI_USERNAME=asterisk` and `AMI_PASSWORD=asterisk`
+in `.env`, then `docker compose up -d --force-recreate asterisk-call-proxy
+asterisk-conference-proxy asterisk-registrar-proxy` — only the three proxy
+sidecars actually consume these vars (`asterisk-call`/`-conference`/`-registrar`
+themselves don't), so recreating just the proxies is both sufficient and
+avoids dropping active calls. The reverse direction is unsafe, though:
+never recreate `asterisk-call`/`-conference`/`-registrar` alone without
+also recreating its paired proxy — see the `network_mode: "service:"`
+warning on `asterisk-call-proxy` in `docker-compose.yml`.
+
 ## DNS Configuration
 
 > **Scope: internal mode (default).** This section describes the automatic

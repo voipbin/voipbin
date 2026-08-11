@@ -677,9 +677,30 @@ main() {
     RABBITMQ_DEFAULT_PASS=$(generate_random_key)
     log_info "  Generated RABBITMQ_DEFAULT_PASS"
 
-    AMI_USERNAME="voipbin"
-    AMI_PASSWORD=$(generate_random_key)
-    log_info "  Generated AMI_PASSWORD"
+    # VOIP-1329: the voip-asterisk-call/-conference/-registrar images ship
+    # manager.conf (AMI) and ari.conf (ARI) with a static baked-in
+    # [asterisk]/secret=asterisk account - nothing in their k8s_start.sh
+    # entrypoint or the k8s deployment manifests wires AMI_USERNAME/
+    # AMI_PASSWORD into those files. A randomly generated AMI_USERNAME/
+    # PASSWORD here would just never match what the account is actually
+    # named/secreted as, breaking the AMI/ARI-to-RabbitMQ proxy sidecars'
+    # authentication (call origination/control) while SIP registration keeps
+    # working fine (that path is pjsip + realtime MySQL, not AMI/ARI). Match
+    # the images' existing account instead of trying to override it.
+    #
+    # Security note: this is NOT primarily a network-exposure mitigation -
+    # AMI (port 5038) IS bound to 127.0.0.1 inside each asterisk container's
+    # own namespace, but the SAME account is also the ARI credential, and
+    # ARI (port 8088, HTTP+websocket) listens on 0.0.0.0 in these images and
+    # is reachable from any other container on the internal 10.100.0.0/16
+    # compose network (and from the host). That exposure is baked into the
+    # images regardless of what .env says - randomizing this value here
+    # cannot mitigate it, and only re-breaks authentication. The trust
+    # boundary that actually matters is the compose network/host, not this
+    # credential.
+    AMI_USERNAME="asterisk"
+    AMI_PASSWORD="asterisk"
+    log_info "  Using fixed AMI/ARI credentials (VOIP-1329)"
 
     POSTGRES_PASSWORD=$(generate_random_key)
     log_info "  Generated POSTGRES_PASSWORD"
