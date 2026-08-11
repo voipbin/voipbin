@@ -405,6 +405,53 @@ teardown() {
     [[ "$last_line" == "199.127.61.42" ]]
 }
 
+@test "update_env_ips's captured return value is the bare IP with no log noise (real caller pattern)" {
+    # regenerate_ip_config() (common.sh) calls this exactly as:
+    #   local new_kamailio_ip=$(update_env_ips "$current_ip")
+    # then feeds $new_kamailio_ip straight into generate_coredns_config() as
+    # a DNS answer value. Command substitution captures ALL of stdout, so
+    # if update_env_ips's log_info calls aren't routed to stderr, this
+    # variable ends up holding the entire multi-line log transcript instead
+    # of an IP — which generate_coredns_config would then write verbatim
+    # into the Corefile, producing invalid CoreDNS zone syntax. Assert on
+    # the exact caller pattern, not a post-hoc `tail -1` of the raw output,
+    # so a regression here is caught even if some other line happens to be
+    # a bare IP too.
+    create_env_file \
+        "DOMAIN_MODE=internal" \
+        "BASE_DOMAIN=voipbin.test" \
+        "HOST_EXTERNAL_IP=104.243.38.39" \
+        "KAMAILIO_EXTERNAL_IP=199.127.61.42" \
+        "RTPENGINE_EXTERNAL_IP=199.127.61.134" \
+        "EXTERNAL_IP_PINNED=true"
+    load_common
+
+    local new_kamailio_ip
+    new_kamailio_ip=$(update_env_ips "104.243.38.99")
+
+    assert_equal "$new_kamailio_ip" "199.127.61.42"
+}
+
+@test "update_env_ips treats EXTERNAL_IP_PINNED=TRUE (uppercase) as pinned, not as unset/false" {
+    # Safety guard must fail closed on unexpected casing: init.sh itself
+    # only ever writes lowercase true/false, so this only matters for a
+    # hand-edited .env, but the wrong default here would silently replace
+    # a provider-registered IP with an auto-generated one nobody owns.
+    create_env_file \
+        "DOMAIN_MODE=external" \
+        "BASE_DOMAIN=example.com" \
+        "HOST_EXTERNAL_IP=104.243.38.39" \
+        "KAMAILIO_EXTERNAL_IP=199.127.61.42" \
+        "RTPENGINE_EXTERNAL_IP=199.127.61.134" \
+        "EXTERNAL_IP_PINNED=TRUE"
+    load_common
+
+    run update_env_ips "104.243.38.99"
+
+    [[ "$output" == *'unchanged (EXTERNAL_IP_PINNED=true)'* ]]
+    assert_file_contains "$PROJECT_DIR/.env" "KAMAILIO_EXTERNAL_IP=199.127.61.42"
+}
+
 @test "update_env_ips legacy .env (no mode, no BASE_DOMAIN) falls back to voipbin.test" {
     create_env_file \
         "HOST_EXTERNAL_IP=192.168.1.100" \

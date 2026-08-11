@@ -669,6 +669,20 @@ teardown() {
     [[ "$output" == *'VOIPBIN_INIT: status=error'* ]]
 }
 
+@test "check_existing_env_compat refuses --force-reinit on EXTERNAL_IP_PINNED=TRUE (uppercase), not just lowercase" {
+    load_init_functions
+    create_env_file "DOMAIN_MODE=external" "BASE_DOMAIN=example.com" "EXTERNAL_IP_PINNED=TRUE" \
+        "KAMAILIO_EXTERNAL_IP=199.127.61.42" "RTPENGINE_EXTERNAL_IP=199.127.61.134"
+    mock_command "docker" ""
+    RESOLV_BACKUP="$TEST_TEMP_DIR/no-such-backup"
+    parse_args --mode external --domain example.com --tls byo --cert c.pem --key k.pem --force-reinit --yes
+
+    run check_existing_env_compat
+
+    [[ "$status" -eq 1 ]]
+    [[ "$output" == *'pinned external IPs'* ]]
+}
+
 @test "check_existing_env_compat allows --force-reinit on a pinned install when IPs are re-passed" {
     load_init_functions
     create_env_file "DOMAIN_MODE=external" "BASE_DOMAIN=example.com" "EXTERNAL_IP_PINNED=true" \

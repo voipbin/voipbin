@@ -106,7 +106,9 @@ setup_external_ip() {
     # README.md "Hosting-provider routed IPs"). Blindly `ip addr add`-ing them
     # onto $iface here duplicates whatever the operator already configured
     # instead of skipping cleanly, which is worse than doing nothing.
-    if [[ "$EXTERNAL_IP_PINNED" == "true" ]]; then
+    # Case-insensitive: same fail-closed rationale as init.sh's
+    # --force-reinit guard and common.sh's update_env_ips().
+    if [[ "${EXTERNAL_IP_PINNED,,}" == "true" ]]; then
         if ip addr show 2>/dev/null | grep -q "inet ${ext_ip}/"; then
             log_info "  $ext_ip is pinned (EXTERNAL_IP_PINNED=true) and already present on the host — leaving as-is"
         else

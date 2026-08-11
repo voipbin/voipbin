@@ -344,7 +344,14 @@ check_existing_env_compat() {
         # operator to restate the pin (or explicitly accept losing it) on
         # every --force-reinit, the same way the mode/domain guard above
         # requires explicit --mode.
-        if [[ "$(get_env_var "$ENV_FILE" EXTERNAL_IP_PINNED)" == "true" && -z "$INIT_KAMAILIO_IP" ]]; then
+        # Case-insensitive: this is a safety guard, so an unexpected value
+        # (e.g. a hand-edited "EXTERNAL_IP_PINNED=TRUE") must fail closed
+        # (still guard) rather than silently not matching and letting the
+        # pinned IP get overwritten — the opposite of what a strict
+        # lowercase-only comparison would do here.
+        local existing_ip_pinned
+        existing_ip_pinned="$(get_env_var "$ENV_FILE" EXTERNAL_IP_PINNED)"
+        if [[ "${existing_ip_pinned,,}" == "true" && -z "$INIT_KAMAILIO_IP" ]]; then
             die 1 "existing install has pinned external IPs (EXTERNAL_IP_PINNED=true); --force-reinit requires re-passing --kamailio-ip/--rtpengine-ip explicitly, or the auto-generated host+8 offset will silently replace them with an address you don't own"
         fi
 
