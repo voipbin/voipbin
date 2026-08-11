@@ -907,6 +907,46 @@ exit 0'
 }
 
 # =============================================================================
+# VOIP-1328: dedicated asterisk-registrar realtime DB user. init.sh must
+# generate a real random password (not the root MySQL password, and not
+# empty) and write both DATABASE_ASTERISK_USERNAME/PASSWORD into .env, so
+# docker-compose.yml's ${DATABASE_ASTERISK_USERNAME:-root} override actually
+# takes effect on fresh installs instead of silently staying on root.
+# =============================================================================
+
+@test "init.sh generates a dedicated DATABASE_ASTERISK_USERNAME/PASSWORD in .env" {
+    load_init_functions
+    mock_ip_route "192.168.1.100"
+    mock_command_script "mkcert" '
+while [[ $# -gt 0 ]]; do
+    case "$1" in
+        -cert-file) echo "stub-cert" > "$2"; shift 2 ;;
+        -key-file) echo "stub-key" > "$2"; shift 2 ;;
+        -CAROOT) echo "/stub/caroot"; exit 0 ;;
+        -check) exit 0 ;;
+        -install) exit 0 ;;
+        *) shift ;;
+    esac
+done
+exit 0'
+
+    run main --yes
+
+    [[ "$status" -eq 0 ]]
+    [[ -f "$TEST_TEMP_DIR/.env" ]]
+    grep -q '^DATABASE_ASTERISK_USERNAME=asterisk_rt$' "$TEST_TEMP_DIR/.env"
+
+    local mysql_root_pw asterisk_pw
+    mysql_root_pw="$(grep '^MYSQL_ROOT_PASSWORD=' "$TEST_TEMP_DIR/.env" | cut -d'=' -f2-)"
+    asterisk_pw="$(grep '^DATABASE_ASTERISK_PASSWORD=' "$TEST_TEMP_DIR/.env" | cut -d'=' -f2-)"
+
+    # 64 hex chars (generate_random_key), non-empty, and distinct from root's.
+    [[ "$asterisk_pw" =~ ^[0-9a-f]{64}$ ]]
+    [[ -n "$mysql_root_pw" ]]
+    [[ "$asterisk_pw" != "$mysql_root_pw" ]]
+}
+
+# =============================================================================
 # .env permission hardening (VOIP-1275 follow-up): .env carries real,
 # randomly generated credentials (MySQL/RabbitMQ/AMI/Postgres/JWT), so it
 # must land at mode 600 - matching the chmod 600 treatment already applied

@@ -127,3 +127,26 @@ esac
     dir_mode="$(stat -c '%a' "$DBSCHEME_DIR")"
     [[ "$dir_mode" == "700" ]]
 }
+
+# --- VOIP-1328 wire-up: migrate.sh calls the shared
+# provision_asterisk_db_user() from common.sh. The function's own behavior
+# (no-op cases, .env parsing/quote-stripping, validation, idempotency,
+# stdin-vs-argv secret handling) is tested exhaustively once, directly
+# against common.sh, in common.bats — not re-tested here to avoid drift
+# between two copies of the same assertions. ---
+
+@test "migrate.sh calls provision_asterisk_db_user with DB_CONTAINER after CREATE DATABASE" {
+    run grep -n 'provision_asterisk_db_user "\$DB_CONTAINER"' "$SCRIPTS_DIR/migrate.sh"
+
+    [[ "$status" -eq 0 ]]
+    local call_line create_db_line
+    call_line="$(echo "$output" | head -1 | cut -d: -f1)"
+    create_db_line="$(grep -n "CREATE DATABASE IF NOT EXISTS bin_manager" "$SCRIPTS_DIR/migrate.sh" | head -1 | cut -d: -f1)"
+    [[ "$call_line" -gt "$create_db_line" ]]
+}
+
+@test "migrate.sh sources common.sh (where provision_asterisk_db_user/get_env_var live)" {
+    run grep -q 'source "\$SCRIPT_DIR/common.sh"' "$SCRIPTS_DIR/migrate.sh"
+
+    [[ "$status" -eq 0 ]]
+}

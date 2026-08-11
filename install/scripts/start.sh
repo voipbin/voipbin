@@ -825,6 +825,22 @@ main() {
         fi
     fi
 
+    # Step 6.5 (VOIP-1328): provision the dedicated asterisk-registrar
+    # realtime DB user unconditionally, NOT gated on check_database_initialized
+    # above. migrate.sh already does this on first init, but an operator who
+    # adds DATABASE_ASTERISK_USERNAME/PASSWORD to an EXISTING install's .env
+    # and re-runs `start` hits the "already initialized" branch, which never
+    # calls migrate.sh again - without this, the account would silently never
+    # get created even though docker-compose.yml has already switched the
+    # credential (review finding H2). provision_asterisk_db_user() itself is
+    # idempotent and a fast no-op when the vars are unset/root, so calling it
+    # on every start is safe and cheap.
+    if ! provision_asterisk_db_user "voipbin-db"; then
+        log_error "Failed to provision the dedicated asterisk-registrar DB user!"
+        log_error "Check the output above, then re-run: voipbin> start"
+        exit 1
+    fi
+
     # Mode gate for Steps 7-8 (§2.4): external mode never rewrites the
     # Corefile and never invokes setup-dns.sh.
     local domain_mode

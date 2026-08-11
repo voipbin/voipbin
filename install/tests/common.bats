@@ -253,6 +253,47 @@ teardown() {
     assert_equal "$result" "external"
 }
 
+# VOIP-1328 review finding H1: `docker compose`'s own .env parsing strips a
+# single matched pair of surrounding quotes; get_env_var previously did not,
+# so a quoted DATABASE_ASTERISK_PASSWORD in .env would disagree with what
+# the asterisk-registrar container actually received - silently recreating
+# the exact realtime-auth failure the dedicated DB user was meant to fix.
+@test "get_env_var strips a matched pair of surrounding double quotes" {
+    create_env_file 'MY_VAR="quoted value"'
+    load_common
+
+    result=$(get_env_var "$PROJECT_DIR/.env" "MY_VAR")
+
+    assert_equal "$result" "quoted value"
+}
+
+@test "get_env_var strips a matched pair of surrounding single quotes" {
+    create_env_file "MY_VAR='quoted value'"
+    load_common
+
+    result=$(get_env_var "$PROJECT_DIR/.env" "MY_VAR")
+
+    assert_equal "$result" "quoted value"
+}
+
+@test "get_env_var leaves a single unmatched quote character alone" {
+    create_env_file 'MY_VAR=has"onequote'
+    load_common
+
+    result=$(get_env_var "$PROJECT_DIR/.env" "MY_VAR")
+
+    assert_equal "$result" 'has"onequote'
+}
+
+@test "get_env_var leaves mismatched quote pairs (double...single) alone" {
+    printf 'MY_VAR="mismatched%s\n' "'" > "$PROJECT_DIR/.env"
+    load_common
+
+    result=$(get_env_var "$PROJECT_DIR/.env" "MY_VAR")
+
+    assert_equal "$result" "\"mismatched'"
+}
+
 # =============================================================================
 # get_domain_mode() tests
 # =============================================================================
@@ -522,4 +563,199 @@ teardown() {
     result=$(detect_os)
 
     assert_equal "$result" "unknown"
+}
+
+# =============================================================================
+# provision_asterisk_db_user() tests (VOIP-1328)
+#
+# docker is stubbed via mock_command_script so these run with zero real
+# containers. The mock records every stdin payload it receives to a file
+# so tests can assert on the exact SQL sent, and on whether the password
+# ever appears as a literal docker-exec ARGUMENT (which would leak through
+# `ps aux` — the whole reason it's piped via stdin instead of on argv).
+# =============================================================================
+
+stub_docker_capturing_run() {
+    local log_file="$1"
+    mock_command_script "docker" "
+echo \"ARGS: \$*\" >> '$log_file'
+if [[ \"\$1\" == \"exec\" ]]; then
+    cat >> '$log_file'
+    echo '' >> '$log_file'
+fi
+exit 0
+"
+}
+
+@test "provision_asterisk_db_user is a no-op when .env has no DATABASE_ASTERISK_USERNAME (backward compat)" {
+    # No .env file at all - matches a pre-VOIP-1328 install.
+    load_common
+    local log_file="$TEST_TEMP_DIR/docker.log"
+    stub_docker_capturing_run "$log_file"
+
+    run provision_asterisk_db_user "voipbin-db"
+
+    [[ "$status" -eq 0 ]]
+    [[ ! -f "$log_file" ]]
+}
+
+@test "provision_asterisk_db_user is a no-op when DATABASE_ASTERISK_USERNAME=root" {
+    create_env_file "DATABASE_ASTERISK_USERNAME=root" "DATABASE_ASTERISK_PASSWORD=whatever"
+    load_common
+    local log_file="$TEST_TEMP_DIR/docker.log"
+    stub_docker_capturing_run "$log_file"
+
+    run provision_asterisk_db_user "voipbin-db"
+
+    [[ "$status" -eq 0 ]]
+    [[ ! -f "$log_file" ]]
+}
+
+@test "provision_asterisk_db_user creates/alters/grants the dedicated user via stdin, never on argv" {
+    create_env_file \
+        "DATABASE_ASTERISK_USERNAME=asterisk_rt" \
+        "DATABASE_ASTERISK_PASSWORD=deadbeefcafef00d"
+    load_common
+    local log_file="$TEST_TEMP_DIR/docker.log"
+    stub_docker_capturing_run "$log_file"
+
+    run provision_asterisk_db_user "voipbin-db"
+
+    [[ "$status" -eq 0 ]]
+    [[ -f "$log_file" ]]
+    # The password must appear in the captured STDIN payload...
+    grep -q "deadbeefcafef00d" "$log_file"
+    # ...but never on the "ARGS: ..." line (the docker exec argv itself).
+    ! grep "^ARGS:" "$log_file" | grep -q "deadbeefcafef00d"
+    grep -q "CREATE USER IF NOT EXISTS 'asterisk_rt'@'%'" "$log_file"
+    grep -q "ALTER USER 'asterisk_rt'@'%'" "$log_file"
+    grep -q "GRANT SELECT, INSERT, UPDATE, DELETE ON asterisk\.\* TO 'asterisk_rt'@'%'" "$log_file"
+    # docker exec targeted the container name passed as $1, not a hardcoded one.
+    grep -q "^ARGS: exec -i voipbin-db" "$log_file"
+}
+
+@test "provision_asterisk_db_user strips a quoted password from .env before using it (H1 regression)" {
+    create_env_file \
+        'DATABASE_ASTERISK_USERNAME=asterisk_rt' \
+        'DATABASE_ASTERISK_PASSWORD="deadbeefcafef00d"'
+    load_common
+    local log_file="$TEST_TEMP_DIR/docker.log"
+    stub_docker_capturing_run "$log_file"
+
+    run provision_asterisk_db_user "voipbin-db"
+
+    [[ "$status" -eq 0 ]]
+    # The SQL must carry the UNQUOTED password (matching what docker-compose
+    # would inject into the container) - not the literal value with quotes.
+    grep -q "IDENTIFIED WITH mysql_native_password BY 'deadbeefcafef00d'" "$log_file"
+    ! grep -q '\\"deadbeefcafef00d\\"' "$log_file"
+}
+
+@test "provision_asterisk_db_user is idempotent: re-running twice both succeed with identical SQL" {
+    create_env_file \
+        "DATABASE_ASTERISK_USERNAME=asterisk_rt" \
+        "DATABASE_ASTERISK_PASSWORD=deadbeefcafef00d"
+    load_common
+    local log_file="$TEST_TEMP_DIR/docker.log"
+    stub_docker_capturing_run "$log_file"
+
+    run provision_asterisk_db_user "voipbin-db"
+    [[ "$status" -eq 0 ]]
+    local first_run
+    first_run="$(cat "$log_file")"
+    rm -f "$log_file"
+
+    run provision_asterisk_db_user "voipbin-db"
+    [[ "$status" -eq 0 ]]
+    local second_run
+    second_run="$(cat "$log_file")"
+
+    # CREATE USER IF NOT EXISTS + ALTER USER means a second run is
+    # side-effect-identical to the first (no error, no divergent SQL).
+    [[ "$first_run" == "$second_run" ]]
+    grep -q "CREATE USER IF NOT EXISTS 'asterisk_rt'@'%'" <<< "$second_run"
+}
+
+@test "provision_asterisk_db_user falls back to .env's MYSQL_ROOT_PASSWORD when DATABASE_ASTERISK_PASSWORD is unset" {
+    create_env_file \
+        "DATABASE_ASTERISK_USERNAME=asterisk_rt" \
+        "MYSQL_ROOT_PASSWORD=root-fallback-pw"
+    load_common
+    local log_file="$TEST_TEMP_DIR/docker.log"
+    stub_docker_capturing_run "$log_file"
+
+    run provision_asterisk_db_user "voipbin-db"
+
+    [[ "$status" -eq 0 ]]
+    grep -q "root-fallback-pw" "$log_file"
+}
+
+@test "provision_asterisk_db_user rejects a username with characters outside [A-Za-z0-9_]" {
+    create_env_file \
+        "DATABASE_ASTERISK_USERNAME=asterisk_rt'; DROP TABLE asterisk.ps_aors; --" \
+        "DATABASE_ASTERISK_PASSWORD=deadbeefcafef00d"
+    load_common
+    local log_file="$TEST_TEMP_DIR/docker.log"
+    stub_docker_capturing_run "$log_file"
+
+    run provision_asterisk_db_user "voipbin-db"
+
+    [[ "$status" -ne 0 ]]
+    [[ "$output" == *"DATABASE_ASTERISK_USERNAME"* ]]
+    [[ ! -f "$log_file" ]]
+}
+
+@test "provision_asterisk_db_user rejects a password containing a single quote" {
+    create_env_file \
+        "DATABASE_ASTERISK_USERNAME=asterisk_rt" \
+        "DATABASE_ASTERISK_PASSWORD=abc'; DROP TABLE asterisk.ps_aors; --"
+    load_common
+    local log_file="$TEST_TEMP_DIR/docker.log"
+    stub_docker_capturing_run "$log_file"
+
+    run provision_asterisk_db_user "voipbin-db"
+
+    [[ "$status" -ne 0 ]]
+    [[ "$output" == *"DATABASE_ASTERISK_PASSWORD"* ]]
+    [[ ! -f "$log_file" ]]
+}
+
+@test "provision_asterisk_db_user rejects rather than silently defaulting when neither DATABASE_ASTERISK_PASSWORD nor MYSQL_ROOT_PASSWORD are set (H1/LOW-3)" {
+    create_env_file "DATABASE_ASTERISK_USERNAME=asterisk_rt"
+    # No DATABASE_ASTERISK_PASSWORD and no MYSQL_ROOT_PASSWORD in .env.
+    # docker-compose.yml's own
+    # ${DATABASE_ASTERISK_PASSWORD:-${MYSQL_ROOT_PASSWORD}} resolves to an
+    # EMPTY string in this exact case - a hardcoded "root_password" literal
+    # fallback here would silently diverge from what the container actually
+    # authenticates with (VOIP-1328 review round 2, LOW-3), so this must be
+    # rejected rather than provisioned with a guessed value.
+    load_common
+    local log_file="$TEST_TEMP_DIR/docker.log"
+    stub_docker_capturing_run "$log_file"
+
+    run provision_asterisk_db_user "voipbin-db"
+
+    [[ "$status" -ne 0 ]]
+    [[ "$output" == *"DATABASE_ASTERISK_PASSWORD"* ]]
+    [[ ! -f "$log_file" ]]
+}
+
+@test "provision_asterisk_db_user returns non-zero and prints MySQL's error output when the docker command fails" {
+    create_env_file \
+        "DATABASE_ASTERISK_USERNAME=asterisk_rt" \
+        "DATABASE_ASTERISK_PASSWORD=deadbeefcafef00d"
+    load_common
+    mock_command_script "docker" '
+if [[ "$1" == "exec" ]]; then
+    cat > /dev/null
+fi
+echo "ERROR 1045 (28000): Access denied" >&2
+exit 1
+'
+
+    run provision_asterisk_db_user "voipbin-db"
+
+    [[ "$status" -ne 0 ]]
+    [[ "$output" == *"Failed to provision dedicated DB user"* ]]
+    [[ "$output" == *"ERROR 1045"* ]]
 }

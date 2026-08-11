@@ -19,6 +19,18 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_DIR="$(dirname "$SCRIPT_DIR")"
 
+# Only get_env_var() is used from common.sh here, so provision_asterisk_db_user()
+# (below) reads DATABASE_ASTERISK_USERNAME/PASSWORD straight from .env and
+# works whether or not migrate.sh is run standalone (VOIP-1328 review finding
+# H3: previously it relied entirely on start.sh's `set -a; source .env`
+# having already run, so a direct `./scripts/migrate.sh` invocation — which
+# doctor.sh explicitly instructs operators to do — silently skipped
+# provisioning). common.sh defines its own log()/err()-like helpers under
+# different names (log_info/log_warn/...), so sourcing it does not shadow
+# this script's log()/err().
+# shellcheck source=common.sh
+source "$SCRIPT_DIR/common.sh"
+
 MONOREPO_URL="https://github.com/voipbin/monorepo.git"
 DBSCHEME_DIR="$PROJECT_DIR/tmp/bin-dbscheme-manager"
 
@@ -165,6 +177,15 @@ CREATE_OUT="$(docker exec "$DB_CONTAINER" sh -c "$MYSQL_IN_DB -e 'CREATE DATABAS
     echo "$CREATE_OUT" | grep -v "Using a password" >&2 || true
     exit 1
 }
+
+# --- 4b. Provision the dedicated asterisk-registrar realtime DB user
+#         (VOIP-1328). provision_asterisk_db_user() is defined in common.sh
+#         (sourced above) — the single shared implementation also used by
+#         init_database.sh and start.sh, so all three entrypoints agree on
+#         .env parsing, validation, and idempotency (VOIP-1328 review
+#         findings H1/H3/M2/M4: three independently-written copies had
+#         already started drifting). ---
+provision_asterisk_db_user "$DB_CONTAINER" || exit 1
 
 # --- 5. Write alembic.ini for both streams (PyMySQL DSN, db service hostname) ---
 write_alembic_ini() {

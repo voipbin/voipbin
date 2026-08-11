@@ -8,6 +8,16 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_DIR="$(dirname "$SCRIPT_DIR")"
 DBSCHEME_DIR="$PROJECT_DIR/tmp/bin-dbscheme-manager"
 
+# common.sh provides get_env_var() (quote/CRLF/whitespace-stripping parity
+# with `docker compose`'s own .env parsing - VOIP-1328 review finding H1)
+# and provision_asterisk_db_user() (the single shared implementation also
+# used by migrate.sh and start.sh, called from main() below - VOIP-1328
+# review findings H1/H2/H3/M2/M4). This script's own log_info/log_warn/
+# log_error/log_step definitions further below are unaffected: bash keeps
+# the LAST definition of a function, so they simply override common.sh's.
+# shellcheck source=common.sh
+source "$SCRIPT_DIR/common.sh"
+
 # Database configuration (matches docker-compose.yml)
 DB_HOST="127.0.0.1"
 DB_PORT="3306"
@@ -123,6 +133,12 @@ create_databases() {
 
     docker exec voipbin-db sh -c "$IN_DB_MYSQL -e 'CREATE DATABASE IF NOT EXISTS asterisk CHARACTER SET utf8 COLLATE utf8_general_ci;'" root
     log_info "  Created database: asterisk"
+
+    # VOIP-1328: the dedicated realtime DB user is NOT provisioned here.
+    # main() already calls provision_asterisk_db_user() unconditionally
+    # before the "already initialized" gate (review finding H2, round 2) -
+    # duplicating the call here would just double the provisioning log
+    # noise on every ordinary run without adding any new code path.
 }
 
 # Download or update dbscheme from monorepo
@@ -400,6 +416,19 @@ main() {
 
     # Wait for MySQL
     wait_for_mysql || exit 1
+    echo ""
+
+    # VOIP-1328 review finding H2 (round 2): this MUST run before the
+    # "already initialized" gate below, not only inside create_databases().
+    # An operator adding DATABASE_ASTERISK_USERNAME/PASSWORD to an EXISTING
+    # install's .env and re-running this script (the documented recovery
+    # path in CLAUDE.md) answers "N" at the re-run-migrations prompt below
+    # (they don't want migrations re-run, just the DB user provisioned) and
+    # previously hit `exit 0` before create_databases() - and therefore
+    # provision_asterisk_db_user() - ever ran, leaving asterisk-registrar
+    # pointed at a MySQL account that was never created. Idempotent and
+    # cheap, so running it unconditionally on every invocation is safe.
+    provision_asterisk_db_user voipbin-db || exit 1
     echo ""
 
     # Check if already initialized

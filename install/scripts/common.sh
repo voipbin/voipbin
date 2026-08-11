@@ -61,17 +61,38 @@ check_root() {
 # is returned literally, never executed. Empty output if the file or the
 # variable is absent. Trailing \r (CRLF-saved .env) and surrounding
 # whitespace are stripped so the strict-equality mode/TLS gates never
-# silently mismatch on an invisible character.
+# silently mismatch on an invisible character. A single matched pair of
+# surrounding quotes (VAR="value" or VAR='value') is also stripped (VOIP-1328
+# review finding H1) — without this, a hand-quoted value here disagreed with
+# what the container actually received, which for DATABASE_ASTERISK_PASSWORD
+# silently recreated the exact realtime-auth failure the dedicated user was
+# meant to fix. NOTE (VOIP-1328 review round 2, MEDIUM-2): this is NOT full
+# parity with `docker compose`'s .env parsing — a `${VAR}` reference or a
+# trailing ` # comment` in the value is returned literally here but expanded/
+# stripped by compose. Do not rely on this function for values that might
+# contain either of those.
+#
+# `|| true` on the pipeline (VOIP-1328 review round 2, LOW-2): under
+# `set -o pipefail` (migrate.sh, this function's own caller
+# provision_asterisk_db_user), `grep` finding no match exits 1, which without
+# this would make the whole pipeline — and therefore the `value=$(...)`
+# assignment — fail, silently aborting the calling script under `set -e`
+# even though "variable absent" is an entirely normal, expected outcome here.
 get_env_var() {
     local env_file="$1"
     local var_name="$2"
     local value
 
     [[ -n "$env_file" && -f "$env_file" ]] || return 0
-    value=$(grep "^${var_name}=" "$env_file" 2>/dev/null | tail -1 | cut -d'=' -f2-)
+    value=$(grep "^${var_name}=" "$env_file" 2>/dev/null | tail -1 | cut -d'=' -f2- || true)
     value="${value%$'\r'}"
     value="${value#"${value%%[![:space:]]*}"}"
     value="${value%"${value##*[![:space:]]}"}"
+    if [[ ${#value} -ge 2 && "$value" == \"*\" && "$value" == *\" ]]; then
+        value="${value:1:-1}"
+    elif [[ ${#value} -ge 2 && "$value" == \'*\' && "$value" == *\' ]]; then
+        value="${value:1:-1}"
+    fi
     printf '%s\n' "$value"
 }
 
@@ -647,4 +668,84 @@ detect_os() {
         Darwin*) echo "macos" ;;
         *)       echo "unknown" ;;
     esac
+}
+
+# =============================================================================
+# Dedicated asterisk-registrar realtime DB user (VOIP-1328)
+# =============================================================================
+
+# provision_asterisk_db_user <db-container>
+# Idempotently creates/grants the dedicated MySQL user that
+# asterisk-registrar's res_config_mysql realtime client authenticates as,
+# configured via DATABASE_ASTERISK_USERNAME/PASSWORD in $PROJECT_DIR/.env.
+# No-op (returns 0) when the configured username is absent or still "root" -
+# matching docker-compose.yml's ${DATABASE_ASTERISK_USERNAME:-root} default,
+# so pre-VOIP-1328 installs are unaffected until they opt in.
+#
+# This is the SINGLE implementation shared by init_database.sh, migrate.sh,
+# and start.sh (VOIP-1328 review finding: three independently-written copies
+# had already started drifting). Callers must set PROJECT_DIR before calling
+# and must `source common.sh` for get_env_var()/log_error()/log_info().
+# Safe to call on every run (start.sh calls it unconditionally, not gated on
+# "was the DB already initialized", so an operator who adds these two vars
+# to an EXISTING install's .env and re-runs `start` actually gets the user
+# provisioned — a prior gap where it silently never ran).
+#
+# mysql_native_password (rather than MySQL 8's caching_sha2_password
+# default) is deliberate: it is the working theory for the original, never
+# conclusively root-caused VOIP-1328 realtime-auth failures — Asterisk's
+# res_config_mysql, built against an older libmariadb3/libmysqlclient, is a
+# known-bad combination with caching_sha2's handshake. Do not drop this
+# clause in a future cleanup without re-verifying against a real
+# asterisk-registrar first.
+#
+# The username/password are validated before being interpolated into
+# single-quoted SQL: init.sh's generated default is a safe 64-char hex
+# string, but a hand-edited .env is not guaranteed to be, and this runs as
+# MySQL root. The SQL is piped via stdin to `docker exec -i`, never placed
+# on the argv, so the password does not leak through `ps aux`.
+provision_asterisk_db_user() {
+    local db_container="$1"
+    # VOIP-1328 review round 2, LOW-1: fail with a diagnosable message
+    # instead of an opaque "unbound variable" abort under set -u if a
+    # caller forgets to set PROJECT_DIR before calling this.
+    local env_file="${PROJECT_DIR:?provision_asterisk_db_user requires PROJECT_DIR to be set}/.env"
+    local mysql_in_db='exec mysql -u"$0" -p"${MYSQL_ROOT_PASSWORD:-root_password}"'
+
+    local asterisk_db_user
+    asterisk_db_user="$(get_env_var "$env_file" DATABASE_ASTERISK_USERNAME)"
+    asterisk_db_user="${asterisk_db_user:-root}"
+    if [ "$asterisk_db_user" == "root" ]; then
+        return 0
+    fi
+
+    if [[ ! "$asterisk_db_user" =~ ^[A-Za-z0-9_]{1,32}$ ]]; then
+        log_error "DATABASE_ASTERISK_USERNAME ('$asterisk_db_user') contains characters outside [A-Za-z0-9_] - refusing to run as MySQL root with an unvalidated value. Fix .env."
+        return 1
+    fi
+
+    local root_password asterisk_db_password
+    root_password="$(get_env_var "$env_file" MYSQL_ROOT_PASSWORD)"
+    asterisk_db_password="$(get_env_var "$env_file" DATABASE_ASTERISK_PASSWORD)"
+    # VOIP-1328 review round 2, LOW-3: no further fallback to a literal
+    # "root_password" string here - docker-compose.yml's own
+    # ${DATABASE_ASTERISK_PASSWORD:-${MYSQL_ROOT_PASSWORD}} resolves to an
+    # EMPTY string in this same edge case (neither var set), not that
+    # literal, so a hardcoded fallback here would silently diverge from
+    # what the container actually authenticates with. An empty result falls
+    # straight into the empty-password rejection below instead.
+    asterisk_db_password="${asterisk_db_password:-$root_password}"
+    if [[ -z "$asterisk_db_password" || "$asterisk_db_password" == *"'"* || "$asterisk_db_password" == *'\'* ]]; then
+        log_error "DATABASE_ASTERISK_PASSWORD is empty or contains a quote/backslash character - refusing to run as MySQL root with an unvalidated value. Fix .env."
+        return 1
+    fi
+
+    log_info "Provisioning dedicated realtime DB user: $asterisk_db_user"
+    local sql="CREATE USER IF NOT EXISTS '${asterisk_db_user}'@'%' IDENTIFIED WITH mysql_native_password BY '${asterisk_db_password}'; ALTER USER '${asterisk_db_user}'@'%' IDENTIFIED WITH mysql_native_password BY '${asterisk_db_password}'; GRANT SELECT, INSERT, UPDATE, DELETE ON asterisk.* TO '${asterisk_db_user}'@'%'; FLUSH PRIVILEGES;"
+    local sql_out
+    if ! sql_out="$(printf '%s' "$sql" | docker exec -i "$db_container" sh -c "$mysql_in_db" root 2>&1)"; then
+        log_error "Failed to provision dedicated DB user '$asterisk_db_user' - asterisk-registrar realtime auth WILL FAIL until this is fixed and re-run:"
+        echo "$sql_out" | grep -v "Using a password" >&2 || true
+        return 1
+    fi
 }

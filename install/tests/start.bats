@@ -283,6 +283,104 @@ fi
 }
 
 # =============================================================================
+# main()'s Step 6.5 (VOIP-1328): provision_asterisk_db_user() must run
+# unconditionally, NOT gated on check_database_initialized. Round 1 of the
+# VOIP-1328 review found the original version only ran provisioning inside
+# migrate.sh, which main() skips entirely once check_database_initialized
+# returns true — so an operator adding DATABASE_ASTERISK_USERNAME/PASSWORD
+# to an EXISTING install's .env and re-running `start` got a silently
+# unprovisioned DB user even though docker-compose.yml had already switched
+# the credential. Extracted verbatim from start.sh the same way
+# load_step12_gate is (see below), so this fails if Step 6.5 is ever
+# accidentally moved inside the `if check_database_initialized` branch.
+# =============================================================================
+
+# Extracts the literal "# Step 6.5" block from start.sh (up to but excluding
+# "# Mode gate for Steps 7-8") and defines it as a function named
+# run_step6_5_gate, so tests can invoke the exact production control flow
+# without mocking the rest of main() (docker compose up, wait_for_api, etc.).
+load_step6_5_gate() {
+    local extracted="$TEST_TEMP_DIR/step6_5_gate.sh"
+    sed -n '/# Step 6.5 (VOIP-1328)/,/# Mode gate for Steps 7-8/p' "$SCRIPTS_DIR/start.sh" \
+        | sed '$d' \
+        > "$extracted"
+
+    {
+        echo 'run_step6_5_gate() {'
+        cat "$extracted"
+        echo '}'
+    } > "$extracted.fn"
+
+    # Symmetry with load_init_database_functions/_main_functions: if either
+    # marker comment is ever reworded, the sed range would silently extract
+    # an empty or wrong block instead of failing loudly.
+    if ! grep -q 'provision_asterisk_db_user' "$extracted.fn"; then
+        echo "load_step6_5_gate: failed to extract the Step 6.5 block from start.sh (marker comments changed?)" >&2
+        return 1
+    fi
+
+    source "$extracted.fn"
+}
+
+@test "Step 6.5 gate provisions the dedicated DB user even when check_database_initialized is true" {
+    load_start_functions
+    load_step6_5_gate
+    create_env_file \
+        "DATABASE_ASTERISK_USERNAME=asterisk_rt" \
+        "DATABASE_ASTERISK_PASSWORD=deadbeefcafef00d"
+    local log_file="$TEST_TEMP_DIR/docker.log"
+    mock_command_script "docker" "
+echo \"ARGS: \$*\" >> '$log_file'
+if [[ \"\$1\" == \"exec\" && \"\$2\" == \"-i\" ]]; then
+    cat >> '$log_file'
+    echo '' >> '$log_file'
+fi
+exit 0
+"
+
+    run run_step6_5_gate
+
+    [[ "$status" -eq 0 ]]
+    grep -q "CREATE USER IF NOT EXISTS 'asterisk_rt'@'%'" "$log_file"
+}
+
+@test "Step 6.5 gate is a cheap no-op when DATABASE_ASTERISK_USERNAME is unset (pre-VOIP-1328 install)" {
+    load_start_functions
+    load_step6_5_gate
+    create_env_file "OTHER_VAR=x"
+    local log_file="$TEST_TEMP_DIR/docker.log"
+    mock_command_script "docker" "
+echo \"ARGS: \$*\" >> '$log_file'
+exit 0
+"
+
+    run run_step6_5_gate
+
+    [[ "$status" -eq 0 ]]
+    [[ ! -f "$log_file" ]]
+}
+
+@test "Step 6.5 gate fails main() with a clear error when provisioning fails" {
+    load_start_functions
+    load_step6_5_gate
+    create_env_file \
+        "DATABASE_ASTERISK_USERNAME=asterisk_rt" \
+        "DATABASE_ASTERISK_PASSWORD=deadbeefcafef00d"
+    mock_command_script "docker" '
+if [[ "$1" == "exec" && "$2" == "-i" ]]; then
+    cat > /dev/null
+    exit 1
+fi
+exit 0
+'
+
+    run run_step6_5_gate
+
+    [[ "$status" -ne 0 ]]
+    [[ "$output" == *"Failed to provision the dedicated asterisk-registrar DB user"* ]]
+}
+
+# =============================================================================
 # setup_test_customer marker gating (VOIP-1289): the .test_data_initialized
 # marker must only be written when all 3 extensions actually got created,
 # so a broken run doesn't defeat the "just re-run start.sh" recovery path.

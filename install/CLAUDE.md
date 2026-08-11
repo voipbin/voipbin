@@ -72,13 +72,34 @@ docker compose up -d db
 docker exec -it voipbin-db mysql -uroot -p"$(grep MYSQL_ROOT_PASSWORD .env | cut -d= -f2)" bin_manager
 ```
 
-The `init_database.sh` script:
-1. Creates `bin_manager` and `asterisk` databases
-2. Downloads schema from monorepo's `bin-dbscheme-manager`
-3. Runs alembic migrations to create all tables
+The `init_database.sh` script's `main()`:
+1. Provisions the dedicated `asterisk-registrar` realtime DB user (VOIP-1328, see below) — runs before the "already initialized?" check, so it's not skipped by answering "N" to the re-run-migrations prompt
+2. Creates `bin_manager` and `asterisk` databases
+3. Downloads schema from monorepo's `bin-dbscheme-manager`
+4. Runs alembic migrations to create all tables
 
 **Note:** Migrations run inside a container (`scripts/migrate.sh`, python:3.11-slim
 on the compose network). No host `alembic`/`mysqlclient` installation is needed.
+`scripts/migrate.sh` and `scripts/start.sh` (Step 6.5, unconditional — not
+gated on whether the DB was already initialized) provision the same
+dedicated DB user independently via the shared `provision_asterisk_db_user()`
+in `scripts/common.sh`, so all three entrypoints keep `asterisk-registrar`'s
+realtime auth working.
+
+**`DATABASE_ASTERISK_USERNAME`/`DATABASE_ASTERISK_PASSWORD` (VOIP-1328):**
+`asterisk-registrar`'s `res_config_mysql` realtime client previously
+authenticated as `root` (`DATABASE_ASTERISK_USERNAME=root` in
+`docker-compose.yml`), which was observed to intermittently fail MySQL 8
+auth (root cause never conclusively pinned down — ruled out password
+mismatch, account lock, auth-plugin incompatibility, TLS requirement, and
+stale containers). `init.sh` now generates a dedicated least-privilege user
+(`asterisk_rt` by default, `SELECT/INSERT/UPDATE/DELETE` on `asterisk.*`
+only) and writes it to `.env`. `docker-compose.yml` falls back to
+`root`/`MYSQL_ROOT_PASSWORD` when these two vars are absent, so installs
+created before VOIP-1328 keep working unchanged until `.env` is regenerated.
+To opt an EXISTING install in: add the two vars to `.env` and simply re-run
+`voipbin> start` — Step 6.5 provisions the user unconditionally, no need to
+manually invoke `init_database.sh`/`migrate.sh`.
 
 ## Install Modes and AI-Install Contract (VOIP-1275)
 
