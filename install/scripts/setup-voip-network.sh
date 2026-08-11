@@ -1,7 +1,8 @@
 #!/bin/bash
 # Setup VoIP network interfaces for host-mode services
 # This script:
-# 1. Creates macvlan interfaces on the default bridge for internal communication
+# 1. Creates veth pairs on the default bridge for internal communication
+#    (VOIP-1331 - was macvlan, see create_internal_interfaces() below for why)
 # 2. Optionally adds a secondary IP to the host's physical interface for external SIP
 #
 # External IP can be configured via:
@@ -232,41 +233,108 @@ fi
 
 log_info "Found bridge interface: $BRIDGE_IF"
 
-# Create each internal interface
-for INTERFACE_NAME in "${!INTERNAL_INTERFACES[@]}"; do
-    IP_ADDR="${INTERNAL_INTERFACES[$INTERFACE_NAME]}"
-    IP_CIDR="${IP_ADDR}/16"
+# create_internal_interfaces <bridge-if>
+# Creates/reconfigures each entry in INTERNAL_INTERFACES as a veth pair
+# (VOIP-1331): one end enslaved directly to the compose bridge (exactly how
+# Docker attaches every container's own veth), the other kept in the host
+# namespace with the static IP. This used to be a macvlan interface with the
+# bridge as its parent - that setup has a kernel-level asymmetry where NEW
+# inbound TCP connections from OTHER bridge ports (i.e. from containers) to
+# the macvlan child are silently dropped (confirmed via tcpdump: the frame
+# reaches the bridge but never arrives at the macvlan child), while
+# macvlan-initiated traffic works fine. That broke asterisk-call's outbound
+# INVITE to Kamailio (call-manager could create the channel, but the SIP
+# packet never left the host). A veth pair has no such asymmetry: from the
+# bridge's perspective this interface is indistinguishable from any other
+# container's own network attachment. Extracted into its own function (was
+# inline top-level code) specifically so it's unit-testable.
+create_internal_interfaces() {
+    local bridge_if="$1"
 
-    echo ""
-    log_info "Configuring $INTERFACE_NAME ($IP_ADDR)..."
+    for INTERFACE_NAME in "${!INTERNAL_INTERFACES[@]}"; do
+        local ip_addr="${INTERNAL_INTERFACES[$INTERFACE_NAME]}"
+        local ip_cidr="${ip_addr}/16"
 
-    # Check if interface already exists
-    if ip link show "$INTERFACE_NAME" &>/dev/null; then
-        # Check if it has the correct IP
-        CURRENT_IP=$(ip addr show "$INTERFACE_NAME" | grep -oP 'inet \K[\d.]+' || echo "")
-        if [[ "$CURRENT_IP" == "$IP_ADDR" ]]; then
-            log_info "  Interface already configured with correct IP"
-            continue
-        else
-            log_warn "  Removing existing interface to reconfigure..."
-            ip link delete "$INTERFACE_NAME"
+        echo ""
+        log_info "Configuring $INTERFACE_NAME ($ip_addr)..."
+
+        # "-br" suffix, not "-int-br": Linux interface names are capped at
+        # IFNAMSIZ-1 = 15 chars. "${INTERFACE_NAME}-br" would make
+        # "rtpengine-int-br" (16 chars), which `ip link add ... peer name`
+        # rejects outright ("wrong: name not a valid ifname") - and since
+        # this whole function runs under `set -e`, that failure would abort
+        # BOTH interfaces, not just the long one. Stripping the "-int"
+        # suffix keeps both current names comfortably under the limit
+        # (kamailio-br=11, rtpengine-br=12); the explicit guard below turns
+        # any future interface name that doesn't fit into a loud, immediate
+        # error instead of a confusing kernel-level failure. Computed and
+        # checked BEFORE any existence probe/delete below (VOIP-1331 review
+        # round 3, LOW) so a future over-long name fails loudly up front
+        # instead of after this interface has already been torn down.
+        local br_peer_name="${INTERFACE_NAME%-int}-br"
+        if (( ${#br_peer_name} > 15 )); then
+            log_error "peer name '$br_peer_name' (derived from '$INTERFACE_NAME') exceeds the 15-char Linux interface name limit (IFNAMSIZ) - rename the interface or shorten the '-br' suffix scheme"
+            exit 1
         fi
-    fi
 
-    # Create macvlan interface
-    log_info "  Creating macvlan interface on '$BRIDGE_IF'..."
-    ip link add "$INTERFACE_NAME" link "$BRIDGE_IF" type macvlan mode bridge
+        # Check if interface already exists
+        if ip link show "$INTERFACE_NAME" &>/dev/null; then
+            # VOIP-1331: force-migrate a pre-existing LEGACY MACVLAN interface
+            # (the old, broken design - see the comment above this function)
+            # even when its IP already matches. An IP-only check would
+            # otherwise skip re-creation forever on any host that already
+            # ran the old macvlan-based script, silently leaving the bug in
+            # place despite this fix being "applied".
+            if ip -d link show "$INTERFACE_NAME" 2>/dev/null | grep -q 'macvlan'; then
+                log_warn "  Found a legacy macvlan interface (VOIP-1331) - removing to recreate as a veth pair..."
+                ip link delete "$INTERFACE_NAME"
+            else
+                local current_ip
+                current_ip=$(ip addr show "$INTERFACE_NAME" | grep -oP 'inet \K[\d.]+' || echo "")
+                if [[ "$current_ip" == "$ip_addr" ]]; then
+                    # VOIP-1331 review round 3, HIGH: unlike the old macvlan
+                    # design (killed automatically by the kernel when its
+                    # parent bridge disappeared), a veth pair survives
+                    # `docker compose down`/`voipbin> clean` orphaned, with
+                    # its bridge-side peer's `master` cleared - reachable via
+                    # this repo's own documented clean → start cycle (a new
+                    # compose network gets a new bridge name on recreate).
+                    # An IP-only "already configured" check would then skip
+                    # re-enslaving it forever, leaving Kamailio/RTPEngine
+                    # silently cut off from every container while every gate
+                    # in this repo (doctor.sh, check-install.sh, this
+                    # script) reports success. Re-assert enslavement
+                    # unconditionally on this path - `ip link set ... master`
+                    # is idempotent when already correct, and repairs the
+                    # orphan in place otherwise.
+                    log_info "  Interface already configured with correct IP - re-asserting bridge enslavement..."
+                    ip link set "$br_peer_name" master "$bridge_if"
+                    ip link set "$br_peer_name" up
+                    continue
+                else
+                    log_warn "  Removing existing interface to reconfigure..."
+                    ip link delete "$INTERFACE_NAME"
+                fi
+            fi
+        fi
 
-    # Assign IP address
-    log_info "  Assigning IP address $IP_CIDR..."
-    ip addr add "$IP_CIDR" dev "$INTERFACE_NAME"
+        log_info "  Creating veth pair on '$bridge_if'..."
+        ip link add "$INTERFACE_NAME" type veth peer name "$br_peer_name"
+        ip link set "$br_peer_name" master "$bridge_if"
+        ip link set "$br_peer_name" up
 
-    # Bring interface up
-    log_info "  Bringing interface up..."
-    ip link set "$INTERFACE_NAME" up
+        # Assign IP address
+        log_info "  Assigning IP address $ip_cidr..."
+        ip addr add "$ip_cidr" dev "$INTERFACE_NAME"
 
-    log_info "  Done: $INTERFACE_NAME = $IP_ADDR"
-done
+        # Bring interface up
+        log_info "  Bringing interface up..."
+        ip link set "$INTERFACE_NAME" up
+
+        log_info "  Done: $INTERFACE_NAME = $ip_addr"
+    done
+}
+create_internal_interfaces "$BRIDGE_IF"
 
 # Verify all internal interfaces
 echo ""

@@ -505,16 +505,40 @@ check_certs_env_sync() {
     fi
 }
 
-# Same probe as start.sh's check_voip_interfaces (macvlan is Linux-only).
+# Same probe as start.sh's check_voip_interfaces (Linux-only: these are
+# veth pairs created via `ip link`, VOIP-1331 - not available on macos).
+# Delegates to common.sh's voip_internal_interfaces_ok() so a still-legacy
+# macvlan interface is correctly flagged as needing the fix, rather than
+# reporting a false "pass" just because something with that name exists.
 check_voip_interfaces() {
     if [[ "$DOCTOR_OS" == "macos" ]]; then doctor_result voip-interfaces skip "unsupported on macos"; return; fi
     install_gate voip-interfaces || return
-    local missing=() iface
-    for iface in kamailio-int rtpengine-int; do ip link show "$iface" &> /dev/null || missing+=("$iface"); done
-    if [[ ${#missing[@]} -gt 0 ]]; then
-        doctor_fail voip-interfaces "missing macvlan interfaces: ${missing[*]}" "sudo ./scripts/setup-voip-network.sh"
-    else
+    if voip_internal_interfaces_ok; then
         doctor_result voip-interfaces pass "kamailio-int and rtpengine-int present"
+    else
+        # VOIP-1331 review round 4, MEDIUM: voip_internal_interfaces_ok()
+        # fails for THREE distinct reasons (missing / still legacy macvlan /
+        # bridge-side peer orphaned after a network recreate) - re-probe
+        # each one explicitly so the FIX line's diagnosis is accurate rather
+        # than defaulting to "still legacy macvlan" for a case that isn't.
+        local missing=() legacy_macvlan=() orphaned=() iface peer
+        for iface in kamailio-int rtpengine-int; do
+            if ! ip link show "$iface" &> /dev/null; then
+                missing+=("$iface")
+            elif ip -d link show "$iface" 2>/dev/null | grep -q 'macvlan'; then
+                legacy_macvlan+=("$iface")
+            else
+                peer="${iface%-int}-br"
+                ip link show "$peer" 2>/dev/null | grep -q 'master' || orphaned+=("$iface")
+            fi
+        done
+        if [[ ${#missing[@]} -gt 0 ]]; then
+            doctor_fail voip-interfaces "missing internal VoIP network interfaces: ${missing[*]}" "sudo ./scripts/setup-voip-network.sh"
+        elif [[ ${#legacy_macvlan[@]} -gt 0 ]]; then
+            doctor_fail voip-interfaces "still legacy macvlan interfaces (VOIP-1331): ${legacy_macvlan[*]}" "sudo ./scripts/setup-voip-network.sh"
+        else
+            doctor_fail voip-interfaces "bridge-side veth peer not enslaved, likely orphaned after a network recreate (VOIP-1331): ${orphaned[*]}" "sudo ./scripts/setup-voip-network.sh"
+        fi
     fi
 }
 

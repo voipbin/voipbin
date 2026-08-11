@@ -1,6 +1,9 @@
 #!/bin/bash
 # Teardown VoIP internal network interfaces
-# Removes the macvlan interfaces created by setup-voip-network.sh
+# Removes the veth pairs created by setup-voip-network.sh (VOIP-1331 - was
+# macvlan; `ip link delete <name>` on the host-side end removes both ends
+# of a veth pair, same as it removed a single macvlan interface before, so
+# this script needed no other change)
 
 set -e
 

@@ -155,7 +155,12 @@ exit 0'
 if [[ "$1" == "-check" ]]; then exit 0; fi
 echo "MKCERT-INSTALL CAROOT=$CAROOT"
 exit 0'
-    mock_command_script "ip" 'exit 0'
+    # VOIP-1331: voip_internal_interfaces_ok also checks that the "-br"
+    # bridge-side veth peers report a `master` (bridge enslavement, not
+    # just presence) - echo it unconditionally so this "everything is
+    # already configured" test still exercises the "skip" path, not the
+    # orphaned-peer path this test isn't about.
+    mock_command_script "ip" 'echo "master"; exit 0'
     mock_command_script "docker" '
 if [[ "$1" == "network" && "$2" == "inspect" ]]; then exit 0; fi
 exit 1'

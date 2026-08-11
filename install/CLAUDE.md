@@ -143,8 +143,9 @@ the exact recovery command for every failure (see "Install doctor" below).
 `setup-host.sh` owns every host mutation: mkcert package + CA trust
 (internal only, with the two-pass CAROOT handoff), Corefile + DNS setup
 (internal only), the compose default docker network on fresh hosts, and
-the VoIP macvlan interfaces (both modes). It is idempotent; each step
-probes current state and logs a skip.
+the VoIP network interfaces (both modes — internal veth pairs, VOIP-1331,
+plus external macvlan for pinned hosting-provider IPs). It is idempotent;
+each step probes current state and logs a skip.
 
 ### Result-line grammar
 
@@ -453,7 +454,7 @@ Docker Network:
     ├── ast-registrar: 10.100.0.211
     └── ast-conf: 10.100.0.212
 
-Host Network (macvlan interfaces):
+Host Network (veth pairs, VOIP-1331 - see "Internal Interfaces" below):
 ├── kamailio-int (10.100.0.200)     # Kamailio internal communication
 └── rtpengine-int (10.100.0.201)    # RTPEngine internal communication
 
@@ -498,10 +499,26 @@ Examples:
 
 ### Internal Interfaces
 
-The `setup-voip-network.sh` script creates macvlan interfaces that bridge Docker's internal network to the host:
+The `setup-voip-network.sh` script creates **veth pairs** (VOIP-1331) that
+bridge Docker's internal network to the host, one end enslaved directly to
+the compose bridge (`master` set to the bridge, same as any container's own
+veth attachment) and the other kept in the host namespace with the static
+IP:
 
 - **kamailio-int** (10.100.0.200): Allows Kamailio to communicate with containerized services
 - **rtpengine-int** (10.100.0.201): Allows RTPEngine to communicate with containerized services
+
+**Not macvlan** (pre-VOIP-1331 design): these were originally macvlan
+interfaces with the bridge itself as their parent. That has a kernel-level
+asymmetry — new inbound TCP connections from other bridge ports (i.e. from
+containers) to the macvlan child are silently dropped (frame reaches the
+bridge, never arrives at the macvlan child; confirmed with tcpdump), while
+macvlan-initiated traffic works fine. This silently broke `asterisk-call`'s
+outbound INVITE to Kamailio: call-manager could create the ARI channel, but
+the SIP packet never left the host, and the call would time out with no
+error on the Asterisk side. A veth pair has no such asymmetry — from the
+bridge's perspective it's indistinguishable from any other container's own
+network attachment.
 
 ### CLI Commands
 

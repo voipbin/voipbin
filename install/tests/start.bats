@@ -8,6 +8,13 @@
 # The root×missing cell of the matrix (setup-host.sh subprocess invocation)
 # cannot be exercised without real root operations; it is covered by the
 # live internal-mode verification (plan DoD item 5).
+#
+# `mock_command_script "ip" 'echo "master"; exit 0'` below: check_voip_interfaces
+# now delegates to common.sh's voip_internal_interfaces_ok() (VOIP-1331),
+# which also checks that the "-br" bridge-side veth peers report a `master`
+# (bridge enslavement, not just presence) - echoing it unconditionally keeps
+# these "interfaces present"-flavored tests exercising the DNS/prereqs logic
+# they're actually about, not an orphaned-peer branch they aren't.
 
 load 'test_helper'
 
@@ -26,7 +33,7 @@ teardown() {
 @test "check_host_prereqs passes with interfaces present in external mode (no DNS requirement)" {
     load_start_functions
     create_env_file "DOMAIN_MODE=external" "BASE_DOMAIN=example.com" "COMPOSE_PROFILES="
-    mock_command_script "ip" 'exit 0'
+    mock_command_script "ip" 'echo "master"; exit 0'
     RESOLV_CONF="$TEST_TEMP_DIR/resolv.conf"
     echo "nameserver 8.8.8.8" > "$RESOLV_CONF"
 
@@ -38,7 +45,7 @@ teardown() {
 @test "check_host_prereqs passes with interfaces present and resolv.conf at 127.0.0.1 (internal)" {
     load_start_functions
     create_env_file "DOMAIN_MODE=internal" "COMPOSE_PROFILES=internal-dns"
-    mock_command_script "ip" 'exit 0'
+    mock_command_script "ip" 'echo "master"; exit 0'
     RESOLV_CONF="$TEST_TEMP_DIR/resolv.conf"
     echo "nameserver 127.0.0.1" > "$RESOLV_CONF"
 
@@ -50,7 +57,7 @@ teardown() {
 @test "check_host_prereqs fails in internal mode when DNS is not configured" {
     load_start_functions
     create_env_file "DOMAIN_MODE=internal" "COMPOSE_PROFILES=internal-dns"
-    mock_command_script "ip" 'exit 0'
+    mock_command_script "ip" 'echo "master"; exit 0'
     mock_command_script "dig" 'exit 1'
     RESOLV_CONF="$TEST_TEMP_DIR/resolv.conf"
     echo "nameserver 8.8.8.8" > "$RESOLV_CONF"
@@ -63,7 +70,7 @@ teardown() {
 @test "check_host_prereqs does not accept a commented-out nameserver line (internal)" {
     load_start_functions
     create_env_file "DOMAIN_MODE=internal" "COMPOSE_PROFILES=internal-dns"
-    mock_command_script "ip" 'exit 0'
+    mock_command_script "ip" 'echo "master"; exit 0'
     mock_command_script "dig" 'exit 1'
     RESOLV_CONF="$TEST_TEMP_DIR/resolv.conf"
     printf '#nameserver 127.0.0.1\nnameserver 8.8.8.8\n' > "$RESOLV_CONF"
@@ -76,7 +83,7 @@ teardown() {
 @test "check_host_prereqs accepts an answering CoreDNS when resolv.conf is untouched (internal)" {
     load_start_functions
     create_env_file "DOMAIN_MODE=internal" "COMPOSE_PROFILES=internal-dns"
-    mock_command_script "ip" 'exit 0'
+    mock_command_script "ip" 'echo "master"; exit 0'
     mock_command_script "dig" 'echo "192.168.1.100"'
     RESOLV_CONF="$TEST_TEMP_DIR/resolv.conf"
     echo "nameserver 8.8.8.8" > "$RESOLV_CONF"
@@ -213,7 +220,7 @@ exit 1'
     create_env_file "DOMAIN_MODE=internal" "COMPOSE_PROFILES=internal-dns" \
         "BASE_DOMAIN=voipbin.test" "TLS_MODE=byo" "HOST_EXTERNAL_IP=192.168.1.100"
     mock_command "docker" ""
-    mock_command_script "ip" 'exit 0'
+    mock_command_script "ip" 'echo "master"; exit 0'
     export RESOLV_CONF="$TEST_TEMP_DIR/resolv.conf"
     echo "nameserver 127.0.0.1" > "$RESOLV_CONF"
 

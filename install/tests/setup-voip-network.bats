@@ -349,3 +349,205 @@ fi
 @test "INTERNAL_INTERFACES declaration exists in script" {
     assert_file_contains "$SCRIPTS_DIR/setup-voip-network.sh" 'declare -A INTERNAL_INTERFACES'
 }
+
+# =============================================================================
+# create_internal_interfaces() tests (VOIP-1331)
+#
+# kamailio-int/rtpengine-int used to be macvlan interfaces with the compose
+# bridge as their parent - that has a kernel-level asymmetry where NEW
+# inbound TCP connections from other bridge ports (containers) to the
+# macvlan child are silently dropped, confirmed via tcpdump against a real
+# bare-metal deployment. Fixed by switching to veth pairs, one end enslaved
+# directly to the bridge (exactly how Docker attaches every container's own
+# veth). These tests assert the actual `ip link` commands issued, not just
+# the end-state file presence, since a veth pair with the peer end NOT
+# enslaved to the bridge would look identical to `ip link show` but
+# reproduce the exact same bug this fix exists to close.
+# =============================================================================
+
+stub_ip_capturing_calls() {
+    local log_file="$1"
+    local existing_iface="${2:-}"   # interface name that should appear as "already exists"
+    local existing_ip="${3:-}"      # IP that existing_iface should report (for skip/reconfigure branch tests)
+    local existing_type="${4:-}"    # "macvlan" to simulate a legacy pre-VOIP-1331 interface, else veth-like/unspecified
+    mock_command_script "ip" "
+echo \"ARGS: \$*\" >> '$log_file'
+if [[ \"\$1\" == \"link\" && \"\$2\" == \"show\" ]]; then
+    if [[ \"\$3\" == \"$existing_iface\" && -n \"$existing_iface\" ]]; then
+        exit 0
+    fi
+    exit 1
+fi
+if [[ \"\$1\" == \"-d\" && \"\$2\" == \"link\" && \"\$3\" == \"show\" ]]; then
+    if [[ \"\$4\" == \"$existing_iface\" && -n \"$existing_iface\" && \"$existing_type\" == \"macvlan\" ]]; then
+        echo \"110: $existing_iface@br-abc123: <BROADCAST,MULTICAST,UP,LOWER_UP> mtu 1500\"
+        echo \"    macvlan mode bridge bcqueuelen 1000\"
+        exit 0
+    fi
+    exit 0
+fi
+if [[ \"\$1\" == \"addr\" && \"\$2\" == \"show\" && \"\$3\" == \"$existing_iface\" && -n \"$existing_iface\" ]]; then
+    echo \"    inet $existing_ip/16 scope global $existing_iface\"
+    exit 0
+fi
+exit 0
+"
+}
+
+@test "create_internal_interfaces creates a veth pair with the -br peer enslaved to the bridge (not macvlan)" {
+    load_create_internal_interfaces
+    local log_file="$TEST_TEMP_DIR/ip.log"
+    stub_ip_capturing_calls "$log_file"
+
+    create_internal_interfaces "br-abc123"
+
+    # Both interfaces created as veth pairs, never as macvlan.
+    grep -q "ARGS: link add kamailio-int type veth peer name kamailio-br" "$log_file"
+    grep -q "ARGS: link add rtpengine-int type veth peer name rtpengine-br" "$log_file"
+    ! grep -q "macvlan" "$log_file"
+}
+
+@test "create_internal_interfaces enslaves the -br peer to the given bridge and brings it up" {
+    load_create_internal_interfaces
+    local log_file="$TEST_TEMP_DIR/ip.log"
+    stub_ip_capturing_calls "$log_file"
+
+    create_internal_interfaces "br-abc123"
+
+    grep -q "ARGS: link set kamailio-br master br-abc123" "$log_file"
+    grep -q "ARGS: link set kamailio-br up" "$log_file"
+    grep -q "ARGS: link set rtpengine-br master br-abc123" "$log_file"
+    grep -q "ARGS: link set rtpengine-br up" "$log_file"
+}
+
+@test "create_internal_interfaces assigns the static IP and brings the host-side end up" {
+    load_create_internal_interfaces
+    local log_file="$TEST_TEMP_DIR/ip.log"
+    stub_ip_capturing_calls "$log_file"
+
+    create_internal_interfaces "br-abc123"
+
+    grep -q "ARGS: addr add 10.100.0.200/16 dev kamailio-int" "$log_file"
+    grep -q "ARGS: link set kamailio-int up" "$log_file"
+    grep -q "ARGS: addr add 10.100.0.201/16 dev rtpengine-int" "$log_file"
+    grep -q "ARGS: link set rtpengine-int up" "$log_file"
+}
+
+@test "create_internal_interfaces skips creation for an interface already configured with the correct IP" {
+    load_create_internal_interfaces
+    local log_file="$TEST_TEMP_DIR/ip.log"
+    stub_ip_capturing_calls "$log_file" "kamailio-int" "10.100.0.200"
+
+    run create_internal_interfaces "br-abc123"
+
+    [[ "$status" -eq 0 ]]
+    [[ "$output" == *"already configured with correct IP"* ]]
+    ! grep -q "ARGS: link add kamailio-int " "$log_file"
+    ! grep -q "ARGS: link delete kamailio-int" "$log_file"
+    # The other interface (not pre-existing) is still created normally.
+    grep -q "ARGS: link add rtpengine-int type veth peer name rtpengine-br" "$log_file"
+}
+
+@test "create_internal_interfaces re-asserts bridge enslavement on the skip path (VOIP-1331 review round 3, HIGH: orphaned veth peer repair)" {
+    # Unlike macvlan (killed by the kernel when its parent bridge
+    # disappears), a veth pair survives `docker compose down`/`voipbin>
+    # clean` orphaned, with the bridge-side "-br" peer's `master` cleared -
+    # reachable via this repo's own documented clean-then-start cycle. An
+    # unconditional re-assertion on the "already configured" skip path
+    # repairs that in place; this test locks it in regardless of whether
+    # the peer actually is orphaned (the call is idempotent when it isn't).
+    load_create_internal_interfaces
+    local log_file="$TEST_TEMP_DIR/ip.log"
+    stub_ip_capturing_calls "$log_file" "kamailio-int" "10.100.0.200"
+
+    run create_internal_interfaces "br-abc123"
+
+    [[ "$status" -eq 0 ]]
+    grep -q "ARGS: link set kamailio-br master br-abc123" "$log_file"
+    grep -q "ARGS: link set kamailio-br up" "$log_file"
+}
+
+@test "create_internal_interfaces deletes and recreates an interface configured with the wrong IP" {
+    load_create_internal_interfaces
+    local log_file="$TEST_TEMP_DIR/ip.log"
+    stub_ip_capturing_calls "$log_file" "kamailio-int" "10.99.0.99"
+
+    run create_internal_interfaces "br-abc123"
+
+    [[ "$status" -eq 0 ]]
+    [[ "$output" == *"Removing existing interface to reconfigure"* ]]
+    grep -q "ARGS: link delete kamailio-int" "$log_file"
+    grep -q "ARGS: link add kamailio-int type veth peer name kamailio-br" "$log_file"
+}
+
+# --- Legacy macvlan migration (VOIP-1331 review finding HIGH) ---
+#
+# A host that already ran the pre-VOIP-1331 script has kamailio-int/
+# rtpengine-int as macvlan interfaces already holding the correct IP. An
+# IP-only "already configured" check would skip re-creating them forever,
+# silently leaving the macvlan-on-bridge bug in place despite this fix
+# being "applied". These tests force the migration even when the IP
+# already matches.
+
+@test "create_internal_interfaces force-migrates a legacy macvlan interface even when its IP already matches" {
+    load_create_internal_interfaces
+    local log_file="$TEST_TEMP_DIR/ip.log"
+    stub_ip_capturing_calls "$log_file" "kamailio-int" "10.100.0.200" "macvlan"
+
+    run create_internal_interfaces "br-abc123"
+
+    [[ "$status" -eq 0 ]]
+    [[ "$output" == *"legacy macvlan interface"* ]]
+    # Must NOT take the "already configured, skip" shortcut.
+    [[ "$output" != *"already configured with correct IP"* ]]
+    grep -q "ARGS: link delete kamailio-int" "$log_file"
+    grep -q "ARGS: link add kamailio-int type veth peer name kamailio-br" "$log_file"
+}
+
+@test "create_internal_interfaces does not touch an interface that is already a veth pair with the correct IP" {
+    load_create_internal_interfaces
+    local log_file="$TEST_TEMP_DIR/ip.log"
+    stub_ip_capturing_calls "$log_file" "kamailio-int" "10.100.0.200"   # existing_type unset = not macvlan
+
+    run create_internal_interfaces "br-abc123"
+
+    [[ "$status" -eq 0 ]]
+    [[ "$output" == *"already configured with correct IP"* ]]
+    ! grep -q "ARGS: link delete kamailio-int" "$log_file"
+}
+
+# --- IFNAMSIZ guard (VOIP-1331 review finding CRITICAL) ---
+#
+# "${INTERFACE_NAME}-br" for "rtpengine-int" would be "rtpengine-int-br"
+# (16 chars), exceeding the kernel's 15-char interface name limit -
+# `ip link add ... peer name` rejects it outright, and since the whole
+# function runs under `set -e` in the real script, that failure aborts
+# BOTH interfaces, not just the long one. The fix strips the "-int" suffix
+# before appending "-br"; this test locks in the explicit guard that turns
+# any FUTURE interface name that doesn't fit into a loud, immediate error
+# instead of a confusing kernel-level failure two lines down.
+
+@test "create_internal_interfaces refuses a peer name that would exceed the 15-char IFNAMSIZ limit" {
+    load_create_internal_interfaces
+    declare -gA INTERNAL_INTERFACES=(["some-really-long-interface-name"]="10.100.0.202")
+    local log_file="$TEST_TEMP_DIR/ip.log"
+    stub_ip_capturing_calls "$log_file"
+
+    run create_internal_interfaces "br-abc123"
+
+    [[ "$status" -ne 0 ]]
+    [[ "$output" == *"exceeds the 15-char"* ]]
+    ! grep -q "ARGS: link add" "$log_file"
+}
+
+@test "create_internal_interfaces still uses the %-int stripped peer-name scheme (not \${INTERFACE_NAME}-br)" {
+    # VOIP-1331 review round 2, LOW: an earlier version of this test
+    # recomputed "${name%-int}-br" independently in bash rather than
+    # reading the script's own expression, so it stayed green even when
+    # the script's fix (the whole reason the CRITICAL finding got closed)
+    # was reverted back to the unsafe "${INTERFACE_NAME}-br" form. Assert
+    # against the actual source line instead, so a regression here fails
+    # this test directly rather than relying solely on the mocked-ip tests
+    # above to catch it.
+    assert_file_contains "$SCRIPTS_DIR/setup-voip-network.sh" 'local br_peer_name="${INTERFACE_NAME%-int}-br"'
+}

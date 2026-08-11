@@ -393,8 +393,9 @@ sudo ./scripts/setup-host.sh
 
 In external mode this only ensures the compose docker network exists
 (fresh hosts have none until the first `docker compose up`) and creates
-the VoIP macvlan interfaces. mkcert and DNS steps are skipped; TLS and DNS
-are operator-managed.
+the VoIP network interfaces (internal veth pairs + external macvlan, see
+"Internal Interfaces" in `install/CLAUDE.md`). mkcert and DNS steps are
+skipped; TLS and DNS are operator-managed.
 
 ### Step 5: Start and verify (unprivileged)
 
@@ -501,10 +502,11 @@ specific MAC address via their control panel before traffic is delivered):
    network manager — e.g. systemd-networkd `.netdev`/`.network` units, one
    pair per pinned interface, plus a `[RoutingPolicyRule]` block for step 4.
 
-**Known gap:** `setup-host.sh` also creates the two *internal* macvlan
-interfaces (`kamailio-int`/`rtpengine-int`, on the Docker bridge) via plain
-`ip link add` — those are not made persistent by the script either, on
-either code path. A reboot removes them, and Kamailio/RTPEngine (both
+**Known gap:** `setup-host.sh` also creates the two *internal* interfaces
+(`kamailio-int`/`rtpengine-int`, veth pairs enslaved to the Docker bridge —
+VOIP-1331, not macvlan; see `install/CLAUDE.md` "Internal Interfaces") via
+plain `ip link add` — those are not made persistent by the script either,
+on either code path. A reboot removes them, and Kamailio/RTPEngine (both
 `network_mode: host`) then fail to bind and crash-loop until you re-run
 `sudo ./scripts/setup-host.sh` (idempotent — safe to re-run any time).
 Until this is fixed upstream, a systemd oneshot unit that runs

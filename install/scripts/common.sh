@@ -749,3 +749,45 @@ provision_asterisk_db_user() {
         return 1
     fi
 }
+
+# =============================================================================
+# Internal VoIP Network Interfaces (VOIP-1331)
+# =============================================================================
+
+# voip_internal_interfaces_ok
+# True (0) only when BOTH kamailio-int and rtpengine-int exist, neither is a
+# legacy pre-VOIP-1331 macvlan interface, AND each one's bridge-side "-br"
+# veth peer is still enslaved to a bridge (has a `master`). kamailio-int/
+# rtpengine-int used to be macvlan interfaces with the compose bridge itself
+# as their parent - that has a kernel-level asymmetry where new inbound TCP
+# connections from other bridge ports (containers) to the macvlan child are
+# silently dropped (confirmed via tcpdump against a real bare-metal
+# deployment), which broke asterisk-call's outbound INVITE to Kamailio
+# while SIP registration kept working (opposite traffic direction). Fixed
+# by switching to veth pairs (see setup-voip-network.sh's
+# create_internal_interfaces()).
+#
+# The master check (VOIP-1331 review round 3, HIGH) matters because, unlike
+# macvlan (destroyed automatically by the kernel when its parent bridge
+# disappears), a veth pair survives `docker compose down`/`voipbin> clean`
+# orphaned, with the bridge-side peer's `master` cleared - reachable via
+# this repo's own documented clean-then-start cycle, since a recreated
+# compose network gets a new bridge name. Without this check, an orphaned
+# but still-present-with-correct-IP veth pair would report "ok" while
+# Kamailio/RTPEngine are actually cut off from every container.
+#
+# Shared by doctor.sh/setup-host.sh/start.sh so their "already configured,
+# skip" gates agree on what counts as configured - an existence-only check
+# would treat a host that already ran the pre-VOIP-1331 script (or whose
+# bridge was since recreated) as done and never call setup-voip-network.sh
+# again, silently leaving the interface broken.
+voip_internal_interfaces_ok() {
+    local iface peer
+    for iface in kamailio-int rtpengine-int; do
+        ip link show "$iface" &>/dev/null || return 1
+        ip -d link show "$iface" 2>/dev/null | grep -q 'macvlan' && return 1
+        peer="${iface%-int}-br"
+        ip link show "$peer" 2>/dev/null | grep -q 'master' || return 1
+    done
+    return 0
+}

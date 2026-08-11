@@ -160,7 +160,14 @@ if [[ "$1" == "route" && "$2" == "get" ]]; then
 fi
 if [[ "$1" == "link" && "$2" == "show" ]]; then
     if [[ "'"$ifaces"'" == "yes" ]]; then
-        echo "5: $3: <BROADCAST,MULTICAST,UP,LOWER_UP> mtu 1500"
+        # VOIP-1331: the "-br" bridge-side veth peers must report a
+        # `master` (voip_internal_interfaces_ok checks bridge enslavement,
+        # not just presence) - otherwise this generic "everything is fine"
+        # stub would make every caller of that check see an orphaned peer.
+        case "$3" in
+            *-br) echo "5: $3@br-abc123: <BROADCAST,MULTICAST,UP,LOWER_UP> mtu 1500 master br-abc123 state UP" ;;
+            *)    echo "5: $3: <BROADCAST,MULTICAST,UP,LOWER_UP> mtu 1500" ;;
+        esac
         exit 0
     fi
     echo "Device \"$3\" does not exist." >&2
@@ -816,6 +823,62 @@ exec "'"$real_openssl"'" "$@"'
     [[ "$status" -eq 1 ]]
     [[ "$output" == *'DOCTOR voip-interfaces: fail'* ]]
     [[ "$output" == *'FIX voip-interfaces: sudo ./scripts/setup-voip-network.sh'* ]]
+}
+
+# --- VOIP-1331 review round 4, MEDIUM: check_voip_interfaces() must
+# distinguish its three distinct failure reasons (missing / still legacy
+# macvlan / orphaned bridge peer) in the detail line, not default to
+# "still legacy macvlan" for a case that isn't - the wrong diagnosis is
+# what made the original VOIP-1331 bug take so long to track down. ---
+
+@test "legacy macvlan voip interfaces fail with a macvlan-specific detail, not a generic message" {
+    setup_healthy_internal
+    mock_command_script "ip" '
+if [[ "$1" == "route" && "$2" == "get" ]]; then
+    echo "8.8.8.8 via 192.168.1.1 dev eth0 src 192.168.1.100 uid 1000"
+    exit 0
+fi
+if [[ "$1" == "link" && "$2" == "show" ]]; then
+    echo "5: $3: <BROADCAST,MULTICAST,UP,LOWER_UP> mtu 1500"
+    exit 0
+fi
+if [[ "$1" == "-d" && "$2" == "link" && "$3" == "show" ]]; then
+    echo "macvlan mode bridge"
+    exit 0
+fi
+exit 0'
+
+    run_doctor
+
+    [[ "$status" -eq 1 ]]
+    [[ "$output" == *'DOCTOR voip-interfaces: fail still legacy macvlan interfaces (VOIP-1331): kamailio-int rtpengine-int'* ]]
+    [[ "$output" != *'orphaned'* ]]
+}
+
+@test "orphaned veth bridge peer fails with an orphan-specific detail, not the legacy-macvlan message" {
+    setup_healthy_internal
+    mock_command_script "ip" '
+if [[ "$1" == "route" && "$2" == "get" ]]; then
+    echo "8.8.8.8 via 192.168.1.1 dev eth0 src 192.168.1.100 uid 1000"
+    exit 0
+fi
+if [[ "$1" == "link" && "$2" == "show" ]]; then
+    case "$3" in
+        kamailio-br|rtpengine-br) echo "5: $3: <BROADCAST,MULTICAST,UP,LOWER_UP> mtu 1500" ;;
+        *) echo "5: $3: <BROADCAST,MULTICAST,UP,LOWER_UP> mtu 1500" ;;
+    esac
+    exit 0
+fi
+if [[ "$1" == "-d" && "$2" == "link" && "$3" == "show" ]]; then
+    exit 0
+fi
+exit 0'
+
+    run_doctor
+
+    [[ "$status" -eq 1 ]]
+    [[ "$output" == *'DOCTOR voip-interfaces: fail bridge-side veth peer not enslaved'* ]]
+    [[ "$output" != *'legacy macvlan'* ]]
 }
 
 @test "external DNS diff lists every missing or mismatched record" {
