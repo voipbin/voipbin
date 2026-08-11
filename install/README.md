@@ -1376,7 +1376,26 @@ sudo ./voipbin logs -f kamailio
 
 # Verify Asterisk endpoints
 voipbin> ast pjsip show endpoints
+```
 
+**Known issue on fresh installs (VOIP-1332):** if `docker compose logs
+asterisk-registrar` (or `voipbin> logs asterisk-registrar`) repeats
+`res_config_mysql.c: mysql_reconnect: MySQL RealTime: Failed to connect
+database server asterisk on db (err 1045)` even though the DB user/password
+in `.env` are correct, this is **not** a credential problem — it's the
+Asterisk image's bundled MySQL client library refusing MySQL 8's
+self-signed TLS certificate, misreported as "err 1045" (Access Denied).
+No `docker-compose.yml` or `res_config_mysql.conf` setting can work around
+it (confirmed by direct testing: disabling MySQL's SSL entirely makes the
+client fail the opposite way — "SSL is required, but the server does not
+support it" — and providing a trusted, hostname-matched CA to the
+container's system trust store fixes the `mariadb` CLI but not the
+compiled `res_config_mysql.so` module, which never consults it). This
+needs an image-level fix in `monorepo-voip` — track via VOIP-1332, not by
+editing anything in this repo. 100% reproducible on any fresh MySQL data
+volume.
+
+```bash
 # Check the registrar domain format
 # Should be: {customer_id}.registrar.voipbin.test
 voipbin> api get /v1.0/customer

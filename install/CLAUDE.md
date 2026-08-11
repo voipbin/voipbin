@@ -90,9 +90,9 @@ realtime auth working.
 `asterisk-registrar`'s `res_config_mysql` realtime client previously
 authenticated as `root` (`DATABASE_ASTERISK_USERNAME=root` in
 `docker-compose.yml`), which was observed to intermittently fail MySQL 8
-auth (root cause never conclusively pinned down — ruled out password
-mismatch, account lock, auth-plugin incompatibility, TLS requirement, and
-stale containers). `init.sh` now generates a dedicated least-privilege user
+auth (root cause not conclusively pinned down at the time — see VOIP-1332
+below for what turned out to be the actual, still-unresolved root cause of
+this class of failure). `init.sh` now generates a dedicated least-privilege user
 (`asterisk_rt` by default, `SELECT/INSERT/UPDATE/DELETE` on `asterisk.*`
 only) and writes it to `.env`. `docker-compose.yml` falls back to
 `root`/`MYSQL_ROOT_PASSWORD` when these two vars are absent, so installs
@@ -100,6 +100,23 @@ created before VOIP-1328 keep working unchanged until `.env` is regenerated.
 To opt an EXISTING install in: add the two vars to `.env` and simply re-run
 `voipbin> start` — Step 6.5 provisions the user unconditionally, no need to
 manually invoke `init_database.sh`/`migrate.sh`.
+
+**Known unresolved issue on fresh MySQL volumes (VOIP-1332):** even with
+the correct dedicated account, `asterisk-registrar` can still fail realtime
+auth with `res_config_mysql.c: mysql_reconnect: ... err 1045` on a brand
+new `db_data` volume. Confirmed root cause (2026-08-12, full bm-nyc-01
+rebuild from a clean `voipbin> clean --all`): the Asterisk image's bundled
+MySQL client library refuses MySQL 8's auto-generated self-signed TLS
+certificate — not a credential problem at all, just misreported as one.
+Directly verified this is **not fixable from this repo**: disabling
+MySQL's SSL server-side flips the failure to "SSL is required, but the
+server does not support it" (the client requires TLS), and installing a
+trusted, hostname-matched CA into the container's system trust store fixes
+the `mariadb` CLI but not the compiled `res_config_mysql.so` module, which
+never consults the system trust store or any documented
+`res_config_mysql.conf` key for SSL control. Needs an image-level fix in
+`monorepo-voip` (see VOIP-1332) — do not attempt another `docker-compose.yml`
+or `res_config_mysql.conf` workaround here without new evidence.
 
 ## Install Modes and AI-Install Contract (VOIP-1275)
 
