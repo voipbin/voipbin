@@ -692,18 +692,19 @@ detect_os() {
 # provisioned — a prior gap where it silently never ran).
 #
 # mysql_native_password (rather than MySQL 8's caching_sha2_password
-# default) is deliberate: it is the working theory for the original, never
-# conclusively root-caused VOIP-1328 realtime-auth failures — Asterisk's
-# res_config_mysql, built against an older libmariadb3/libmysqlclient, is a
-# known-bad combination with caching_sha2's handshake. Do not drop this
-# clause in a future cleanup without re-verifying against a real
-# asterisk-registrar first.
+# default) is deliberate: it was the original working theory for the
+# VOIP-1328 realtime-auth failures. The actual root cause turned out to be
+# unrelated (VOIP-1332: password truncation, see below), but keeping
+# mysql_native_password is still reasonable defensive practice against
+# caching_sha2's more complex handshake with older libmariadb3/libmysqlclient
+# builds. Do not drop this clause in a future cleanup without re-verifying
+# against a real asterisk-registrar first.
 #
 # The username/password are validated before being interpolated into
-# single-quoted SQL: init.sh's generated default is a safe 64-char hex
-# string, but a hand-edited .env is not guaranteed to be, and this runs as
-# MySQL root. The SQL is piped via stdin to `docker exec -i`, never placed
-# on the argv, so the password does not leak through `ps aux`.
+# single-quoted SQL: init.sh's generated default is a safe hex string, but
+# a hand-edited .env is not guaranteed to be, and this runs as MySQL root.
+# The SQL is piped via stdin to `docker exec -i`, never placed on the argv,
+# so the password does not leak through `ps aux`.
 provision_asterisk_db_user() {
     local db_container="$1"
     # VOIP-1328 review round 2, LOW-1: fail with a diagnosable message
@@ -739,6 +740,19 @@ provision_asterisk_db_user() {
         log_error "DATABASE_ASTERISK_PASSWORD is empty or contains a quote/backslash character - refusing to run as MySQL root with an unvalidated value. Fix .env."
         return 1
     fi
+
+    # VOIP-1332: asterisk-registrar's res_config_mysql.c stores the password
+    # in a fixed `char pass[50]` buffer and copies into it with
+    # ast_copy_string(), which SILENTLY truncates (not an error) at 49
+    # usable chars. init.sh now generates a short-enough password by
+    # default (generate_random_key_short()), but this runs on every
+    # `start.sh` for pre-VOIP-1332 installs too, whose .env may still hold
+    # an old 64-char value (or the 64-char MYSQL_ROOT_PASSWORD fallback
+    # above) - provision the DB with the SAME truncated value Asterisk will
+    # actually send, so the two can never drift out of sync again. Already
+    # confirmed safe post-quote-check: truncating a string with no quote/
+    # backslash characters cannot introduce one.
+    asterisk_db_password="${asterisk_db_password:0:49}"
 
     log_info "Provisioning dedicated realtime DB user: $asterisk_db_user"
     local sql="CREATE USER IF NOT EXISTS '${asterisk_db_user}'@'%' IDENTIFIED WITH mysql_native_password BY '${asterisk_db_password}'; ALTER USER '${asterisk_db_user}'@'%' IDENTIFIED WITH mysql_native_password BY '${asterisk_db_password}'; GRANT SELECT, INSERT, UPDATE, DELETE ON asterisk.* TO '${asterisk_db_user}'@'%'; FLUSH PRIVILEGES;"

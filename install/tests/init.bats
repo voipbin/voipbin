@@ -145,6 +145,47 @@ teardown() {
 }
 
 # =============================================================================
+# generate_random_key_short() tests (VOIP-1332)
+# =============================================================================
+
+@test "generate_random_key_short returns 32-character string" {
+    load_init_functions
+
+    result=$(generate_random_key_short)
+
+    assert_length "$result" 32
+}
+
+@test "generate_random_key_short contains only hex characters" {
+    load_init_functions
+
+    result=$(generate_random_key_short)
+
+    assert_matches "$result" '^[0-9a-f]+$'
+}
+
+@test "generate_random_key_short returns different values on each call" {
+    load_init_functions
+
+    result1=$(generate_random_key_short)
+    result2=$(generate_random_key_short)
+
+    assert_not_equal "$result1" "$result2"
+}
+
+@test "generate_random_key_short fits within res_config_mysql.c's 49-usable-char buffer (VOIP-1332)" {
+    load_init_functions
+
+    result=$(generate_random_key_short)
+
+    # Asterisk's res_config_mysql.c stores the password in `char pass[50]`,
+    # copied via ast_copy_string() which silently truncates at 49 usable
+    # chars instead of erroring - a generator that produces 49+ chars here
+    # would silently reintroduce VOIP-1332.
+    [ "${#result}" -le 49 ]
+}
+
+# =============================================================================
 # check_mkcert() tests
 # =============================================================================
 
@@ -940,8 +981,12 @@ exit 0'
     mysql_root_pw="$(grep '^MYSQL_ROOT_PASSWORD=' "$TEST_TEMP_DIR/.env" | cut -d'=' -f2-)"
     asterisk_pw="$(grep '^DATABASE_ASTERISK_PASSWORD=' "$TEST_TEMP_DIR/.env" | cut -d'=' -f2-)"
 
-    # 64 hex chars (generate_random_key), non-empty, and distinct from root's.
-    [[ "$asterisk_pw" =~ ^[0-9a-f]{64}$ ]]
+    # 32 hex chars (generate_random_key_short, VOIP-1332 - a full
+    # generate_random_key() 64-char value would be silently truncated to 49
+    # chars by Asterisk's res_config_mysql.c, causing realtime auth to fail
+    # with a genuine but misleading "err 1045 Access Denied"), non-empty,
+    # and distinct from root's.
+    [[ "$asterisk_pw" =~ ^[0-9a-f]{32}$ ]]
     [[ -n "$mysql_root_pw" ]]
     [[ "$asterisk_pw" != "$mysql_root_pw" ]]
 }
