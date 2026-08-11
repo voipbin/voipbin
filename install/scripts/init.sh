@@ -683,6 +683,17 @@ main() {
 
     POSTGRES_PASSWORD=$(generate_random_key)
     log_info "  Generated POSTGRES_PASSWORD"
+
+    # VOIP-1328: asterisk-registrar's realtime MySQL client previously reused
+    # the root account (DATABASE_ASTERISK_USERNAME=root in docker-compose.yml).
+    # Root cause of the observed auth failures was never conclusively pinned
+    # down, but a dedicated least-privilege user sidesteps it and is better
+    # practice regardless. docker-compose.yml still defaults to root when
+    # these two vars are absent from .env, so existing installs are unaffected
+    # until they re-run init.sh (or apply the migration manually).
+    DATABASE_ASTERISK_USERNAME="asterisk_rt"
+    DATABASE_ASTERISK_PASSWORD=$(generate_random_key)
+    log_info "  Generated DATABASE_ASTERISK_PASSWORD"
     echo ""
 
     # Step 6: Create dummy GCP credentials file
@@ -844,6 +855,8 @@ AWS_SECRET_KEY=
 # ==============================================================================
 JWT_KEY=$JWT_KEY
 MYSQL_ROOT_PASSWORD=$MYSQL_ROOT_PASSWORD
+DATABASE_ASTERISK_USERNAME=$DATABASE_ASTERISK_USERNAME
+DATABASE_ASTERISK_PASSWORD=$DATABASE_ASTERISK_PASSWORD
 RABBITMQ_DEFAULT_USER=$RABBITMQ_DEFAULT_USER
 RABBITMQ_DEFAULT_PASS=$RABBITMQ_DEFAULT_PASS
 AMI_USERNAME=$AMI_USERNAME

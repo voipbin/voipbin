@@ -527,9 +527,15 @@ load_network_functions() {
 # instead of stripping a trailing invocation line, we extract each target
 # function verbatim by its "name() {" ... "^}" boundaries. This fails loudly
 # (empty extraction) if either function is ever renamed or restructured so
-# its closing brace no longer sits at column 0.
+# its closing brace no longer sits at column 0. common.sh is sourced first
+# (matching load_init_functions()'s pattern below) since migrate.sh itself
+# depends on it for get_env_var()/provision_asterisk_db_user() (VOIP-1328) -
+# provision_asterisk_db_user() itself is tested directly against the real,
+# fully-sourced common.sh in common.bats, not re-extracted here.
 load_migrate_functions() {
     local temp_migrate="$TEST_TEMP_DIR/migrate_functions.sh"
+
+    source "$SCRIPTS_DIR/common.sh"
 
     {
         echo 'log()  { echo "[migrate] $1"; }'
@@ -544,4 +550,72 @@ load_migrate_functions() {
     fi
 
     source "$temp_migrate"
+}
+
+# Load init_database.sh's create_databases() function without running the
+# rest of the script (versions.lock/python3 resolution, dbscheme fetch,
+# actual migrations). Mirrors load_migrate_functions()'s awk-extraction
+# approach, and likewise sources common.sh first since it's a dependency of
+# the wider script. Note: create_databases() itself does NOT call
+# provision_asterisk_db_user() (VOIP-1328 review round 2, H2) - that now
+# runs from main(), before the already-initialized gate; see
+# load_init_database_main_functions() below for testing that.
+load_init_database_functions() {
+    local temp_initdb="$TEST_TEMP_DIR/init_database_functions.sh"
+
+    source "$SCRIPTS_DIR/common.sh"
+
+    {
+        echo 'log_info()  { echo "[INFO] $1"; }'
+        echo 'log_warn()  { echo "[WARN] $1"; }'
+        echo 'log_error() { echo "[ERROR] $1" >&2; }'
+        echo 'log_step()  { echo "[STEP] $1"; }'
+        awk '/^create_databases\(\) \{/,/^}/' "$SCRIPTS_DIR/init_database.sh"
+    } > "$temp_initdb"
+
+    if ! grep -q '^create_databases() {' "$temp_initdb"; then
+        echo "load_init_database_functions: failed to extract create_databases from init_database.sh" >&2
+        return 1
+    fi
+
+    source "$temp_initdb"
+}
+
+# Load init_database.sh's main() and everything it calls (wait_for_mysql,
+# check_databases_exist, check_migrations_applied, create_databases), plus
+# common.sh, without triggering the real script's top-level versions.lock/
+# python3 MONOREPO_PIN resolution (main() itself never touches that - it's
+# only used by the legacy setup_dbscheme()/configure_alembic() path, which
+# main() doesn't call). Used specifically for VOIP-1328 review finding H2
+# (round 2): main() must provision the dedicated DB user BEFORE the
+# "already initialized, re-run? (y/N)" gate, not only inside
+# create_databases() - a test driving main() itself (not create_databases()
+# in isolation) is required to actually catch a regression here.
+# IN_DB_MYSQL and SCRIPT_DIR must be set by the caller before invoking
+# main() (SCRIPT_DIR controls where main() looks for migrate.sh).
+load_init_database_main_functions() {
+    local temp_initdb="$TEST_TEMP_DIR/init_database_main_functions.sh"
+
+    source "$SCRIPTS_DIR/common.sh"
+
+    {
+        echo 'log_info()  { echo "[INFO] $1"; }'
+        echo 'log_warn()  { echo "[WARN] $1"; }'
+        echo 'log_error() { echo "[ERROR] $1" >&2; }'
+        echo 'log_step()  { echo "[STEP] $1"; }'
+        awk '/^wait_for_mysql\(\) \{/,/^}/' "$SCRIPTS_DIR/init_database.sh"
+        awk '/^check_databases_exist\(\) \{/,/^}/' "$SCRIPTS_DIR/init_database.sh"
+        awk '/^check_migrations_applied\(\) \{/,/^}/' "$SCRIPTS_DIR/init_database.sh"
+        awk '/^create_databases\(\) \{/,/^}/' "$SCRIPTS_DIR/init_database.sh"
+        awk '/^main\(\) \{/,/^}/' "$SCRIPTS_DIR/init_database.sh"
+    } > "$temp_initdb"
+
+    for fn in wait_for_mysql check_databases_exist check_migrations_applied create_databases main; do
+        if ! grep -q "^${fn}() {" "$temp_initdb"; then
+            echo "load_init_database_main_functions: failed to extract $fn from init_database.sh" >&2
+            return 1
+        fi
+    done
+
+    source "$temp_initdb"
 }
