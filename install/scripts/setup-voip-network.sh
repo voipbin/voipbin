@@ -81,6 +81,9 @@ load_external_ips() {
         if [[ -z "$RTPENGINE_EXTERNAL_IP" ]]; then
             RTPENGINE_EXTERNAL_IP=$(grep '^RTPENGINE_EXTERNAL_IP=' "$PROJECT_DIR/.env" 2>/dev/null | cut -d'=' -f2 | head -1)
         fi
+        if [[ -z "$EXTERNAL_IP_PINNED" ]]; then
+            EXTERNAL_IP_PINNED=$(grep '^EXTERNAL_IP_PINNED=' "$PROJECT_DIR/.env" 2>/dev/null | cut -d'=' -f2 | head -1)
+        fi
     fi
 }
 
@@ -93,21 +96,42 @@ setup_external_ip() {
         return 0
     fi
 
+    echo ""
+    log_info "Configuring external VoIP IP on $iface..."
+
+    # Pinned IPs (--kamailio-ip/--rtpengine-ip at init time) are typically
+    # hosting-provider-registered routed addresses that need provider-specific
+    # wiring this script cannot know (per-IP gateway/netmask, MAC binding via
+    # the provider's control panel, a dedicated macvlan device, etc. — see
+    # README.md "Hosting-provider routed IPs"). Blindly `ip addr add`-ing them
+    # onto $iface here duplicates whatever the operator already configured
+    # instead of skipping cleanly, which is worse than doing nothing.
+    # Case-insensitive: same fail-closed rationale as init.sh's
+    # --force-reinit guard and common.sh's update_env_ips().
+    if [[ "${EXTERNAL_IP_PINNED,,}" == "true" ]]; then
+        if ip addr show 2>/dev/null | grep -q "inet ${ext_ip}/"; then
+            log_info "  $ext_ip is pinned (EXTERNAL_IP_PINNED=true) and already present on the host — leaving as-is"
+        else
+            log_warn "  $ext_ip is pinned (EXTERNAL_IP_PINNED=true) but not found on any interface"
+            log_warn "  This script does not auto-configure pinned IPs; see README.md 'Hosting-provider routed IPs'"
+        fi
+        return 0
+    fi
+
+    # Check if IP already exists anywhere on the host (not just $iface) —
+    # e.g. a previous run, or an operator-managed interface — to avoid
+    # binding the same address to two interfaces at once.
+    if ip addr show 2>/dev/null | grep -q "inet ${ext_ip}/"; then
+        log_info "  External IP $ext_ip already configured on the host"
+        return 0
+    fi
+
     # Get the subnet mask from existing IP
     local existing_cidr=$(ip addr show "$iface" | grep -oP 'inet \K[\d./]+' | head -1)
     local netmask=$(echo "$existing_cidr" | cut -d'/' -f2)
     netmask="${netmask:-24}"
 
     local ext_cidr="${ext_ip}/${netmask}"
-
-    echo ""
-    log_info "Configuring external VoIP IP on $iface..."
-
-    # Check if IP already exists on the interface
-    if ip addr show "$iface" | grep -q "inet ${ext_ip}/"; then
-        log_info "  External IP $ext_ip already configured on $iface"
-        return 0
-    fi
 
     # Add the secondary IP
     log_info "  Adding secondary IP $ext_cidr to $iface..."

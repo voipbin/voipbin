@@ -267,20 +267,61 @@ update_env_ips() {
         return 1
     fi
 
-    # Generate new secondary IPs
-    local secondary_ips=$(generate_secondary_ips "$new_host_ip")
-    local new_kamailio_ip=$(echo "$secondary_ips" | grep KAMAILIO | cut -d'=' -f2)
-    local new_rtpengine_ip=$(echo "$secondary_ips" | grep RTPENGINE | cut -d'=' -f2)
+    # EXTERNAL_IP_PINNED=true means KAMAILIO_EXTERNAL_IP/RTPENGINE_EXTERNAL_IP
+    # were set explicitly at init time (--kamailio-ip/--rtpengine-ip) —
+    # typically hosting-provider-registered routed IPs, each with its own
+    # gateway, that have no relationship to HOST_EXTERNAL_IP. Recomputing
+    # them via the host+8 offset here would silently replace working,
+    # provider-registered addresses with ones nobody owns. Only
+    # HOST_EXTERNAL_IP tracks the actual host IP change in that case.
+    local ip_pinned
+    ip_pinned=$(get_env_var "$env_file" EXTERNAL_IP_PINNED)
 
-    log_info "Updating .env with new IPs:"
-    log_info "  HOST_EXTERNAL_IP: $new_host_ip"
-    log_info "  KAMAILIO_EXTERNAL_IP: $new_kamailio_ip"
-    log_info "  RTPENGINE_EXTERNAL_IP: $new_rtpengine_ip"
+    # Every log_* call in this function is redirected to stderr (>&2):
+    # the final `echo "$new_kamailio_ip"` is this function's return-value
+    # contract (regenerate_ip_config() captures it via command
+    # substitution), and command substitution captures ALL of stdout, not
+    # just the last line. Before this, regenerate_ip_config -> (this
+    # function) -> generate_coredns_config fed the *entire* log transcript
+    # into the CoreDNS Corefile as if it were the Kamailio IP, corrupting
+    # the SIP zone on every host-IP-change regeneration — reproducible
+    # against plain main, independent of EXTERNAL_IP_PINNED.
+    log_info "Updating .env with new IPs:" >&2
+    log_info "  HOST_EXTERNAL_IP: $new_host_ip" >&2
+
+    # Declared here (not inside the branches below) so the function's
+    # return-value contract (the final `echo "$new_kamailio_ip"`) holds on
+    # both paths — bash `local` is function-scoped, not block-scoped, but a
+    # variable only assigned inside a branch that never runs is simply
+    # unset, not merely empty-string, which previously made the pinned
+    # branch's return value leak whatever was left over from an unrelated
+    # earlier variable instead of the actual (unchanged) Kamailio IP.
+    local new_kamailio_ip new_rtpengine_ip
+
+    # Case-insensitive for the same fail-closed reason as init.sh's
+    # --force-reinit guard: an unexpected value must not be treated as
+    # "not pinned" and silently recomputed.
+    if [[ "${ip_pinned,,}" == "true" ]]; then
+        # Unchanged by design (see comment above) — read the current values
+        # back so callers relying on this function's return value (e.g.
+        # regenerate_ip_config's CoreDNS regeneration) still get the real,
+        # working IP instead of an empty string.
+        new_kamailio_ip=$(get_env_var "$env_file" KAMAILIO_EXTERNAL_IP)
+        new_rtpengine_ip=$(get_env_var "$env_file" RTPENGINE_EXTERNAL_IP)
+        log_info "  KAMAILIO_EXTERNAL_IP / RTPENGINE_EXTERNAL_IP: unchanged (EXTERNAL_IP_PINNED=true)" >&2
+    else
+        # Generate new secondary IPs
+        local secondary_ips=$(generate_secondary_ips "$new_host_ip")
+        new_kamailio_ip=$(echo "$secondary_ips" | grep KAMAILIO | cut -d'=' -f2)
+        new_rtpengine_ip=$(echo "$secondary_ips" | grep RTPENGINE | cut -d'=' -f2)
+        log_info "  KAMAILIO_EXTERNAL_IP: $new_kamailio_ip" >&2
+        log_info "  RTPENGINE_EXTERNAL_IP: $new_rtpengine_ip" >&2
+        sed -i "s|^KAMAILIO_EXTERNAL_IP=.*|KAMAILIO_EXTERNAL_IP=$new_kamailio_ip|" "$env_file"
+        sed -i "s|^RTPENGINE_EXTERNAL_IP=.*|RTPENGINE_EXTERNAL_IP=$new_rtpengine_ip|" "$env_file"
+    fi
 
     # Update .env file (IP vars update in both modes)
     sed -i "s|^HOST_EXTERNAL_IP=.*|HOST_EXTERNAL_IP=$new_host_ip|" "$env_file"
-    sed -i "s|^KAMAILIO_EXTERNAL_IP=.*|KAMAILIO_EXTERNAL_IP=$new_kamailio_ip|" "$env_file"
-    sed -i "s|^RTPENGINE_EXTERNAL_IP=.*|RTPENGINE_EXTERNAL_IP=$new_rtpengine_ip|" "$env_file"
 
     # Also update frontend URLs that use the host IP — composed from BASE_DOMAIN
     # (never a hardcoded literal), and skipped entirely in external mode:

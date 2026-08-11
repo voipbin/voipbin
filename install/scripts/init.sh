@@ -79,6 +79,17 @@ Options:
                               requires --tls byo --cert ... --key ...
   --cert <fullchain.pem>      Certificate file (required with --tls byo)
   --key <privkey.pem>         Private key file (required with --tls byo)
+  --kamailio-ip <ip>          Explicit KAMAILIO_EXTERNAL_IP (skips the
+                              host-relative auto-generation). Use this when
+                              the host's additional IPs are individually
+                              routed/registered by the provider (each with
+                              its own gateway) rather than free addresses in
+                              the host's own subnet — the auto-generated
+                              host+8 offset is not guaranteed to be an
+                              address you actually own in that case.
+  --rtpengine-ip <ip>         Explicit RTPENGINE_EXTERNAL_IP (see
+                              --kamailio-ip). Both flags must be given
+                              together, or neither.
   --yes, -y                   Answer yes to all prompts (non-interactive)
   --force-reinit              Rewrite .env/certs/Corefile for a new mode or
                               domain (never touches the database; prints the
@@ -98,6 +109,23 @@ validate_domain() {
     return 0
 }
 
+# Loose dotted-quad syntax check for --kamailio-ip/--rtpengine-ip. Not a
+# full RFC validator (doesn't reject e.g. 999.1.1.1) — good enough to catch
+# typos/flag-value swaps before they land silently in .env.
+validate_ipv4() {
+    local ip="$1"
+    [[ "$ip" =~ ^[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}$ ]] || return 1
+    local octet
+    for octet in ${ip//./ }; do
+        # Force base-10: bash's arithmetic comparison treats a leading-zero
+        # operand as octal, so e.g. "099" throws "value too great for base"
+        # instead of failing this validator cleanly (leading-zero octets are
+        # plausible copy-pasted from a hosting provider's control panel).
+        [[ "$((10#$octet))" -le 255 ]] || return 1
+    done
+    return 0
+}
+
 parse_args() {
     INIT_MODE="internal"
     INIT_DOMAIN=""
@@ -107,6 +135,8 @@ parse_args() {
     INIT_YES="false"
     INIT_FORCE_REINIT="false"
     INIT_MODE_EXPLICIT="false"
+    INIT_KAMAILIO_IP=""
+    INIT_RTPENGINE_IP=""
 
     while [[ $# -gt 0 ]]; do
         case "$1" in
@@ -119,6 +149,16 @@ parse_args() {
             --domain)
                 [[ $# -ge 2 ]] || die 1 "--domain requires a value"
                 INIT_DOMAIN="$2"
+                shift 2
+                ;;
+            --kamailio-ip)
+                [[ $# -ge 2 ]] || die 1 "--kamailio-ip requires a value"
+                INIT_KAMAILIO_IP="$2"
+                shift 2
+                ;;
+            --rtpengine-ip)
+                [[ $# -ge 2 ]] || die 1 "--rtpengine-ip requires a value"
+                INIT_RTPENGINE_IP="$2"
                 shift 2
                 ;;
             --tls)
@@ -190,6 +230,19 @@ parse_args() {
 
     if [[ -n "$INIT_DOMAIN" ]] && ! validate_domain "$INIT_DOMAIN"; then
         die 1 "invalid domain: $INIT_DOMAIN (expected lowercase RFC-1123 labels, at least two labels, no scheme/port/trailing dot)"
+    fi
+
+    # --kamailio-ip/--rtpengine-ip: both-or-neither, since a single explicit
+    # IP without its pair would leave the other auto-generated relative to
+    # the *explicit* one's host+8 offset — almost never what's wanted once
+    # an operator cares enough to pin one of them by hand.
+    if [[ -n "$INIT_KAMAILIO_IP" || -n "$INIT_RTPENGINE_IP" ]]; then
+        [[ -n "$INIT_KAMAILIO_IP" && -n "$INIT_RTPENGINE_IP" ]] || \
+            die 1 "--kamailio-ip and --rtpengine-ip must be given together"
+        validate_ipv4 "$INIT_KAMAILIO_IP" || die 1 "invalid --kamailio-ip: $INIT_KAMAILIO_IP"
+        validate_ipv4 "$INIT_RTPENGINE_IP" || die 1 "invalid --rtpengine-ip: $INIT_RTPENGINE_IP"
+        [[ "$INIT_KAMAILIO_IP" != "$INIT_RTPENGINE_IP" ]] || \
+            die 1 "--kamailio-ip and --rtpengine-ip must be different addresses"
     fi
 
     TARGET_DOMAIN="voipbin.test"
@@ -280,6 +333,28 @@ check_existing_env_compat() {
         if [[ "$existing_mode" == "internal" && "$INIT_MODE" == "external" ]]; then
             check_force_reinit_preconditions
         fi
+
+        # Footgun guard: an existing pinned install (--kamailio-ip/
+        # --rtpengine-ip at some earlier init) has KAMAILIO_EXTERNAL_IP/
+        # RTPENGINE_EXTERNAL_IP that came from the hosting provider's own
+        # allocation, not from HOST_EXTERNAL_IP. --force-reinit without
+        # re-passing both flags would silently fall through to the
+        # host+8-offset auto-generation and overwrite them with an address
+        # nobody owns — exactly what pinning exists to prevent. Require the
+        # operator to restate the pin (or explicitly accept losing it) on
+        # every --force-reinit, the same way the mode/domain guard above
+        # requires explicit --mode.
+        # Case-insensitive: this is a safety guard, so an unexpected value
+        # (e.g. a hand-edited "EXTERNAL_IP_PINNED=TRUE") must fail closed
+        # (still guard) rather than silently not matching and letting the
+        # pinned IP get overwritten — the opposite of what a strict
+        # lowercase-only comparison would do here.
+        local existing_ip_pinned
+        existing_ip_pinned="$(get_env_var "$ENV_FILE" EXTERNAL_IP_PINNED)"
+        if [[ "${existing_ip_pinned,,}" == "true" && -z "$INIT_KAMAILIO_IP" ]]; then
+            die 1 "existing install has pinned external IPs (EXTERNAL_IP_PINNED=true); --force-reinit requires re-passing --kamailio-ip/--rtpengine-ip explicitly, or the auto-generated host+8 offset will silently replace them with an address you don't own"
+        fi
+
         log_warn "--force-reinit: rewriting .env/certs/Corefile for mode=$INIT_MODE domain=$TARGET_DOMAIN"
         return 0
     fi
@@ -549,11 +624,22 @@ main() {
     HOST_IP=$(detect_host_ip)
     log_info "  Host IP: $HOST_IP"
 
-    log_info "  Generating external IPs for VoIP services..."
-    generate_service_ips "$HOST_IP"
-    log_info "  Kamailio External IP:  $KAMAILIO_EXTERNAL_IP"
-    log_info "  RTPEngine External IP: $RTPENGINE_EXTERNAL_IP"
-    log_info "  (VoIP services need different IPs than host to avoid SIP loop detection)"
+    if [[ -n "$INIT_KAMAILIO_IP" ]]; then
+        KAMAILIO_EXTERNAL_IP="$INIT_KAMAILIO_IP"
+        RTPENGINE_EXTERNAL_IP="$INIT_RTPENGINE_IP"
+        EXTERNAL_IP_PINNED="true"
+        log_info "  Kamailio External IP:  $KAMAILIO_EXTERNAL_IP (explicit, --kamailio-ip)"
+        log_info "  RTPEngine External IP: $RTPENGINE_EXTERNAL_IP (explicit, --rtpengine-ip)"
+    else
+        log_info "  Generating external IPs for VoIP services..."
+        generate_service_ips "$HOST_IP"
+        EXTERNAL_IP_PINNED="false"
+        log_info "  Kamailio External IP:  $KAMAILIO_EXTERNAL_IP"
+        log_info "  RTPEngine External IP: $RTPENGINE_EXTERNAL_IP"
+        log_info "  (VoIP services need different IPs than host to avoid SIP loop detection)"
+        log_info "  Not the addresses you actually own? Pass --kamailio-ip/--rtpengine-ip"
+        log_info "  explicitly — see 'Hosting-provider routed IPs' in README.md."
+    fi
     echo ""
 
     # Steps 3-4 are internal-mode only (§2.6): in external mode the BYO
@@ -688,6 +774,14 @@ KAMAILIO_EXTERNAL_IP=$KAMAILIO_EXTERNAL_IP
 # RTPEngine's dedicated external IP (for RTP media traffic)
 # Auto-detected available IP in your subnet
 RTPENGINE_EXTERNAL_IP=$RTPENGINE_EXTERNAL_IP
+
+# When true, KAMAILIO_EXTERNAL_IP/RTPENGINE_EXTERNAL_IP were set explicitly
+# via --kamailio-ip/--rtpengine-ip (e.g. hosting-provider-registered routed
+# IPs, each with its own gateway, outside the host's own subnet) and must
+# NOT be recalculated from HOST_EXTERNAL_IP by the host-IP-change handling
+# in scripts/common.sh's update_env_ips(). false means the classic
+# host+8-offset auto-generation is in effect and safe to recompute.
+EXTERNAL_IP_PINNED=$EXTERNAL_IP_PINNED
 
 # ==============================================================================
 # Frontend Configuration
