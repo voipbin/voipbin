@@ -532,6 +532,38 @@ load_network_functions() {
 # depends on it for get_env_var()/provision_asterisk_db_user() (VOIP-1328) -
 # provision_asterisk_db_user() itself is tested directly against the real,
 # fully-sourced common.sh in common.bats, not re-extracted here.
+# Load setup-voip-network.sh's create_internal_interfaces() (VOIP-1331)
+# without running the rest of the script (docker network inspect, bridge
+# detection, external IP setup). It's defined AFTER the `parse_args "$@"`
+# call that load_network_functions() cuts off at, so it needs its own
+# awk-extraction helper (mirrors load_migrate_functions() below). Callers
+# must set INTERNAL_INTERFACES (already declared at module scope in the
+# real script and picked up via the extraction) and provide their own
+# log_info/log_warn stubs if they want to assert on log output.
+load_create_internal_interfaces() {
+    local temp_network="$TEST_TEMP_DIR/create_internal_interfaces.sh"
+
+    {
+        echo 'log_info()  { echo "[INFO] $1"; }'
+        echo 'log_warn()  { echo "[WARN] $1"; }'
+        echo 'log_error() { echo "[ERROR] $1" >&2; }'
+        # -g: load_create_internal_interfaces() (below) is itself a bash
+        # function, so `source`-ing this file from inside it would otherwise
+        # make a bare `declare -A` local to that function and invisible to
+        # create_internal_interfaces() once sourcing returns (bash scoping
+        # gotcha already noted elsewhere in this test file).
+        echo 'declare -gA INTERNAL_INTERFACES=(["kamailio-int"]="10.100.0.200" ["rtpengine-int"]="10.100.0.201")'
+        awk '/^create_internal_interfaces\(\) \{/,/^}/' "$SCRIPTS_DIR/setup-voip-network.sh"
+    } > "$temp_network"
+
+    if ! grep -q '^create_internal_interfaces() {' "$temp_network"; then
+        echo "load_create_internal_interfaces: failed to extract create_internal_interfaces from setup-voip-network.sh" >&2
+        return 1
+    fi
+
+    source "$temp_network"
+}
+
 load_migrate_functions() {
     local temp_migrate="$TEST_TEMP_DIR/migrate_functions.sh"
 

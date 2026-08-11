@@ -5,7 +5,7 @@
 # Usage: sudo ./voipbin start
 #
 # This script requires sudo for:
-#   - VoIP network interface setup (macvlan)
+#   - VoIP network interface setup (veth pairs, VOIP-1331; was macvlan)
 #   - DNS forwarding configuration
 
 set -e
@@ -357,12 +357,13 @@ validate_env() {
     return 0
 }
 
-# Check if VoIP network interfaces exist
+# Check if VoIP network interfaces exist and are correctly configured.
+# Delegates to common.sh's voip_internal_interfaces_ok() (VOIP-1331) rather
+# than a bare existence check, so a host still running the legacy macvlan
+# interfaces is correctly treated as "not configured" and routed through
+# setup-host.sh's migration path instead of being silently treated as done.
 check_voip_interfaces() {
-    if ip link show kamailio-int &>/dev/null && ip link show rtpengine-int &>/dev/null; then
-        return 0
-    fi
-    return 1
+    voip_internal_interfaces_ok
 }
 
 # Host prerequisite check (design §2.5) — replaces check_root. Reuses

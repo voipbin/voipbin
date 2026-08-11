@@ -1078,9 +1078,18 @@ def get_quick_status():
     resolv_configured = "nameserver 127.0.0.1" in run_cmd("cat /etc/resolv.conf 2>/dev/null")
     dns_active = coredns_running and resolv_configured
 
-    # Check network status
+    # Check network status. VOIP-1331: also reject a still-legacy macvlan
+    # interface, not just presence+IP - otherwise a host that hasn't
+    # migrated yet renders a green "configured" indicator here even though
+    # `voipbin network doctor`/doctor.sh correctly flags it as broken. Also
+    # reject an orphaned veth peer (bridge-side "-br" end with no `master`)
+    # - unlike macvlan, a veth pair survives `docker compose down`/
+    # `voipbin> clean` with its bridge enslavement cleared, so presence +
+    # correct IP alone isn't sufficient once the bridge has been recreated.
     kamailio_int = run_cmd("ip addr show kamailio-int 2>/dev/null | grep -oP 'inet [\\d./]+' | head -1")
-    network_configured = bool(kamailio_int)
+    kamailio_int_is_macvlan = "macvlan" in run_cmd("ip -d link show kamailio-int 2>/dev/null")
+    kamailio_peer_enslaved = "master" in run_cmd("ip link show kamailio-br 2>/dev/null")
+    network_configured = bool(kamailio_int) and not kamailio_int_is_macvlan and kamailio_peer_enslaved
 
     # Get host IP for endpoints
     host_ip = run_cmd("grep '^HOST_EXTERNAL_IP=' .env 2>/dev/null | cut -d'=' -f2 | head -1") or "localhost"
@@ -4547,19 +4556,41 @@ Type 'registrar <subcommand> help' for more details.
         rtpengine_ip = run_cmd("grep '^RTPENGINE_EXTERNAL_IP=' .env 2>/dev/null | cut -d'=' -f2 | head -1") or ""
 
         # Check internal interfaces
-        print(f"\n{bold('Internal Interfaces')} (Docker bridge → host macvlan)")
+        print(f"\n{bold('Internal Interfaces')} (Docker bridge → host veth pair, VOIP-1331)")
         print("-" * 60)
 
-        kamailio_int = run_cmd("ip addr show kamailio-int 2>/dev/null | grep -oP 'inet \\K[\\d./]+' | head -1")
-        rtpengine_int = run_cmd("ip addr show rtpengine-int 2>/dev/null | grep -oP 'inet \\K[\\d./]+' | head -1")
+        # VOIP-1331 review round 4, MEDIUM: an IP being present is not
+        # sufficient - a legacy macvlan interface or an orphaned veth peer
+        # (bridge-side "-br" end with no `master`, e.g. after `docker
+        # compose down`/`voipbin> clean` recreates the compose network with
+        # a new bridge name) both hold a valid-looking IP while Kamailio/
+        # RTPEngine are actually cut off from every container. Matches the
+        # same check used for the dashboard indicator and doctor.sh.
+        def _voip_interface_status(name):
+            ip_addr = run_cmd(f"ip addr show {name} 2>/dev/null | grep -oP 'inet \\K[\\d./]+' | head -1")
+            if not ip_addr:
+                return None, "not configured"
+            if "macvlan" in run_cmd(f"ip -d link show {name} 2>/dev/null"):
+                return ip_addr, "legacy macvlan interface, needs migration (VOIP-1331)"
+            peer = name.replace("-int", "-br")
+            if "master" not in run_cmd(f"ip link show {peer} 2>/dev/null"):
+                return ip_addr, "orphaned bridge peer, likely after a network recreate (VOIP-1331)"
+            return ip_addr, None
 
-        if kamailio_int:
-            print(f"  {green('●')} kamailio-int:  {kamailio_int}")
+        kamailio_ip_addr, kamailio_problem = _voip_interface_status("kamailio-int")
+        rtpengine_ip_addr, rtpengine_problem = _voip_interface_status("rtpengine-int")
+
+        if kamailio_ip_addr and not kamailio_problem:
+            print(f"  {green('●')} kamailio-int:  {kamailio_ip_addr}")
+        elif kamailio_ip_addr:
+            print(f"  {red('○')} kamailio-int:  {kamailio_ip_addr} ({kamailio_problem})")
         else:
             print(f"  {red('○')} kamailio-int:  not configured")
 
-        if rtpengine_int:
-            print(f"  {green('●')} rtpengine-int: {rtpengine_int}")
+        if rtpengine_ip_addr and not rtpengine_problem:
+            print(f"  {green('●')} rtpengine-int: {rtpengine_ip_addr}")
+        elif rtpengine_ip_addr:
+            print(f"  {red('○')} rtpengine-int: {rtpengine_ip_addr} ({rtpengine_problem})")
         else:
             print(f"  {red('○')} rtpengine-int: not configured")
 

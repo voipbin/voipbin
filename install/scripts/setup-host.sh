@@ -3,8 +3,9 @@
 # The single sudo command in the AI-driven install flow. Owns every host
 # mutation: mkcert package install, mkcert CA trust-store install (two-pass
 # CAROOT handoff), DNS hijack (Corefile + setup-dns.sh), the compose default
-# docker network (fresh hosts, before any compose up), and the VoIP macvlan
-# interfaces (setup-voip-network.sh).
+# docker network (fresh hosts, before any compose up), and the VoIP network
+# interfaces (setup-voip-network.sh - internal veth pairs, VOIP-1331, plus
+# external macvlan for pinned hosting-provider IPs).
 #
 # Usage: sudo ./scripts/setup-host.sh
 #
@@ -247,9 +248,13 @@ step_ensure_docker_network() {
     record_step "docker-network:done"
 }
 
-# Step: VoIP macvlan interfaces (both modes).
+# Step: VoIP network interfaces (both modes).
 step_setup_network() {
-    if ip link show kamailio-int &> /dev/null && ip link show rtpengine-int &> /dev/null; then
+    # voip_internal_interfaces_ok() (common.sh) checks more than existence -
+    # VOIP-1331 - so a host still running the legacy macvlan interfaces
+    # doesn't get skipped here and never reaches setup-voip-network.sh's
+    # migration logic.
+    if voip_internal_interfaces_ok; then
         log_info "  VoIP network interfaces already configured, skipping"
         record_step "voip-network:skipped"
         return 0

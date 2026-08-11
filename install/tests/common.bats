@@ -759,3 +759,147 @@ exit 1
     [[ "$output" == *"Failed to provision dedicated DB user"* ]]
     [[ "$output" == *"ERROR 1045"* ]]
 }
+
+# =============================================================================
+# voip_internal_interfaces_ok() tests (VOIP-1331)
+#
+# Shared by doctor.sh/setup-host.sh/start.sh so their "already configured,
+# skip" gates agree. An existence-only check would treat a host still
+# running the legacy pre-VOIP-1331 macvlan interfaces as "done" and never
+# route back through setup-voip-network.sh's migration logic.
+# =============================================================================
+
+stub_ip_for_voip_interfaces_check() {
+    local kamailio_present="$1"    # "yes"/"no"
+    local kamailio_type="$2"       # "macvlan"/"veth"/anything else = not macvlan
+    local rtpengine_present="$3"
+    local rtpengine_type="$4"
+    local kamailio_enslaved="${5:-yes}"    # "yes"/"no" - "no" simulates an orphaned veth peer (VOIP-1331 review round 3)
+    local rtpengine_enslaved="${6:-yes}"
+    mock_command_script "ip" "
+present() {
+    case \"\$1\" in
+        kamailio-int) [[ '$kamailio_present' == 'yes' ]] ;;
+        rtpengine-int) [[ '$rtpengine_present' == 'yes' ]] ;;
+        *) return 1 ;;
+    esac
+}
+is_macvlan() {
+    case \"\$1\" in
+        kamailio-int) [[ '$kamailio_type' == 'macvlan' ]] ;;
+        rtpengine-int) [[ '$rtpengine_type' == 'macvlan' ]] ;;
+        *) return 1 ;;
+    esac
+}
+is_enslaved() {
+    case \"\$1\" in
+        kamailio-br) [[ '$kamailio_enslaved' == 'yes' ]] ;;
+        rtpengine-br) [[ '$rtpengine_enslaved' == 'yes' ]] ;;
+        *) return 1 ;;
+    esac
+}
+if [[ \"\$1\" == \"link\" && \"\$2\" == \"show\" ]]; then
+    case \"\$3\" in
+        kamailio-br|rtpengine-br)
+            if is_enslaved \"\$3\"; then
+                echo \"5: \$3@br-abc123: <BROADCAST,MULTICAST,UP,LOWER_UP> mtu 1500 qdisc noqueue master br-abc123 state UP\"
+            else
+                echo \"5: \$3: <BROADCAST,MULTICAST,UP,LOWER_UP> mtu 1500 qdisc noqueue state UP\"
+            fi
+            exit 0
+            ;;
+        *)
+            present \"\$3\" && exit 0 || exit 1
+            ;;
+    esac
+fi
+if [[ \"\$1\" == \"-d\" && \"\$2\" == \"link\" && \"\$3\" == \"show\" ]]; then
+    if is_macvlan \"\$4\"; then
+        echo \"macvlan mode bridge\"
+    fi
+    exit 0
+fi
+exit 1
+"
+}
+
+@test "voip_internal_interfaces_ok returns true when both interfaces exist as non-macvlan" {
+    load_common
+    stub_ip_for_voip_interfaces_check "yes" "veth" "yes" "veth"
+
+    run voip_internal_interfaces_ok
+
+    [[ "$status" -eq 0 ]]
+}
+
+@test "voip_internal_interfaces_ok returns false when an interface is missing" {
+    load_common
+    stub_ip_for_voip_interfaces_check "no" "" "yes" "veth"
+
+    run voip_internal_interfaces_ok
+
+    [[ "$status" -ne 0 ]]
+}
+
+@test "voip_internal_interfaces_ok returns false when kamailio-int is still a legacy macvlan interface" {
+    load_common
+    stub_ip_for_voip_interfaces_check "yes" "macvlan" "yes" "veth"
+
+    run voip_internal_interfaces_ok
+
+    [[ "$status" -ne 0 ]]
+}
+
+@test "voip_internal_interfaces_ok returns false when rtpengine-int is still a legacy macvlan interface" {
+    load_common
+    stub_ip_for_voip_interfaces_check "yes" "veth" "yes" "macvlan"
+
+    run voip_internal_interfaces_ok
+
+    [[ "$status" -ne 0 ]]
+}
+
+@test "voip_internal_interfaces_ok returns false when both interfaces are still legacy macvlan" {
+    load_common
+    stub_ip_for_voip_interfaces_check "yes" "macvlan" "yes" "macvlan"
+
+    run voip_internal_interfaces_ok
+
+    [[ "$status" -ne 0 ]]
+}
+
+# --- Orphaned veth peer (VOIP-1331 review round 3, HIGH) ---
+#
+# Unlike macvlan (destroyed by the kernel when its parent bridge
+# disappears), a veth pair survives `docker compose down`/`voipbin> clean`
+# orphaned, with the bridge-side "-br" peer's `master` cleared - reachable
+# via this repo's own documented clean-then-start cycle (a recreated
+# compose network gets a new bridge name). Presence + non-macvlan alone is
+# not sufficient; the "-br" peer must still show a `master`.
+
+@test "voip_internal_interfaces_ok returns false when kamailio-int's bridge peer is orphaned (no master)" {
+    load_common
+    stub_ip_for_voip_interfaces_check "yes" "veth" "yes" "veth" "no" "yes"
+
+    run voip_internal_interfaces_ok
+
+    [[ "$status" -ne 0 ]]
+}
+
+@test "voip_internal_interfaces_ok returns false when rtpengine-int's bridge peer is orphaned (no master)" {
+    load_common
+    stub_ip_for_voip_interfaces_check "yes" "veth" "yes" "veth" "yes" "no"
+
+    run voip_internal_interfaces_ok
+
+    [[ "$status" -ne 0 ]]
+}
+
+@test "voip_internal_interfaces_ok returns true when both bridge peers are correctly enslaved" {
+    load_common
+    stub_ip_for_voip_interfaces_check "yes" "veth" "yes" "veth" "yes" "yes"
+
+    run voip_internal_interfaces_ok
+
+    [[ "$status" -eq 0 ]]
+}
