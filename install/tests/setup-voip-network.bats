@@ -221,6 +221,63 @@ fi
 }
 
 # =============================================================================
+# setup_external_ip() pinned-IP gating (VOIP-1322)
+# =============================================================================
+# Pinned IPs (EXTERNAL_IP_PINNED=true) are hosting-provider-registered routed
+# addresses wired by the operator (or init.sh's --kamailio-ip/--rtpengine-ip
+# path) outside this script's knowledge. setup_external_ip() must not attempt
+# `ip addr add` for them — that duplicated the address across two interfaces
+# when a macvlan device already owned it (found running against a real
+# ReliableSite dedicated server, 2026-08-11).
+
+@test "load_external_ips loads EXTERNAL_IP_PINNED from .env" {
+    create_env_file "KAMAILIO_EXTERNAL_IP=199.127.61.42" "RTPENGINE_EXTERNAL_IP=199.127.61.134" "EXTERNAL_IP_PINNED=true"
+    load_network_functions
+    EXTERNAL_IP=""; RTPENGINE_EXTERNAL_IP=""; EXTERNAL_IP_PINNED=""
+
+    load_external_ips
+
+    assert_equal "$EXTERNAL_IP_PINNED" "true"
+}
+
+@test "setup_external_ip skips ip addr add when pinned and IP already present on host" {
+    load_network_functions
+    mock_ip_addr_show_only "199.127.61.42"
+    EXTERNAL_IP_PINNED="true"
+
+    run setup_external_ip "199.127.61.42" "enp7s0"
+
+    [[ "$status" -eq 0 ]]
+    [[ "$output" == *"already present on the host"* ]]
+    [[ "$output" != *"Adding secondary IP"* ]]
+}
+
+@test "setup_external_ip warns but does not fail when pinned IP is missing from host" {
+    load_network_functions
+    mock_ip_addr_show_only  # nothing present
+    EXTERNAL_IP_PINNED="true"
+
+    run setup_external_ip "199.127.61.42" "enp7s0"
+
+    [[ "$status" -eq 0 ]]
+    [[ "$output" == *"not found on any interface"* ]]
+    [[ "$output" != *"Adding secondary IP"* ]]
+}
+
+@test "setup_external_ip still auto-configures when not pinned" {
+    load_network_functions
+    mock_ip_addr_show_only  # nothing present anywhere -> falls through to ip addr add
+    EXTERNAL_IP_PINNED="false"
+
+    run setup_external_ip "192.168.1.108" "enp7s0"
+
+    # mock_ip_addr_show_only's "ip addr add ..." branch exits 1 (unmocked),
+    # but setup_external_ip swallows that failure with a warning rather than
+    # propagating a nonzero exit — assert on the log line, not $status.
+    [[ "$output" == *"Adding secondary IP 192.168.1.108/24 to enp7s0"* ]]
+}
+
+# =============================================================================
 # parse_args() tests
 # =============================================================================
 

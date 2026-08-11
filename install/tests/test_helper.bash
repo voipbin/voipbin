@@ -93,6 +93,25 @@ fi
 "
 }
 
+# Mock 'ip addr show' (no interface arg, i.e. the whole-host listing
+# setup_external_ip()'s pinned-IP path greps) to report the given IPs as
+# present; anything else ('ip addr add', etc.) exits nonzero so a test can
+# assert the pinned path never attempted to mutate the interface.
+# Usage: mock_ip_addr_show_only "199.127.61.42" "199.127.61.134"
+mock_ip_addr_show_only() {
+    local ips=("$@")
+    local body="if [[ \"\$1\" == \"addr\" && \"\$2\" == \"show\" ]]; then"
+    local ip
+    for ip in "${ips[@]}"; do
+        body+=$'\n'"    echo \"    inet ${ip}/24 brd ${ip%.*}.255 scope global enp7s0\""
+    done
+    body+=$'\n'"    exit 0"
+    body+=$'\n'"else"
+    body+=$'\n'"    exit 1"
+    body+=$'\n'"fi"
+    mock_command_script "ip" "$body"
+}
+
 # Mock 'hostname -I' to return specific IP
 # Usage: mock_hostname "192.168.1.100"
 mock_hostname() {

@@ -405,6 +405,56 @@ teardown() {
     assert_equal "$INIT_YES" "true"
 }
 
+@test "parse_args accepts --kamailio-ip/--rtpengine-ip together" {
+    load_init_functions
+
+    parse_args --mode external --domain example.com --tls byo --cert c.pem --key k.pem \
+        --kamailio-ip 199.127.61.42 --rtpengine-ip 199.127.61.134 --yes
+
+    assert_equal "$INIT_KAMAILIO_IP" "199.127.61.42"
+    assert_equal "$INIT_RTPENGINE_IP" "199.127.61.134"
+}
+
+@test "parse_args rejects --kamailio-ip without --rtpengine-ip" {
+    load_init_functions
+
+    run parse_args --mode external --domain example.com --tls byo --cert c.pem --key k.pem \
+        --kamailio-ip 199.127.61.42
+
+    [[ "$status" -eq 1 ]]
+    [[ "$output" == *'--kamailio-ip and --rtpengine-ip must be given together'* ]]
+}
+
+@test "parse_args rejects --rtpengine-ip without --kamailio-ip" {
+    load_init_functions
+
+    run parse_args --mode external --domain example.com --tls byo --cert c.pem --key k.pem \
+        --rtpengine-ip 199.127.61.134
+
+    [[ "$status" -eq 1 ]]
+    [[ "$output" == *'--kamailio-ip and --rtpengine-ip must be given together'* ]]
+}
+
+@test "parse_args rejects malformed --kamailio-ip" {
+    load_init_functions
+
+    run parse_args --mode external --domain example.com --tls byo --cert c.pem --key k.pem \
+        --kamailio-ip not-an-ip --rtpengine-ip 199.127.61.134
+
+    [[ "$status" -eq 1 ]]
+    [[ "$output" == *'invalid --kamailio-ip: not-an-ip'* ]]
+}
+
+@test "parse_args rejects --kamailio-ip and --rtpengine-ip set to the same address" {
+    load_init_functions
+
+    run parse_args --mode external --domain example.com --tls byo --cert c.pem --key k.pem \
+        --kamailio-ip 199.127.61.42 --rtpengine-ip 199.127.61.42
+
+    [[ "$status" -eq 1 ]]
+    [[ "$output" == *'must be different addresses'* ]]
+}
+
 @test "parse_args defaults: internal mode, internal-dns profile, voipbin.test" {
     load_init_functions
 

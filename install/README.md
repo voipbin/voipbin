@@ -33,6 +33,7 @@
 - [Migrating from voipbin/sandbox](#migrating-from-voipbinsandbox)
 - [Install Modes](#install-modes)
 - [External Mode (Real Domain)](#external-mode-real-domain)
+  - [Hosting-provider routed IPs](#hosting-provider-routed-ips)
 - [Web Applications](#web-applications)
 - [Technical Architecture](#technical-architecture)
 - [Prerequisites](#prerequisites)
@@ -444,6 +445,82 @@ switch on an existing install. Two supported escape hatches:
    (stack down under the old `.env`, then
    `sudo ./scripts/setup-dns.sh --uninstall`); the flag refuses and prints
    the exact commands while any internal-mode host state remains.
+
+### Hosting-provider routed IPs
+
+By default `init.sh` derives `KAMAILIO_EXTERNAL_IP`/`RTPENGINE_EXTERNAL_IP`
+as `HOST_EXTERNAL_IP` + a fixed offset, on the assumption that nearby
+addresses in the host's own subnet are free for you to use (true on a home
+LAN or a cloud VM with a private subnet you control). **This does not hold
+on most dedicated-server hosts**, where additional IPs are individually
+allocated — often from a different subnet than your primary IP entirely,
+each with its own gateway, and requiring the provider to bind the address
+to a specific MAC before any traffic reaches it. Using the auto-generated
+offset in that environment picks an address you don't own; it will not
+work and may create ARP conflicts on the provider's network.
+
+Pass the IPs the provider actually assigned you explicitly:
+
+```bash
+./scripts/init.sh --mode external --domain example.com --tls byo \
+  --cert fullchain.pem --key privkey.pem \
+  --kamailio-ip <provider-assigned-ip-1> \
+  --rtpengine-ip <provider-assigned-ip-2> \
+  --yes
+```
+
+Both flags are required together. This writes `EXTERNAL_IP_PINNED=true` to
+`.env`, which stops `common.sh`'s host-IP-change handling from ever
+recalculating these two addresses — they came from the provider's
+allocation, not from your host IP, so nothing about a host IP change
+should touch them. `setup-voip-network.sh` also skips its normal `ip addr
+add` for pinned IPs, on the assumption the routing below is already wired
+by the time you run it (order matters: wire the network first, then
+`setup-host.sh`/`start.sh`).
+
+**What "wired" means is provider-specific** — this project cannot automate
+it in general. What worked against a ReliableSite dedicated server (their
+model: each additional IP has its own gateway, and must be bound to a
+specific MAC address via their control panel before traffic is delivered):
+
+1. Create a macvlan sub-interface per pinned IP, off your primary NIC:
+   `ip link add kamailio-ext link <primary-nic> type macvlan mode bridge`.
+   This gets its own auto-generated MAC address.
+2. Register that MAC against the provider-assigned IP in the provider's
+   control panel (their "custom MAC" option, however it's exposed).
+3. Address the interface with the **full netmask and gateway the provider
+   assigned to that specific IP** — not `/32`, and not your primary
+   interface's gateway. These frequently differ per IP even when the IPs
+   look unrelated to your primary subnet.
+4. Since each pinned IP's gateway differs, add source-based policy routing
+   so return traffic exits via the right gateway:
+   `ip rule add from <ip> table <N>` +
+   `ip route add default via <its-gateway> dev <its-interface> table <N>`.
+5. Make all of the above persistent (survives reboot) via your distro's
+   network manager — e.g. systemd-networkd `.netdev`/`.network` units, one
+   pair per pinned interface, plus a `[RoutingPolicyRule]` block for step 4.
+
+**Known gap:** `setup-host.sh` also creates the two *internal* macvlan
+interfaces (`kamailio-int`/`rtpengine-int`, on the Docker bridge) via plain
+`ip link add` — those are not made persistent by the script either, on
+either code path. A reboot removes them, and Kamailio/RTPEngine (both
+`network_mode: host`) then fail to bind and crash-loop until you re-run
+`sudo ./scripts/setup-host.sh` (idempotent — safe to re-run any time).
+Until this is fixed upstream, a systemd oneshot unit that runs
+`setup-host.sh` after `docker.service` on every boot is a reasonable
+operator-side workaround.
+
+**Also verify your host firewall (if any) explicitly.** This project does
+not configure one. Two firewall mistakes are easy to make together with
+routed IPs and worth checking for directly: (1) a default-deny `forward`
+chain blocks Docker's own container-to-internet NAT unless you explicitly
+allow traffic to/from the Docker bridge interfaces (`docker0`, `br-*`) —
+without it, image pulls and any outbound call from a container fail; (2) a
+blanket bridge-allow rule added for that reason can just as easily expose
+Docker-published database/broker ports (MySQL 3306, Redis 6379, RabbitMQ
+5672/15672) to the entire internet, since they reach containers via the
+same `forward` path — block those specific ports explicitly, before the
+bridge-allow rule, regardless of source.
 
 ---
 

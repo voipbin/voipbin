@@ -267,20 +267,34 @@ update_env_ips() {
         return 1
     fi
 
-    # Generate new secondary IPs
-    local secondary_ips=$(generate_secondary_ips "$new_host_ip")
-    local new_kamailio_ip=$(echo "$secondary_ips" | grep KAMAILIO | cut -d'=' -f2)
-    local new_rtpengine_ip=$(echo "$secondary_ips" | grep RTPENGINE | cut -d'=' -f2)
+    # EXTERNAL_IP_PINNED=true means KAMAILIO_EXTERNAL_IP/RTPENGINE_EXTERNAL_IP
+    # were set explicitly at init time (--kamailio-ip/--rtpengine-ip) —
+    # typically hosting-provider-registered routed IPs, each with its own
+    # gateway, that have no relationship to HOST_EXTERNAL_IP. Recomputing
+    # them via the host+8 offset here would silently replace working,
+    # provider-registered addresses with ones nobody owns. Only
+    # HOST_EXTERNAL_IP tracks the actual host IP change in that case.
+    local ip_pinned
+    ip_pinned=$(get_env_var "$env_file" EXTERNAL_IP_PINNED)
 
     log_info "Updating .env with new IPs:"
     log_info "  HOST_EXTERNAL_IP: $new_host_ip"
-    log_info "  KAMAILIO_EXTERNAL_IP: $new_kamailio_ip"
-    log_info "  RTPENGINE_EXTERNAL_IP: $new_rtpengine_ip"
+
+    if [[ "$ip_pinned" == "true" ]]; then
+        log_info "  KAMAILIO_EXTERNAL_IP / RTPENGINE_EXTERNAL_IP: unchanged (EXTERNAL_IP_PINNED=true)"
+    else
+        # Generate new secondary IPs
+        local secondary_ips=$(generate_secondary_ips "$new_host_ip")
+        local new_kamailio_ip=$(echo "$secondary_ips" | grep KAMAILIO | cut -d'=' -f2)
+        local new_rtpengine_ip=$(echo "$secondary_ips" | grep RTPENGINE | cut -d'=' -f2)
+        log_info "  KAMAILIO_EXTERNAL_IP: $new_kamailio_ip"
+        log_info "  RTPENGINE_EXTERNAL_IP: $new_rtpengine_ip"
+        sed -i "s|^KAMAILIO_EXTERNAL_IP=.*|KAMAILIO_EXTERNAL_IP=$new_kamailio_ip|" "$env_file"
+        sed -i "s|^RTPENGINE_EXTERNAL_IP=.*|RTPENGINE_EXTERNAL_IP=$new_rtpengine_ip|" "$env_file"
+    fi
 
     # Update .env file (IP vars update in both modes)
     sed -i "s|^HOST_EXTERNAL_IP=.*|HOST_EXTERNAL_IP=$new_host_ip|" "$env_file"
-    sed -i "s|^KAMAILIO_EXTERNAL_IP=.*|KAMAILIO_EXTERNAL_IP=$new_kamailio_ip|" "$env_file"
-    sed -i "s|^RTPENGINE_EXTERNAL_IP=.*|RTPENGINE_EXTERNAL_IP=$new_rtpengine_ip|" "$env_file"
 
     # Also update frontend URLs that use the host IP — composed from BASE_DOMAIN
     # (never a hardcoded literal), and skipped entirely in external mode:

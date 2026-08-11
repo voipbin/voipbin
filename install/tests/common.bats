@@ -363,6 +363,28 @@ teardown() {
     assert_file_contains "$PROJECT_DIR/.env" "WEBSOCKET_URL=wss://api.lab.internal:8443/v1.0/ws"
 }
 
+@test "update_env_ips leaves pinned Kamailio/RTPEngine IPs untouched, still updates host IP" {
+    create_env_file \
+        "DOMAIN_MODE=external" \
+        "BASE_DOMAIN=example.com" \
+        "HOST_EXTERNAL_IP=104.243.38.39" \
+        "KAMAILIO_EXTERNAL_IP=199.127.61.42" \
+        "RTPENGINE_EXTERNAL_IP=199.127.61.134" \
+        "EXTERNAL_IP_PINNED=true" \
+        "API_URL=https://api.example.com:8443/" \
+        "WEBSOCKET_URL=wss://api.example.com:8443/v1.0/ws"
+    load_common
+
+    run update_env_ips "104.243.38.99"
+
+    [[ "$status" -eq 0 ]]
+    [[ "$output" == *'unchanged (EXTERNAL_IP_PINNED=true)'* ]]
+    assert_file_contains "$PROJECT_DIR/.env" "HOST_EXTERNAL_IP=104.243.38.99"
+    # provider-registered IPs must survive the host+8 offset recompute
+    assert_file_contains "$PROJECT_DIR/.env" "KAMAILIO_EXTERNAL_IP=199.127.61.42"
+    assert_file_contains "$PROJECT_DIR/.env" "RTPENGINE_EXTERNAL_IP=199.127.61.134"
+}
+
 @test "update_env_ips legacy .env (no mode, no BASE_DOMAIN) falls back to voipbin.test" {
     create_env_file \
         "HOST_EXTERNAL_IP=192.168.1.100" \
