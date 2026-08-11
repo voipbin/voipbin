@@ -1378,22 +1378,26 @@ sudo ./voipbin logs -f kamailio
 voipbin> ast pjsip show endpoints
 ```
 
-**Known issue on fresh installs (VOIP-1332):** if `docker compose logs
+**Fixed issue on fresh installs (VOIP-1332):** if `docker compose logs
 asterisk-registrar` (or `voipbin> logs asterisk-registrar`) repeats
 `res_config_mysql.c: mysql_reconnect: MySQL RealTime: Failed to connect
-database server asterisk on db (err 1045)` even though the DB user/password
-in `.env` are correct, this is **not** a credential problem — it's the
-Asterisk image's bundled MySQL client library refusing MySQL 8's
-self-signed TLS certificate, misreported as "err 1045" (Access Denied).
-No `docker-compose.yml` or `res_config_mysql.conf` setting can work around
-it (confirmed by direct testing: disabling MySQL's SSL entirely makes the
-client fail the opposite way — "SSL is required, but the server does not
-support it" — and providing a trusted, hostname-matched CA to the
-container's system trust store fixes the `mariadb` CLI but not the
-compiled `res_config_mysql.so` module, which never consults it). This
-needs an image-level fix in `monorepo-voip` — track via VOIP-1332, not by
-editing anything in this repo. 100% reproducible on any fresh MySQL data
-volume.
+database server asterisk on db (err 1045)`, this used to be a genuine
+credential mismatch: Asterisk's realtime module stores the DB password in a
+fixed 50-byte buffer and silently truncates anything longer, so the 64-char
+password `init.sh` used to generate never actually matched what got sent
+over the wire. Fixed by generating a shorter password by default, plus a
+self-healing truncation in `provision_asterisk_db_user()` for installs that
+already have `DATABASE_ASTERISK_USERNAME` set to a dedicated user (VOIP-1328)
+with an oversized password in `.env` — just re-run `voipbin> start`.
+
+**If you have no `DATABASE_ASTERISK_USERNAME` in `.env` at all** (a
+pre-VOIP-1328 install still on the `root`/`MYSQL_ROOT_PASSWORD` fallback),
+`start` cannot self-heal this for you — `provision_asterisk_db_user()`
+skips the `root` account entirely, and `MYSQL_ROOT_PASSWORD` is still a
+64-char value used by every other service, so it can't be shortened
+without breaking those. Add `DATABASE_ASTERISK_USERNAME=asterisk_rt` and a
+`DATABASE_ASTERISK_PASSWORD` under 50 characters to `.env` yourself, then
+re-run `voipbin> start`.
 
 ```bash
 # Check the registrar domain format

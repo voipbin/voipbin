@@ -651,6 +651,88 @@ exit 0
     ! grep -q '\\"deadbeefcafef00d\\"' "$log_file"
 }
 
+@test "provision_asterisk_db_user truncates a password over 49 chars to match what Asterisk actually sends (VOIP-1332)" {
+    # A 64-char value, as generate_random_key() used to produce for
+    # DATABASE_ASTERISK_PASSWORD before VOIP-1332. Asterisk's
+    # res_config_mysql.c stores the password in `char pass[50]` and copies
+    # into it with ast_copy_string(), which silently truncates at 49 usable
+    # chars - so provision_asterisk_db_user() must grant MySQL the SAME
+    # truncated value, not the full 64 chars, or the DB and what Asterisk
+    # actually sends over the wire permanently disagree.
+    local full_pw="67d91bde6a21cd110fdcbb312fe838d632c31191784ce89cdc3c6db2e6028807"
+    local truncated_pw="${full_pw:0:49}"
+    [[ "${#full_pw}" -eq 64 ]]
+    [[ "${#truncated_pw}" -eq 49 ]]
+
+    create_env_file \
+        "DATABASE_ASTERISK_USERNAME=asterisk_rt" \
+        "DATABASE_ASTERISK_PASSWORD=$full_pw"
+    load_common
+    local log_file="$TEST_TEMP_DIR/docker.log"
+    stub_docker_capturing_run "$log_file"
+
+    run provision_asterisk_db_user "voipbin-db"
+
+    [[ "$status" -eq 0 ]]
+    grep -q "IDENTIFIED WITH mysql_native_password BY '${truncated_pw}'" "$log_file"
+    # The full untruncated value must never appear - a stray occurrence
+    # would mean the truncation only happened to LOOK right by coincidence.
+    ! grep -q "$full_pw" "$log_file"
+}
+
+@test "provision_asterisk_db_user leaves a password well under 49 chars untouched" {
+    # generate_random_key_short()'s 32-char output (and anything else safely
+    # under 49 chars) must pass through byte-for-byte.
+    create_env_file \
+        "DATABASE_ASTERISK_USERNAME=asterisk_rt" \
+        "DATABASE_ASTERISK_PASSWORD=deadbeefcafef00ddeadbeefcafef00d"
+    load_common
+    local log_file="$TEST_TEMP_DIR/docker.log"
+    stub_docker_capturing_run "$log_file"
+
+    run provision_asterisk_db_user "voipbin-db"
+
+    [[ "$status" -eq 0 ]]
+    grep -q "IDENTIFIED WITH mysql_native_password BY 'deadbeefcafef00ddeadbeefcafef00d'" "$log_file"
+}
+
+@test "provision_asterisk_db_user leaves a password of exactly 49 chars untouched (boundary)" {
+    local pw_49
+    pw_49="$(printf 'a%.0s' $(seq 1 49))"
+    [[ "${#pw_49}" -eq 49 ]]
+    create_env_file \
+        "DATABASE_ASTERISK_USERNAME=asterisk_rt" \
+        "DATABASE_ASTERISK_PASSWORD=$pw_49"
+    load_common
+    local log_file="$TEST_TEMP_DIR/docker.log"
+    stub_docker_capturing_run "$log_file"
+
+    run provision_asterisk_db_user "voipbin-db"
+
+    [[ "$status" -eq 0 ]]
+    grep -q "IDENTIFIED WITH mysql_native_password BY '${pw_49}'" "$log_file"
+}
+
+@test "provision_asterisk_db_user truncates a password of exactly 50 chars by exactly one char (boundary)" {
+    local pw_50 pw_49_expected
+    pw_50="$(printf 'a%.0s' $(seq 1 50))"
+    pw_49_expected="${pw_50:0:49}"
+    [[ "${#pw_50}" -eq 50 ]]
+    [[ "${#pw_49_expected}" -eq 49 ]]
+    create_env_file \
+        "DATABASE_ASTERISK_USERNAME=asterisk_rt" \
+        "DATABASE_ASTERISK_PASSWORD=$pw_50"
+    load_common
+    local log_file="$TEST_TEMP_DIR/docker.log"
+    stub_docker_capturing_run "$log_file"
+
+    run provision_asterisk_db_user "voipbin-db"
+
+    [[ "$status" -eq 0 ]]
+    grep -q "IDENTIFIED WITH mysql_native_password BY '${pw_49_expected}'" "$log_file"
+    ! grep -q "IDENTIFIED WITH mysql_native_password BY '${pw_50}'" "$log_file"
+}
+
 @test "provision_asterisk_db_user is idempotent: re-running twice both succeed with identical SQL" {
     create_env_file \
         "DATABASE_ASTERISK_USERNAME=asterisk_rt" \

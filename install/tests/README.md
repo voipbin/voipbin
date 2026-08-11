@@ -65,6 +65,7 @@ tests/
 ### init.sh (19 tests)
 - `generate_service_ips()` - Sequential IP allocation for Kamailio/RTPEngine
 - `generate_random_key()` - JWT key generation (64-char hex)
+- `generate_random_key_short()` - short secrets for consumers with a small fixed buffer, e.g. `DATABASE_ASTERISK_PASSWORD` (VOIP-1332, 32-char hex)
 - `check_mkcert()` - Certificate tool detection
 - `generate_cert()` - SIP TLS certificate generation
 - `generate_api_cert()` - API certificate with base64 encoding

@@ -86,37 +86,48 @@ dedicated DB user independently via the shared `provision_asterisk_db_user()`
 in `scripts/common.sh`, so all three entrypoints keep `asterisk-registrar`'s
 realtime auth working.
 
-**`DATABASE_ASTERISK_USERNAME`/`DATABASE_ASTERISK_PASSWORD` (VOIP-1328):**
+**`DATABASE_ASTERISK_USERNAME`/`DATABASE_ASTERISK_PASSWORD` (VOIP-1328,
+password-length fix VOIP-1332):**
 `asterisk-registrar`'s `res_config_mysql` realtime client previously
 authenticated as `root` (`DATABASE_ASTERISK_USERNAME=root` in
 `docker-compose.yml`), which was observed to intermittently fail MySQL 8
-auth (root cause not conclusively pinned down at the time — see VOIP-1332
-below for what turned out to be the actual, still-unresolved root cause of
-this class of failure). `init.sh` now generates a dedicated least-privilege user
-(`asterisk_rt` by default, `SELECT/INSERT/UPDATE/DELETE` on `asterisk.*`
-only) and writes it to `.env`. `docker-compose.yml` falls back to
-`root`/`MYSQL_ROOT_PASSWORD` when these two vars are absent, so installs
-created before VOIP-1328 keep working unchanged until `.env` is regenerated.
-To opt an EXISTING install in: add the two vars to `.env` and simply re-run
-`voipbin> start` — Step 6.5 provisions the user unconditionally, no need to
-manually invoke `init_database.sh`/`migrate.sh`.
+auth. `init.sh` now generates a dedicated least-privilege user (`asterisk_rt`
+by default, `SELECT/INSERT/UPDATE/DELETE` on `asterisk.*` only) and writes
+it to `.env`. `docker-compose.yml` falls back to `root`/`MYSQL_ROOT_PASSWORD`
+when these two vars are absent, so installs created before VOIP-1328 keep
+the same fallback behavior until `.env` is regenerated - which, per the
+VOIP-1332 note below, is itself broken by the same 49-char truncation
+(`MYSQL_ROOT_PASSWORD` is also a 64-char `generate_random_key()` value).
+There is no automatic self-heal for this fallback path specifically:
+`provision_asterisk_db_user()` returns early for `DATABASE_ASTERISK_USERNAME=root`,
+so a pre-VOIP-1328 install stays broken until it opts in. To opt an
+EXISTING install in: add `DATABASE_ASTERISK_USERNAME=asterisk_rt` and a
+`DATABASE_ASTERISK_PASSWORD` under 50 characters to `.env`, then simply
+re-run `voipbin> start` — Step 6.5 provisions the user unconditionally, no
+need to manually invoke `init_database.sh`/`migrate.sh`.
 
-**Known unresolved issue on fresh MySQL volumes (VOIP-1332):** even with
-the correct dedicated account, `asterisk-registrar` can still fail realtime
-auth with `res_config_mysql.c: mysql_reconnect: ... err 1045` on a brand
-new `db_data` volume. Confirmed root cause (2026-08-12, full bm-nyc-01
-rebuild from a clean `voipbin> clean --all`): the Asterisk image's bundled
-MySQL client library refuses MySQL 8's auto-generated self-signed TLS
-certificate — not a credential problem at all, just misreported as one.
-Directly verified this is **not fixable from this repo**: disabling
-MySQL's SSL server-side flips the failure to "SSL is required, but the
-server does not support it" (the client requires TLS), and installing a
-trusted, hostname-matched CA into the container's system trust store fixes
-the `mariadb` CLI but not the compiled `res_config_mysql.so` module, which
-never consults the system trust store or any documented
-`res_config_mysql.conf` key for SSL control. Needs an image-level fix in
-`monorepo-voip` (see VOIP-1332) — do not attempt another `docker-compose.yml`
-or `res_config_mysql.conf` workaround here without new evidence.
+**Root cause finally confirmed (VOIP-1332, 2026-08-12):** the actual
+failure, on VOIP-1328 and on any fresh MySQL data volume since, was the
+generated `DATABASE_ASTERISK_PASSWORD` itself. `generate_random_key()`
+produces a 64-char hex string, but Asterisk's `res_config_mysql.c` stores
+the password in a fixed `char pass[50]` buffer and copies into it with
+`ast_copy_string()`, which **silently truncates** at 49 usable chars
+instead of erroring. The DB then holds the full 64-char password while
+Asterisk only ever sends the truncated 49-char prefix — a genuine
+credential mismatch, reported by MySQL as `err 1045` (Access Denied), which
+is accurate but easy to misread as an account/permission problem since
+nothing about the password itself looks wrong at a glance. (An earlier
+version of this note attributed the symptom to MySQL 8's self-signed TLS
+certificate; that theory did not survive reproducing `res_config_mysql`'s
+actual `mysql_real_connect()` call path and is wrong — the raw C API
+doesn't negotiate TLS the way the `mariadb` CLI client does by default.)
+
+**Fix:** `init.sh` now generates `DATABASE_ASTERISK_PASSWORD` with
+`generate_random_key_short()` (32 hex chars, well under the 49-char limit).
+`provision_asterisk_db_user()` in `common.sh` additionally truncates
+whatever value it reads from `.env` to 49 chars before granting it in
+MySQL, so pre-VOIP-1332 installs (still holding a 64-char value) self-heal
+on the next `start.sh` run without needing to touch `.env` by hand.
 
 ## Install Modes and AI-Install Contract (VOIP-1275)
 

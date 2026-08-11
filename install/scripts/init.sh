@@ -511,6 +511,13 @@ generate_random_key() {
     openssl rand -hex 32
 }
 
+# generate_random_key_short: for values a downstream C consumer stores in a
+# small fixed-size buffer (see DATABASE_ASTERISK_PASSWORD below) where a
+# full generate_random_key() would be silently truncated.
+generate_random_key_short() {
+    openssl rand -hex 16
+}
+
 # Generate sequential external IPs for services
 # Uses a fixed offset from host IP to ensure unique, predictable IPs
 generate_service_ips() {
@@ -707,13 +714,22 @@ main() {
 
     # VOIP-1328: asterisk-registrar's realtime MySQL client previously reused
     # the root account (DATABASE_ASTERISK_USERNAME=root in docker-compose.yml).
-    # Root cause of the observed auth failures was never conclusively pinned
-    # down, but a dedicated least-privilege user sidesteps it and is better
-    # practice regardless. docker-compose.yml still defaults to root when
-    # these two vars are absent from .env, so existing installs are unaffected
-    # until they re-run init.sh (or apply the migration manually).
+    # A dedicated least-privilege user is better practice regardless.
+    # docker-compose.yml still defaults to root when these two vars are
+    # absent from .env, so existing installs are unaffected until they
+    # re-run init.sh (or apply the migration manually).
+    #
+    # VOIP-1332: the auth failures VOIP-1328 originally saw (misleadingly
+    # reported by Asterisk as "err 1045 Access Denied") are actually caused
+    # by generate_random_key()'s 64-char password being silently truncated
+    # to 49 chars by res_config_mysql.c's `char pass[50]` buffer
+    # (ast_copy_string() truncates, doesn't error) - the DB then holds a
+    # password Asterisk never actually sends. Confirmed by directly reading
+    # Asterisk's addons/res_config_mysql.c and reproducing on bm-nyc-01: the
+    # connection succeeds the moment the DB account's password is set to
+    # (or generated no longer than) 49 chars. Use the short generator here.
     DATABASE_ASTERISK_USERNAME="asterisk_rt"
-    DATABASE_ASTERISK_PASSWORD=$(generate_random_key)
+    DATABASE_ASTERISK_PASSWORD=$(generate_random_key_short)
     log_info "  Generated DATABASE_ASTERISK_PASSWORD"
     echo ""
 
