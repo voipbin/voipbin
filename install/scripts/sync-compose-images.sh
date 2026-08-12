@@ -17,14 +17,17 @@
 # pull in just the image digest updates without adopting other .dist changes.
 #
 # Why this exists:
-#   docker-compose.yml hardcodes image digests independently of versions.lock and
+#   The compose file hardcodes image digests independently of versions.lock and
 #   nothing used to reconcile them, so regenerating the lock had ZERO effect on
-#   what actually runs. Both files stay committed and standalone-runnable; this
-#   script is the explicit reconciliation step, so `git diff` remains meaningful
-#   for image bumps. (The rejected alternative was templating compose image
-#   references from the lock via ${VAR} interpolation, which makes the committed
-#   compose file non-runnable and defers the failure to first boot on a customer
-#   machine.)
+#   what actually runs. docker-compose.yml.dist stays committed and
+#   standalone-runnable (the live docker-compose.yml, generated from it on
+#   first install, is untracked - see docker-compose.yml.dist's header
+#   comment); this script is the explicit reconciliation step against
+#   whichever compose file COMPOSE_FILE points at, so `git diff` remains
+#   meaningful for image bumps against .dist. (The rejected alternative was
+#   templating compose image references from the lock via ${VAR}
+#   interpolation, which makes the committed compose file non-runnable and
+#   defers the failure to first boot on a customer machine.)
 #
 # Scope:
 #   - Only `image:` lines whose repository matches a `voipbin/*` name tracked in

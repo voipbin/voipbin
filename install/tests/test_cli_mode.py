@@ -355,6 +355,59 @@ def test_doctor_noninteractive_dispatch_propagates_exit_code(cli_module, tmp_dir
     print("ok test_doctor_noninteractive_dispatch_propagates_exit_code")
 
 
+def test_upgrade_pinned_syncs_live_compose_before_pull(cli_module, tmp_dir, log_path):
+    """Regression test for the docker-compose.yml.dist split: after
+    docker-compose.yml became untracked (install/.gitignore), the pinned
+    `update all` flow's `git pull` (step 2) stopped touching the live
+    docker-compose.yml the later `docker compose pull`/`up -d` steps
+    actually read. Step 2b must run scripts/sync-compose-images.sh with
+    COMPOSE_FILE pointed at the LIVE file (not .dist) before step 3, or the
+    upgrade silently no-ops while still reporting success."""
+    cli, project_dir = make_cli(tmp_dir, INTERNAL_ENV, cli_module)
+    sync_log = os.path.join(tmp_dir, "sync_calls.log")
+
+    scripts_dir = os.path.join(project_dir, "scripts")
+    os.makedirs(scripts_dir, exist_ok=True)
+    sync_stub = os.path.join(scripts_dir, "sync-compose-images.sh")
+    with open(sync_stub, "w") as f:
+        f.write(
+            "#!/bin/bash\n"
+            f'echo "SYNC_CALLED COMPOSE_FILE=$COMPOSE_FILE" >> "{sync_log}"\n'
+            "exit 0\n"
+        )
+    os.chmod(sync_stub, os.stat(sync_stub).st_mode | stat.S_IEXEC | stat.S_IXGRP | stat.S_IXOTH)
+    # migrate.sh deliberately absent: step 4 aborts cleanly right after step
+    # 3, so this test doesn't need to stub the rest of the upgrade too.
+
+    if os.path.exists(log_path):
+        os.remove(log_path)
+
+    out = capture(cli._upgrade_pinned, project_dir, False, False, "pull", None)
+
+    assert "SYNC_CALLED" in stub_log(sync_log), stub_log(sync_log)
+    expected_compose_file = os.path.join(project_dir, "docker-compose.yml")
+    assert f"COMPOSE_FILE={expected_compose_file}" in stub_log(sync_log), stub_log(sync_log)
+    # Ordering: step 2b's sync ran, THEN docker compose pull (step 3)
+    # succeeded (rc=0 from the "docker" PATH stub - reaching "Step 4/6" at
+    # all proves step 3 didn't abort), THEN it stopped at the missing
+    # migrate.sh (step 4) rather than silently skipping straight to verify.
+    assert "Step 2b/6" in out, out
+    assert "Step 3/6" in out, out
+    assert "migrate.sh not found" in out, out
+    assert out.index("Step 2b/6") < out.index("Step 3/6") < out.index("migrate.sh not found"), out
+    print("ok test_upgrade_pinned_syncs_live_compose_before_pull")
+
+
+def test_tracked_paths_uses_compose_dist_not_live_file(cli_module):
+    """docker-compose.yml (no suffix) is gitignored post-split and would
+    never show a diff; docker-compose.yml.dist is the committed file that
+    actually changes upstream and must be the one 'update scripts --check'
+    reports on."""
+    assert "docker-compose.yml.dist" in cli_module.TRACKED_PATHS
+    assert "docker-compose.yml" not in cli_module.TRACKED_PATHS
+    print("ok test_tracked_paths_uses_compose_dist_not_live_file")
+
+
 def main():
     tmp_dir = tempfile.mkdtemp(prefix="voipbin-cli-mode-test.")
     prev_path = os.environ.get("PATH", "")
@@ -376,6 +429,8 @@ def main():
         test_crlf_env_values_are_trimmed(cli_module, tmp_dir)
         test_doctor_registered_and_repl_path_returns(cli_module, tmp_dir, log_path)
         test_doctor_noninteractive_dispatch_propagates_exit_code(cli_module, tmp_dir, log_path)
+        test_upgrade_pinned_syncs_live_compose_before_pull(cli_module, tmp_dir, log_path)
+        test_tracked_paths_uses_compose_dist_not_live_file(cli_module)
 
         print("All test_cli_mode.py tests passed")
     finally:
