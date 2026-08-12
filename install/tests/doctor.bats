@@ -681,6 +681,42 @@ udp   UNCONN 0      0      0.0.0.0:53         0.0.0.0:*  users:(("dnsmasq",pid=5
     [[ "$output" != *'DOCTOR ports: fail'* ]]
 }
 
+@test "external + WEB_REVERSE_PROXY=true: a foreign listener on HOST_EXTERNAL_IP:443 (not just wildcard) fails ports (review round 1 of NOJIRA-Fix-web-proxy-port-bind-conflict)" {
+    # web-proxy binds \${HOST_EXTERNAL_IP:-0.0.0.0}:80/443 (docker-compose.yml),
+    # not a hardcoded wildcard, so a foreign listener sitting specifically on
+    # HOST_EXTERNAL_IP is the real conflict class post-fix and must be caught
+    # exactly like the wildcard case already is.
+    setup_healthy_external
+    echo "WEB_REVERSE_PROXY=true" >> "$PROJECT_DIR/.env"
+    # setup_healthy_external's HOST_EXTERNAL_IP is 203.0.113.10
+    stub_ss 'tcp   LISTEN 0      128    203.0.113.10:443   0.0.0.0:*  users:(("nginx",pid=5,fd=4))'
+
+    run_doctor
+
+    [[ "$status" -eq 1 ]]
+    [[ "$output" == *'DOCTOR ports: fail'* ]]
+    [[ "$output" == *'nginx'* ]]
+    [[ "$output" == *'FIX ports: sudo lsof -i :443'* ]]
+}
+
+@test "external + WEB_REVERSE_PROXY=true: a listener on KAMAILIO_EXTERNAL_IP:443 is not a conflict, ports passes (review round 1 of NOJIRA-Fix-web-proxy-port-bind-conflict)" {
+    # This is the exact bm-nyc-01 scenario that caused the live outage this
+    # fix addresses: Kamailio (network_mode: host) binds its own dedicated
+    # KAMAILIO_EXTERNAL_IP:443 for WSS. After binding web-proxy to
+    # HOST_EXTERNAL_IP instead of a 0.0.0.0 wildcard, that is a genuinely
+    # different address and must NOT be flagged as a conflict.
+    setup_healthy_external
+    echo "WEB_REVERSE_PROXY=true" >> "$PROJECT_DIR/.env"
+    # setup_healthy_external's KAMAILIO_EXTERNAL_IP is 203.0.113.11
+    stub_ss 'tcp   LISTEN 0      128    203.0.113.11:443   0.0.0.0:*  users:(("kamailio",pid=5,fd=4))'
+
+    run_doctor
+
+    [[ "$status" -eq 0 ]]
+    [[ "$output" == *'DOCTOR ports: pass'* ]]
+    [[ "$output" != *'DOCTOR ports: fail'* ]]
+}
+
 @test "disk space below the warn threshold warns without failing the run" {
     setup_healthy_internal
     stub_df 10485760
