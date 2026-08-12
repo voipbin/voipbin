@@ -180,6 +180,38 @@ services:
       - ./config/coredns/Corefile:/Corefile:ro
     command: ["-conf", "/Corefile"]
 
+  # Caddy - Web reverse proxy for port-less external URLs (VOIP-1325)
+  # External mode only, opt-in: .env sets COMPOSE_PROFILES=web-proxy when
+  # init.sh --web-reverse-proxy was used. Terminates TLS with the operator's
+  # BYO certificate and routes api/admin/meet/talk by Host header, so those
+  # are reachable on the standard 443 port instead of the individual
+  # :8443/:3003/:3004/:3005 host ports the default external-mode install uses.
+  web-proxy:
+    image: caddy:2-alpine
+    logging: *default-logging
+    container_name: voipbin-web-proxy
+    healthcheck:
+      test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://127.0.0.1:2019/config/"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+    profiles: ["web-proxy"]
+    restart: always
+    networks:
+      - default
+    ports:
+      - "0.0.0.0:80:80"
+      - "0.0.0.0:443:443"
+    volumes:
+      - ./config/caddy/Caddyfile:/etc/caddy/Caddyfile:ro
+      - ./certs:/certs:ro
+    depends_on:
+      - api-manager
+      - square-admin
+      - square-meet
+      - square-talk
+
   # ===========================================================================
   # SIP Edge Layer (Kamailio + RTPEngine)
   # ===========================================================================
@@ -1504,7 +1536,11 @@ services:
     networks:
       - default
     ports:
-      - "0.0.0.0:3003:80"
+      # SQUARE_BIND_ADDR: 0.0.0.0 by default; init.sh sets it to 127.0.0.1
+      # when --web-reverse-proxy is active (VOIP-1325), since that flag's
+      # whole point is putting Caddy's TLS-terminated 443 in front of this
+      # plaintext-HTTP port instead of exposing it directly.
+      - "${SQUARE_BIND_ADDR:-0.0.0.0}:3003:80"
     depends_on:
       - api-manager
     environment:
@@ -1529,7 +1565,7 @@ services:
     networks:
       - default
     ports:
-      - "0.0.0.0:3004:80"
+      - "${SQUARE_BIND_ADDR:-0.0.0.0}:3004:80"
     depends_on:
       - api-manager
     environment:
@@ -1554,7 +1590,7 @@ services:
     networks:
       - default
     ports:
-      - "0.0.0.0:3005:80"
+      - "${SQUARE_BIND_ADDR:-0.0.0.0}:3005:80"
     depends_on:
       - api-manager
     environment:

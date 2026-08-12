@@ -647,6 +647,40 @@ udp   UNCONN 0      0      0.0.0.0:53         0.0.0.0:*  users:(("dnsmasq",pid=5
     [[ "$output" == *'FIX ports: sudo lsof -i :53'* ]]
 }
 
+@test "external + WEB_REVERSE_PROXY=true: foreign listener on 443 fails ports (VOIP-1325)" {
+    setup_healthy_external
+    echo "WEB_REVERSE_PROXY=true" >> "$PROJECT_DIR/.env"
+    stub_ss 'tcp   LISTEN 0      128    0.0.0.0:443        0.0.0.0:*  users:(("nginx",pid=5,fd=4))'
+
+    run_doctor
+
+    [[ "$status" -eq 1 ]]
+    [[ "$output" == *'DOCTOR ports: fail'* ]]
+    [[ "$output" == *'nginx'* ]]
+    [[ "$output" == *'FIX ports: sudo lsof -i :443'* ]]
+}
+
+@test "external + WEB_REVERSE_PROXY=true: passes and lists 80/443 in the checked-ports message" {
+    setup_healthy_external
+    echo "WEB_REVERSE_PROXY=true" >> "$PROJECT_DIR/.env"
+
+    run_doctor
+
+    [[ "$status" -eq 0 ]]
+    [[ "$output" == *'DOCTOR ports: pass no conflicting listeners on 53 5060 5061 5066 8443 3003-3005 80 443'* ]]
+}
+
+@test "external without WEB_REVERSE_PROXY: a listener on 443 is not our business, ports passes" {
+    setup_healthy_external
+    stub_ss 'tcp   LISTEN 0      128    0.0.0.0:443        0.0.0.0:*  users:(("nginx",pid=5,fd=4))'
+
+    run_doctor
+
+    [[ "$status" -eq 0 ]]
+    [[ "$output" == *'DOCTOR ports: pass'* ]]
+    [[ "$output" != *'DOCTOR ports: fail'* ]]
+}
+
 @test "disk space below the warn threshold warns without failing the run" {
     setup_healthy_internal
     stub_df 10485760

@@ -60,6 +60,7 @@ tests/
 ### common.sh (20 tests)
 - `detect_host_ip()` - IP detection with fallback chain (.env → ip route → hostname → fallback)
 - `generate_coredns_config()` - CoreDNS Corefile generation with correct domain mappings
+- `generate_caddy_config()` - Caddyfile generation for the web reverse proxy (VOIP-1325)
 - `detect_os()` - OS detection (Linux/macOS/unknown)
 
 ### init.sh (19 tests)

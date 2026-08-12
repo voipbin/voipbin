@@ -216,6 +216,12 @@ main() {
             rm -rf "$PROJECT_DIR/config/coredns"
         fi
 
+        # Remove generated Caddy config (VOIP-1325, --web-reverse-proxy)
+        if [ -d "$PROJECT_DIR/config/caddy" ]; then
+            log_info "Removing Caddy reverse proxy config..."
+            rm -rf "$PROJECT_DIR/config/caddy"
+        fi
+
         # Remove dummy GCP credentials
         if [ -f "$PROJECT_DIR/config/dummy-gcp-credentials.json" ]; then
             log_info "Removing dummy GCP credentials..."

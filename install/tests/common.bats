@@ -187,6 +187,139 @@ teardown() {
 }
 
 # =============================================================================
+# generate_caddy_config() tests (VOIP-1325)
+# =============================================================================
+
+@test "generate_caddy_config creates config directory if missing" {
+    load_common
+    local config_dir="$TEST_TEMP_DIR/config/caddy"
+
+    generate_caddy_config "example.com" "$config_dir" "/certs"
+
+    [[ -d "$config_dir" ]]
+}
+
+@test "generate_caddy_config creates Caddyfile" {
+    load_common
+    local config_dir="$TEST_TEMP_DIR/config/caddy"
+
+    generate_caddy_config "example.com" "$config_dir" "/certs"
+
+    [[ -f "$config_dir/Caddyfile" ]]
+}
+
+@test "generate_caddy_config removes Caddyfile if it's a directory" {
+    load_common
+    local config_dir="$TEST_TEMP_DIR/config/caddy"
+    mkdir -p "$config_dir/Caddyfile"  # Docker mount issue, same as coredns
+
+    generate_caddy_config "example.com" "$config_dir" "/certs"
+
+    [[ -f "$config_dir/Caddyfile" ]]
+    [[ ! -d "$config_dir/Caddyfile" ]]
+}
+
+@test "generate_caddy_config writes an api.<domain> site block" {
+    load_common
+    local config_dir="$TEST_TEMP_DIR/config/caddy"
+
+    generate_caddy_config "example.com" "$config_dir" "/certs"
+
+    assert_file_contains "$config_dir/Caddyfile" 'api.example.com {'
+}
+
+@test "generate_caddy_config writes an admin.<domain> site block" {
+    load_common
+    local config_dir="$TEST_TEMP_DIR/config/caddy"
+
+    generate_caddy_config "example.com" "$config_dir" "/certs"
+
+    assert_file_contains "$config_dir/Caddyfile" 'admin.example.com {'
+}
+
+@test "generate_caddy_config writes a meet.<domain> site block" {
+    load_common
+    local config_dir="$TEST_TEMP_DIR/config/caddy"
+
+    generate_caddy_config "example.com" "$config_dir" "/certs"
+
+    assert_file_contains "$config_dir/Caddyfile" 'meet.example.com {'
+}
+
+@test "generate_caddy_config writes a talk.<domain> site block" {
+    load_common
+    local config_dir="$TEST_TEMP_DIR/config/caddy"
+
+    generate_caddy_config "example.com" "$config_dir" "/certs"
+
+    assert_file_contains "$config_dir/Caddyfile" 'talk.example.com {'
+}
+
+@test "generate_caddy_config proxies api.<domain> to api-manager over HTTPS with pinned name and trust" {
+    load_common
+    local config_dir="$TEST_TEMP_DIR/config/caddy"
+
+    generate_caddy_config "example.com" "$config_dir" "/certs"
+
+    assert_file_contains "$config_dir/Caddyfile" 'reverse_proxy https://api-manager:443'
+    assert_file_contains "$config_dir/Caddyfile" 'tls_server_name api.example.com'
+    # tls_trust_pool (not the public root store): a self-signed or
+    # internal-CA BYO cert is a fully supported install (install-certs.sh's
+    # validate_cert() never requires a publicly-trusted chain) — round 2
+    # review HIGH-A found tls_server_name alone 502s every request for that
+    # class of cert, since it only pins the verification NAME, not trust.
+    # (round 3 review LOW: tls_trusted_ca_certs is deprecated in the pinned
+    # caddy:2-alpine image in favor of this field.)
+    assert_file_contains "$config_dir/Caddyfile" 'tls_trust_pool file /certs/api/cert.pem'
+    assert_file_not_contains "$config_dir/Caddyfile" 'tls_insecure_skip_verify'
+}
+
+@test "generate_caddy_config proxies admin.<domain> to square-admin over plain HTTP" {
+    load_common
+    local config_dir="$TEST_TEMP_DIR/config/caddy"
+
+    generate_caddy_config "example.com" "$config_dir" "/certs"
+
+    assert_file_contains "$config_dir/Caddyfile" 'reverse_proxy http://square-admin:80'
+}
+
+@test "generate_caddy_config proxies meet.<domain> to square-meet over plain HTTP" {
+    load_common
+    local config_dir="$TEST_TEMP_DIR/config/caddy"
+
+    generate_caddy_config "example.com" "$config_dir" "/certs"
+
+    assert_file_contains "$config_dir/Caddyfile" 'reverse_proxy http://square-meet:80'
+}
+
+@test "generate_caddy_config proxies talk.<domain> to square-talk over plain HTTP" {
+    load_common
+    local config_dir="$TEST_TEMP_DIR/config/caddy"
+
+    generate_caddy_config "example.com" "$config_dir" "/certs"
+
+    assert_file_contains "$config_dir/Caddyfile" 'reverse_proxy http://square-talk:80'
+}
+
+@test "generate_caddy_config uses the given certs_dir for the tls directive" {
+    load_common
+    local config_dir="$TEST_TEMP_DIR/config/caddy"
+
+    generate_caddy_config "example.com" "$config_dir" "/certs"
+
+    assert_file_contains "$config_dir/Caddyfile" 'tls /certs/api/cert.pem /certs/api/privkey.pem'
+}
+
+@test "generate_caddy_config defaults certs_dir to /certs (Caddy container mount point)" {
+    load_common
+    local config_dir="$TEST_TEMP_DIR/config/caddy"
+
+    generate_caddy_config "example.com" "$config_dir"
+
+    assert_file_contains "$config_dir/Caddyfile" 'tls /certs/api/cert.pem /certs/api/privkey.pem'
+}
+
+# =============================================================================
 # get_env_var() tests
 # =============================================================================
 
@@ -357,6 +490,35 @@ teardown() {
     assert_equal "$DERIVED_DOMAIN_NAME_EXTENSION" "registrar.example.com"
     assert_equal "$DERIVED_EMAIL_VERIFY_BASE_URL" "https://api.example.com:8443"
     assert_equal "$DERIVED_BASE_DOMAIN" "example.com"
+}
+
+@test "derive_domain_env with web_reverse_proxy=true drops the :8443 suffix from api URLs (VOIP-1325)" {
+    load_common
+
+    derive_domain_env "example.com" "true"
+
+    assert_equal "$DERIVED_API_URL" "https://api.example.com/"
+    assert_equal "$DERIVED_WEBSOCKET_URL" "wss://api.example.com/v1.0/ws"
+    assert_equal "$DERIVED_EMAIL_VERIFY_BASE_URL" "https://api.example.com"
+    # Unaffected: SIP/conference URLs never went through :8443 in the first place
+    assert_equal "$DERIVED_REGISTRAR_URL" "wss://sip.example.com:5066"
+    assert_equal "$DERIVED_CONFERENCE_URL" "wss://conference.example.com"
+}
+
+@test "derive_domain_env with web_reverse_proxy omitted defaults to keeping :8443 (backward compatible)" {
+    load_common
+
+    derive_domain_env "example.com"
+
+    assert_equal "$DERIVED_API_URL" "https://api.example.com:8443/"
+}
+
+@test "derive_domain_env with web_reverse_proxy=false explicitly keeps :8443" {
+    load_common
+
+    derive_domain_env "example.com" "false"
+
+    assert_equal "$DERIVED_API_URL" "https://api.example.com:8443/"
 }
 
 # =============================================================================

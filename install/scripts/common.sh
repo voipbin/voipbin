@@ -112,23 +112,35 @@ get_domain_mode() {
     fi
 }
 
-# derive_domain_env <base_domain>
+# derive_domain_env <base_domain> [web_reverse_proxy]
 # Sets the DERIVED_* shell variables for the 11 domain-dependent .env values
 # (design §2.1). This is the ONLY place domain values are composed. For
-# <base_domain> = voipbin.test the results are byte-identical to the historic
-# literals (mode-1 no-regression invariant; asserted by tests/common.bats).
+# <base_domain> = voipbin.test (and web_reverse_proxy omitted/false) the
+# results are byte-identical to the historic literals (mode-1 no-regression
+# invariant; asserted by tests/common.bats).
+#
+# web_reverse_proxy ("true"/anything else, default false): when true, the
+# api.<d> URLs drop the :8443 suffix (VOIP-1325). The Caddy reverse proxy
+# fronts api-manager on the standard 443 port precisely so browsers never
+# need the internal port — leaving :8443 in here would mean the web UIs
+# load port-less while every XHR/websocket they issue still targets
+# :8443, defeating the whole point of the flag.
 derive_domain_env() {
     local d="$1"
+    local web_reverse_proxy="${2:-false}"
 
-    DERIVED_API_URL="https://api.${d}:8443/"
-    DERIVED_WEBSOCKET_URL="wss://api.${d}:8443/v1.0/ws"
+    local api_port_suffix=":8443"
+    [[ "$web_reverse_proxy" == "true" ]] && api_port_suffix=""
+
+    DERIVED_API_URL="https://api.${d}${api_port_suffix}/"
+    DERIVED_WEBSOCKET_URL="wss://api.${d}${api_port_suffix}/v1.0/ws"
     DERIVED_REGISTRAR_URL="wss://sip.${d}:5066"
     DERIVED_REGISTRAR_DOMAIN="registrar.${d}"
     DERIVED_CONFERENCE_URL="wss://conference.${d}"
     DERIVED_CONFERENCE_DOMAIN="conference.${d}"
     DERIVED_DOMAIN_NAME_EXTENSION="registrar.${d}"
     DERIVED_DOMAIN_NAME_TRUNK="trunk.${d}"
-    DERIVED_EMAIL_VERIFY_BASE_URL="https://api.${d}:8443"
+    DERIVED_EMAIL_VERIFY_BASE_URL="https://api.${d}${api_port_suffix}"
     DERIVED_BASE_DOMAIN="${d}"
     DERIVED_BASE_HOSTNAME="${d}"
 }
@@ -532,6 +544,95 @@ voipbin.test {
 . {
     forward . 8.8.8.8 8.8.4.4
     cache 30
+}
+EOF
+}
+
+# =============================================================================
+# Caddy Reverse Proxy Configuration (VOIP-1325)
+# =============================================================================
+# External mode's default (no reverse proxy) exposes admin/meet/talk/api via
+# Docker's published host ports (:3003/:3004/:3005/:8443). That is a
+# hard requirement for operators who front the stack with their own web
+# proxy (design note, README.md), but it is the wrong shape for standing
+# the sandbox in as a full production origin behind a plain DNS A record,
+# where customers expect port-less https://admin.<domain> URLs. Caddy fills
+# that gap for --web-reverse-proxy installs only; it is not part of the
+# default install (design §2.6 does not gate on it, this function is only
+# ever called when WEB_REVERSE_PROXY=true).
+#
+# api-manager already terminates TLS internally with the same operator
+# certificate (API_SSL_CERT_BASE64/API_SSL_PRIVKEY_BASE64), so Caddy proxies
+# to it over HTTPS with real verification rather than
+# tls_insecure_skip_verify (which would let anything that can win a name
+# race for api-manager on the shared compose network MITM every API
+# request, including bearer tokens):
+#   - tls_server_name pins the verification name to api.<domain>, since the
+#     cert covers that name, not the Docker service name "api-manager".
+#   - tls_trust_pool pins trust to the operator's own certificate
+#     file instead of Caddy's public root store. install-certs.sh's
+#     validate_cert() only checks key match/SAN coverage/expiry, not chain
+#     of trust — a self-signed or internal-CA BYO cert is a fully
+#     supported install (round 2 review, HIGH-A: tls_server_name alone
+#     verifies against the public root store and 502s every request for
+#     exactly that class of cert). A self-signed leaf works as its own
+#     trusted root here; a publicly-issued fullchain supplies the
+#     intermediate the leaf still needs to chain to.
+# admin/meet/talk are plain HTTP internally (see docker-compose.yml), so
+# those three proxy over HTTP with no TLS involved.
+generate_caddy_config() {
+    local base_domain="$1"
+    local config_dir="${2:-$PROJECT_DIR/config/caddy}"
+    # certs_dir is a path AS SEEN INSIDE the Caddy container (docker-compose.yml
+    # mounts ./certs at /certs there), not a host filesystem path - the
+    # Caddyfile this writes is read by the containerized Caddy process.
+    local certs_dir="${3:-/certs}"
+    local caddyfile="$config_dir/Caddyfile"
+
+    mkdir -p "$config_dir"
+
+    if [[ -d "$caddyfile" ]]; then
+        rm -rf "$caddyfile"
+    fi
+
+    # Indented with tabs (not spaces) to match `caddy fmt`'s expected style -
+    # a space-indented Caddyfile is functionally fine but logs a spurious
+    # "Caddyfile input is not formatted" warning on every container start.
+    cat > "$caddyfile" << EOF
+# Caddy reverse proxy for VoIPBin Install (VOIP-1325)
+# Auto-generated - do not edit directly
+#
+# Terminates TLS with the operator-provided BYO certificate and routes by
+# Host header to the internal service, so api/admin/meet/talk are reachable
+# on the standard 443 port with no per-service port suffix.
+
+api.$base_domain {
+	tls $certs_dir/api/cert.pem $certs_dir/api/privkey.pem
+
+	reverse_proxy https://api-manager:443 {
+		transport http {
+			tls_server_name api.$base_domain
+			tls_trust_pool file $certs_dir/api/cert.pem
+		}
+	}
+}
+
+admin.$base_domain {
+	tls $certs_dir/api/cert.pem $certs_dir/api/privkey.pem
+
+	reverse_proxy http://square-admin:80
+}
+
+meet.$base_domain {
+	tls $certs_dir/api/cert.pem $certs_dir/api/privkey.pem
+
+	reverse_proxy http://square-meet:80
+}
+
+talk.$base_domain {
+	tls $certs_dir/api/cert.pem $certs_dir/api/privkey.pem
+
+	reverse_proxy http://square-talk:80
 }
 EOF
 }

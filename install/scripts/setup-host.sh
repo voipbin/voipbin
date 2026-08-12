@@ -264,6 +264,30 @@ step_setup_network() {
     record_step "voip-network:done"
 }
 
+# Step: generate the Caddyfile for the web reverse proxy (VOIP-1325).
+# Caddy routes by Host header, not by IP, so unlike the CoreDNS Corefile
+# this never depends on HOST_EXTERNAL_IP and never needs regenerating on an
+# IP change — only on BASE_DOMAIN, which init.sh already refuses to change
+# on an existing .env without --force-reinit (which reruns setup-host.sh).
+step_setup_web_proxy() {
+    local base_domain
+    base_domain=$(get_env_var "$ENV_FILE" BASE_DOMAIN)
+    if [[ -z "$base_domain" ]]; then
+        die 1 "WEB_REVERSE_PROXY=true but BASE_DOMAIN is empty in $ENV_FILE"
+    fi
+
+    # /certs is the Caddy container's mount point for ./certs (docker-compose.yml
+    # web-proxy service) - the Caddyfile is read INSIDE that container, so its
+    # tls directive must use the container-internal path, not $PROJECT_DIR/certs.
+    generate_caddy_config "$base_domain" "$PROJECT_DIR/config/caddy" "/certs"
+    log_info "  Generated Caddyfile for api/admin/meet/talk.$base_domain"
+
+    if [[ -n "${SUDO_USER:-}" && -d "$PROJECT_DIR/config/caddy" ]]; then
+        chown -R "$SUDO_USER" "$PROJECT_DIR/config/caddy" 2>/dev/null || true
+    fi
+    record_step "web-proxy:done"
+}
+
 # =============================================================================
 # Mode-aware step table (design §2.5)
 # =============================================================================
@@ -289,6 +313,11 @@ run_host_setup() {
 
     log_step "Checking VoIP network interfaces..."
     step_setup_network
+
+    if [[ "$(get_env_var "$ENV_FILE" WEB_REVERSE_PROXY)" == "true" ]]; then
+        log_step "Checking web reverse proxy configuration..."
+        step_setup_web_proxy
+    fi
 }
 
 # =============================================================================

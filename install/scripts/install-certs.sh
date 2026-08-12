@@ -87,6 +87,9 @@ Options:
   --check-only        Validate only; install nothing
   --domain <d>        Base domain to validate against (default: BASE_DOMAIN
                       from .env)
+  --web-reverse-proxy Also require SAN coverage for admin/meet/talk (VOIP-1325
+                      Caddy reverse proxy; default: only checked when
+                      WEB_REVERSE_PROXY=true is already in .env)
   -h, --help          Show this help
 USAGE
 }
@@ -94,6 +97,7 @@ USAGE
 parse_args() {
     CERTS_CHECK_ONLY="false"
     CERTS_DOMAIN=""
+    CERTS_WEB_REVERSE_PROXY="false"
     CERT_FILE=""
     KEY_FILE=""
 
@@ -107,6 +111,10 @@ parse_args() {
                 [[ $# -ge 2 ]] || die 1 "--domain requires a value"
                 CERTS_DOMAIN="$2"
                 shift 2
+                ;;
+            --web-reverse-proxy)
+                CERTS_WEB_REVERSE_PROXY="true"
+                shift
                 ;;
             --help|-h)
                 show_usage
@@ -147,6 +155,19 @@ resolve_domain() {
     TARGET_DOMAIN=$(get_env_var "$ENV_FILE" BASE_DOMAIN)
     if [[ -z "$TARGET_DOMAIN" ]]; then
         die 1 "no --domain given and no BASE_DOMAIN in $ENV_FILE — pass --domain <base-domain>"
+    fi
+}
+
+# --web-reverse-proxy on the CLI always wins. Otherwise, fall back to
+# WEB_REVERSE_PROXY from .env — covers a standalone re-run (e.g. a certbot
+# --deploy-hook renewal) that doesn't repeat init.sh's flags but must still
+# enforce the same SAN requirement the original install used.
+resolve_web_reverse_proxy() {
+    if [[ "$CERTS_WEB_REVERSE_PROXY" == "true" ]]; then
+        return 0
+    fi
+    if [[ "$(get_env_var "$ENV_FILE" WEB_REVERSE_PROXY)" == "true" ]]; then
+        CERTS_WEB_REVERSE_PROXY="true"
     fi
 }
 
@@ -216,6 +237,25 @@ validate_cert() {
         die 1 "certificate does not cover required names: ${missing[*]}"
     fi
     log_info "  SAN covers all required names (api/sip/sip-service/conference/trunk/registrar).$d"
+
+    # VOIP-1325: the Caddy reverse proxy additionally terminates TLS for
+    # admin/meet/talk on the shared host IP — only enforced when it's active,
+    # so installs that don't use it aren't forced onto a wider cert.
+    if [[ "$CERTS_WEB_REVERSE_PROXY" == "true" ]]; then
+        local proxy_missing=()
+        local proxy_name
+        for proxy_name in admin meet talk; do
+            if ! san_covers_name "${proxy_name}.${d}" "$sans"; then
+                proxy_missing+=("${proxy_name}.${d}")
+            fi
+        done
+        if [[ ${#proxy_missing[@]} -gt 0 ]]; then
+            log_error "Certificate SAN does not cover: ${proxy_missing[*]}"
+            log_error "--web-reverse-proxy requires admin/meet/talk coverage too (a wildcard cert for *.$d satisfies this automatically)."
+            die 1 "certificate does not cover required web-reverse-proxy names: ${proxy_missing[*]}"
+        fi
+        log_info "  SAN covers web-reverse-proxy names (admin/meet/talk.$d)"
+    fi
 
     # Expiry: warn under 30 days (an already-expired cert also lands here)
     CERT_EXPIRES=$(openssl x509 -in "$CERT_FILE" -noout -enddate 2>/dev/null | cut -d'=' -f2)
@@ -344,6 +384,19 @@ recreate_services() {
     else
         log_info "  kamailio not running — skipping restart (certs apply on next start)"
     fi
+
+    # VOIP-1325: Caddy (web-proxy) also reads the certificate from a file
+    # mount (./certs), not env vars, and — unlike its ACME-managed certs —
+    # never watches file-based ones for changes. Without this, a renewal
+    # (e.g. via the certbot --deploy-hook recipe below) updates the files
+    # and recreates api-manager/kamailio but leaves Caddy silently serving
+    # the old certificate on 443 until something restarts it by hand.
+    if grep -qx "web-proxy" <<< "$running_services"; then
+        log_info "  Restarting web-proxy (file-mounted certs)..."
+        (cd "$PROJECT_DIR" && docker compose restart web-proxy)
+    else
+        log_info "  web-proxy not running — skipping restart (certs apply on next start)"
+    fi
 }
 
 # =============================================================================
@@ -361,6 +414,7 @@ main() {
     fi
 
     resolve_domain
+    resolve_web_reverse_proxy
     validate_cert
 
     if [[ "$CERTS_CHECK_ONLY" == "true" ]]; then

@@ -96,6 +96,69 @@ exit 1'
     assert_file_contains "$TEST_TEMP_DIR/docker.log" "DOCKER-NETWORK-CREATE my_sandbox42_default"
 }
 
+@test "run_host_setup external with WEB_REVERSE_PROXY=true also runs the web-proxy step" {
+    load_setup_host_functions
+    create_env_file "DOMAIN_MODE=external" "BASE_DOMAIN=example.com" "COMPOSE_PROFILES=web-proxy" "WEB_REVERSE_PROXY=true"
+    stub_default_host_state
+    SCRIPT_DIR="$STUB_SCRIPTS"
+
+    SETUP_HOST_STEPS=""
+    run_host_setup external > "$TEST_TEMP_DIR/out.log"
+
+    assert_equal "$SETUP_HOST_STEPS" "docker-network:done,voip-network:done,web-proxy:done"
+    [[ -f "$TEST_TEMP_DIR/config/caddy/Caddyfile" ]]
+    assert_file_contains "$TEST_TEMP_DIR/config/caddy/Caddyfile" "api.example.com {"
+}
+
+@test "run_host_setup external without WEB_REVERSE_PROXY skips the web-proxy step" {
+    load_setup_host_functions
+    create_env_file "DOMAIN_MODE=external" "BASE_DOMAIN=example.com" "COMPOSE_PROFILES="
+    stub_default_host_state
+    SCRIPT_DIR="$STUB_SCRIPTS"
+
+    SETUP_HOST_STEPS=""
+    run_host_setup external > "$TEST_TEMP_DIR/out.log"
+
+    assert_equal "$SETUP_HOST_STEPS" "docker-network:done,voip-network:done"
+    [[ ! -f "$TEST_TEMP_DIR/config/caddy/Caddyfile" ]]
+}
+
+# =============================================================================
+# step_setup_web_proxy (VOIP-1325)
+# =============================================================================
+
+@test "step_setup_web_proxy generates a Caddyfile using the container-internal /certs path" {
+    load_setup_host_functions
+    create_env_file "DOMAIN_MODE=external" "BASE_DOMAIN=example.com" "WEB_REVERSE_PROXY=true"
+
+    run step_setup_web_proxy
+
+    [[ "$status" -eq 0 ]]
+    [[ -f "$TEST_TEMP_DIR/config/caddy/Caddyfile" ]]
+    assert_file_contains "$TEST_TEMP_DIR/config/caddy/Caddyfile" "tls /certs/api/cert.pem /certs/api/privkey.pem"
+    assert_file_not_contains "$TEST_TEMP_DIR/config/caddy/Caddyfile" "$TEST_TEMP_DIR/certs"
+}
+
+@test "step_setup_web_proxy records web-proxy:done" {
+    load_setup_host_functions
+    create_env_file "DOMAIN_MODE=external" "BASE_DOMAIN=example.com" "WEB_REVERSE_PROXY=true"
+
+    SETUP_HOST_STEPS=""
+    step_setup_web_proxy
+
+    assert_equal "$SETUP_HOST_STEPS" "web-proxy:done"
+}
+
+@test "step_setup_web_proxy dies with a clear error when BASE_DOMAIN is empty" {
+    load_setup_host_functions
+    create_env_file "DOMAIN_MODE=external" "WEB_REVERSE_PROXY=true"
+
+    run step_setup_web_proxy
+
+    [[ "$status" -ne 0 ]]
+    [[ "$output" == *'BASE_DOMAIN is empty'* ]]
+}
+
 # =============================================================================
 # CAROOT two-pass handoff (design §2.5)
 # =============================================================================

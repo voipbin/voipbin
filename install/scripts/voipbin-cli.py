@@ -1982,6 +1982,12 @@ Type 'help <command>' for detailed usage.
         """internal | external; a missing key maps to internal (legacy rule)."""
         return read_env_file_var(self._project_dir(), "DOMAIN_MODE") or "internal"
 
+    def _web_reverse_proxy(self):
+        """True when init.sh --web-reverse-proxy was used (VOIP-1325):
+        admin/meet/talk/api are reachable port-less via Caddy, and
+        :3003-3005 are bound to 127.0.0.1 only (see SQUARE_BIND_ADDR)."""
+        return (read_env_file_var(self._project_dir(), "WEB_REVERSE_PROXY") or "false") == "true"
+
     def cmd_status(self, args):
         """Show service status"""
         output = run_cmd("docker compose ps --format '{{.Name}}\t{{.Status}}' 2>/dev/null")
@@ -2005,10 +2011,21 @@ Type 'help <command>' for detailed usage.
                 services[name] = status
 
         # Key services with endpoints (service_name: (label, endpoint, credentials))
-        # Web services use Docker port mapping on HOST_IP
+        # Web services use Docker port mapping on HOST_IP, unless the Caddy
+        # reverse proxy (VOIP-1325) is active, in which case :3003-3005 are
+        # bound to 127.0.0.1 only and the port-less Caddy URL is the real one.
+        if self._web_reverse_proxy():
+            web_endpoints = {
+                "admin": ("Admin Console", f"https://admin.{base_domain}", None),
+                "api-mgr": ("API Manager", f"https://api.{base_domain}", None),
+            }
+        else:
+            web_endpoints = {
+                "admin": ("Admin Console", f"http://admin.{base_domain}:3003", None),
+                "api-mgr": ("API Manager", f"https://api.{base_domain}:8443", None),
+            }
         endpoint_services = {
-            "admin": ("Admin Console", f"http://admin.{base_domain}:3003", None),
-            "api-mgr": ("API Manager", f"https://api.{base_domain}:8443", None),
+            **web_endpoints,
             "mq": ("RabbitMQ", "http://localhost:15672", f"{os.environ.get('RABBITMQ_DEFAULT_USER', 'guest')} / {os.environ.get('RABBITMQ_DEFAULT_PASS', 'guest')}"),
             "db": ("MySQL", "localhost:3306", f"root / {os.environ.get('MYSQL_ROOT_PASSWORD', 'root_password')}"),
         }
@@ -2207,11 +2224,18 @@ Type 'help <command>' for detailed usage.
         else:
             print(f"  {red('○')} DNS Status: {red('CoreDNS not running')}")
 
-        print(f"\n  {bold('Web Services')} (Docker port mapping on {host_ip})")
-        print(f"    {'https://api.' + base_domain + ':8443':<34}API Manager")
-        print(f"    {'http://admin.' + base_domain + ':3003':<34}Admin Console")
-        print(f"    {'http://meet.' + base_domain + ':3004':<34}Meet")
-        print(f"    {'http://talk.' + base_domain + ':3005':<34}Talk")
+        if self._web_reverse_proxy():
+            print(f"\n  {bold('Web Services')} (via Caddy reverse proxy, no port suffix)")
+            print(f"    {'https://api.' + base_domain:<34}API Manager")
+            print(f"    {'https://admin.' + base_domain:<34}Admin Console")
+            print(f"    {'https://meet.' + base_domain:<34}Meet")
+            print(f"    {'https://talk.' + base_domain:<34}Talk")
+        else:
+            print(f"\n  {bold('Web Services')} (Docker port mapping on {host_ip})")
+            print(f"    {'https://api.' + base_domain + ':8443':<34}API Manager")
+            print(f"    {'http://admin.' + base_domain + ':3003':<34}Admin Console")
+            print(f"    {'http://meet.' + base_domain + ':3004':<34}Meet")
+            print(f"    {'http://talk.' + base_domain + ':3005':<34}Talk")
 
         print(f"\n  {bold('SIP Services')} (Kamailio: {host_ip})")
         print(f"    {'sip.' + base_domain:<34}SIP proxy")
@@ -4132,11 +4156,25 @@ Type 'registrar <subcommand> help' for more details.
         print()
         print(f"  {'Record':<28} {'Type':<6} {'Target':<18} Purpose")
         print(f"  {'-' * 68}")
+        # DNS targets are unaffected by --web-reverse-proxy (Caddy listens on
+        # the same host IP, just port 443 instead of the individual :3003-
+        # :3005/:8443 published ports) — only the purpose annotation changes.
+        if self._web_reverse_proxy():
+            web_rows = [
+                (f"api.{d}", host_ip, "REST API + WebSocket, via Caddy reverse proxy (:443)"),
+                (f"admin.{d}", host_ip, "Admin Console, via Caddy reverse proxy (:443)"),
+                (f"meet.{d}", host_ip, "Meet, via Caddy reverse proxy (:443)"),
+                (f"talk.{d}", host_ip, "Talk, via Caddy reverse proxy (:443)"),
+            ]
+        else:
+            web_rows = [
+                (f"api.{d}", host_ip, "REST API + WebSocket (:8443)"),
+                (f"admin.{d}", host_ip, "Admin Console (:3003)"),
+                (f"meet.{d}", host_ip, "Meet (:3004)"),
+                (f"talk.{d}", host_ip, "Talk (:3005)"),
+            ]
         rows = [
-            (f"api.{d}", host_ip, "REST API + WebSocket (:8443)"),
-            (f"admin.{d}", host_ip, "Admin Console (:3003)"),
-            (f"meet.{d}", host_ip, "Meet (:3004)"),
-            (f"talk.{d}", host_ip, "Talk (:3005)"),
+            *web_rows,
             (f"sip.{d}", kamailio_ip, "SIP signaling / WSS (:5060/:5066)"),
             (f"sip-service.{d}", kamailio_ip, "SIP surface"),
             (f"conference.{d}", kamailio_ip, "SIP surface"),
@@ -4642,12 +4680,20 @@ Type 'registrar <subcommand> help' for more details.
             print(f"  RTPENGINE_EXTERNAL_IP:  {red('not set')} (required for RTP media)")
 
         # Web services info
-        print(f"\n{bold('Web Services')} (Docker port mapping)")
-        print("-" * 60)
-        print(f"  API:   {host_ip}:8443")
-        print(f"  Admin: {host_ip}:3003")
-        print(f"  Meet:  {host_ip}:3004")
-        print(f"  Talk:  {host_ip}:3005")
+        if self._web_reverse_proxy():
+            print(f"\n{bold('Web Services')} (via Caddy reverse proxy on {host_ip}, no port suffix)")
+            print("-" * 60)
+            print(f"  API:   {host_ip}:443")
+            print(f"  Admin: {host_ip}:443")
+            print(f"  Meet:  {host_ip}:443")
+            print(f"  Talk:  {host_ip}:443")
+        else:
+            print(f"\n{bold('Web Services')} (Docker port mapping)")
+            print("-" * 60)
+            print(f"  API:   {host_ip}:8443")
+            print(f"  Admin: {host_ip}:3003")
+            print(f"  Meet:  {host_ip}:3004")
+            print(f"  Talk:  {host_ip}:3005")
 
         # Show physical interface IPs
         print(f"\n{bold('Physical Interface')}")
