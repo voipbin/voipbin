@@ -84,14 +84,18 @@ its place. `docker compose` commands fail ("no configuration file
 provided") until you recover it. **Do not just re-run `init.sh`** — it will
 copy whatever `docker-compose.yml.dist` is at the current commit, which may
 not match what you were actually running. Instead, before or immediately
-after that `git pull`, recover your actual pre-pull file:
+after that `git pull`, recover your actual pre-pull file (run these from
+this `install/` directory):
 ```bash
 git log --all --oneline --diff-filter=D -- docker-compose.yml
 # ^ finds the commit that DELETED it (the split commit, e.g. this pull).
 # The file lived in that commit's PARENT - use <commit>^, not the commit
 # itself (`git show <commit>:docker-compose.yml` fails with "exists on
-# disk, but not in '<commit>'" - it was already gone there).
-git show <that commit>^:docker-compose.yml > docker-compose.yml
+# disk, but not in '<commit>'" - it was already gone there). The leading
+# ./ matters too: `git show <rev>:<path>` resolves <path> from the REPO
+# ROOT, not the cwd (unlike git log/diff's pathspecs) - without it this
+# fails from inside install/ with "exists, but not '<bare-name>'".
+git show <that commit>^:./docker-compose.yml > docker-compose.yml
 ```
 `init.sh` also detects this case itself (an existing `.env` plus a missing
 `docker-compose.yml`) and prints this same recovery guidance rather than

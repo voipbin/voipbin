@@ -1315,11 +1315,71 @@ exit 0'
     [[ -f "$TEST_TEMP_DIR/docker-compose.yml" ]]
     [[ "$output" == *"docker-compose.yml is missing but .env already existed"* ]]
     [[ "$output" == *"git log --all --oneline --diff-filter=D -- docker-compose.yml"* ]]
-    # The ^ matters: `git show <commit>:docker-compose.yml` on the DELETING
-    # commit itself fails ("exists on disk, but not in '<commit>'") since the
-    # file is already gone there - the recovery command must target the
-    # parent, not the commit git-log finds.
-    [[ "$output" == *"git show <that commit>^:docker-compose.yml"* ]]
+    # Both the ^ and the leading ./ matter: `git show <commit>:docker-compose.yml`
+    # on the DELETING commit itself fails ("exists on disk, but not in
+    # '<commit>'") since the file is already gone there - must target the
+    # parent. And `git show <rev>:<path>` resolves <path> from the repo
+    # ROOT, not the cwd - without ./ this fails from inside install/.
+    # See "init.sh's printed recovery command actually recovers the file
+    # when executed" below, which runs this exact command against real git
+    # history instead of just checking the text is present.
+    [[ "$output" == *"git show <that commit>^:./docker-compose.yml"* ]]
+}
+
+@test "init.sh's printed recovery command actually recovers the file when executed" {
+    # Regression test for two real bugs the string-match test above cannot
+    # catch: round 4 found `git show <commit>:docker-compose.yml` (missing
+    # the ^) always fails on the deleting commit; round 5 found
+    # `git show <commit>^:docker-compose.yml` (missing the leading ./)
+    # always fails once run from an install/ subdirectory, because
+    # `git show <rev>:<path>` resolves <path> from the repo root, not cwd
+    # (unlike git log/diff's pathspecs). This test builds a real throwaway
+    # git repo shaped like the actual voipbin/install/ split, and executes
+    # the literal command sequence init.sh prints - not just greps for it.
+    if ! command -v git &>/dev/null; then
+        skip "git not available"
+    fi
+
+    local repo="$TEST_TEMP_DIR/recovery-repo"
+    mkdir -p "$repo/install"
+    (
+        cd "$repo" || exit 1
+        git init -q
+        git config user.email "test@example.com"
+        git config user.name "Test"
+
+        # Pre-split commit: docker-compose.yml is a normal tracked file.
+        echo "ORIGINAL PRE-SPLIT CONTENT" > install/docker-compose.yml
+        git add install/docker-compose.yml
+        git commit -q -m "pre-split"
+
+        # Split commit: the exact transition that deletes it (git rename
+        # to gitignored is add-new-file + delete-old-file in one commit).
+        # `git rm` prunes the now-empty install/ dir, so recreate it first.
+        git rm -q install/docker-compose.yml
+        mkdir -p install
+        echo "docker-compose.yml" > install/.gitignore
+        echo "DIST CONTENT (current HEAD, NOT what was running)" > install/docker-compose.yml.dist
+        git add install/docker-compose.yml.dist install/.gitignore
+        git commit -q -m "split commit (simulates this PR)"
+    )
+
+    # Run the EXACT commands init.sh prints, from install/ (the documented
+    # working directory), and capture what they actually produce.
+    (
+        cd "$repo/install" || exit 1
+        local del_commit
+        del_commit=$(git log --all --oneline --diff-filter=D -- docker-compose.yml | head -1 | cut -d' ' -f1)
+        [[ -n "$del_commit" ]] || { echo "no deletion commit found" >&2; exit 1; }
+        git show "${del_commit}^:./docker-compose.yml" > docker-compose.yml.recovered
+    )
+
+    [[ -f "$repo/install/docker-compose.yml.recovered" ]]
+    run cat "$repo/install/docker-compose.yml.recovered"
+    [[ "$output" == "ORIGINAL PRE-SPLIT CONTENT" ]]
+    # And it must be genuinely distinct from .dist - proving recovery found
+    # what was actually running, not just re-copied the current template.
+    [[ "$output" != "DIST CONTENT (current HEAD, NOT what was running)" ]]
 }
 
 @test "init.sh does not warn about the compose migration on a genuinely fresh install" {

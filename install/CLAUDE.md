@@ -51,12 +51,16 @@ warning, no conflict — and `docker compose` then fails ("no configuration
 file provided") until it's recovered. Re-running `init.sh` is NOT the fix:
 it copies whatever `docker-compose.yml.dist` is at the CURRENT commit,
 which may differ from what was actually running. Recover the real
-pre-pull file instead: `git log --all --oneline --diff-filter=D --
-docker-compose.yml` finds the commit that DELETED it (the split commit) -
-the file lived in that commit's PARENT, so use `git show
-<commit>^:docker-compose.yml > docker-compose.yml` (note the `^`; `git
-show <commit>:docker-compose.yml` without it fails with "exists on disk,
-but not in '<commit>'" since the file was already gone in that commit).
+pre-pull file instead (run these from this `install/` directory):
+`git log --all --oneline --diff-filter=D -- docker-compose.yml` finds the
+commit that DELETED it (the split commit) - the file lived in that
+commit's PARENT, so use `git show <commit>^:./docker-compose.yml >
+docker-compose.yml`. Both the `^` and the leading `./` matter: `git show
+<commit>:docker-compose.yml` without the `^` fails with "exists on disk,
+but not in '<commit>'" (already gone there), and without the `./`, `git
+show <rev>:<path>` resolves `<path>` from the repo ROOT rather than the
+cwd (unlike `git log`/`git diff`'s pathspecs), so it fails from inside
+`install/` with "exists, but not '<bare-name>'".
 `init.sh` also detects this itself (existing `.env` + missing `docker-compose.yml`)
 and prints this same guidance instead of silently copying `.dist`, but
 doing it proactively is safer than relying on that reminder firing at the
