@@ -104,6 +104,31 @@ run_script() {
     [[ -z "$output" ]]
 }
 
+@test "refuses when an EXPECTED file is renamed away WITH a small edit (still under git's rename-similarity threshold)" {
+    # Defense-in-depth companion to the zero-delta pure-rename test above:
+    # a real bump-image-digest.sh run always changes SOME content, so this
+    # confirms the guard still catches a renamed-away expected file when
+    # git's similarity detection still classifies it as a rename (a small
+    # edit, well under the default 50% dissimilarity threshold, so it
+    # stays a single "R" status line rather than degrading to Add+Delete).
+    setup_fake_repo
+    (
+        cd "$REPO_DIR" || exit 1
+        # One-line tweak, tiny relative to the whole file - stays "R".
+        sed -i 's/1111111111111111111111111111111111111111111111111111111111aa/1111111111111111111111111111111111111111111111111111111111ab/' \
+            install/versions.lock
+        git mv install/versions.lock install/versions-renamed-away.lock
+    )
+    cd "$REPO_DIR" || exit 1
+    GH_TOKEN="fake-token" run run_script "voipbin/bin-agent-manager" "cccccccccccccccccccccccccccccccccccccccc"
+
+    [[ "$status" -ne 0 ]]
+    [[ "$output" == *"unexpected dirty file"* ]]
+    [[ "$output" == *"versions-renamed-away.lock"* ]]
+    run git -C "$REPO_DIR" branch --list "NOJIRA-Bump-*"
+    [[ -z "$output" ]]
+}
+
 @test "refuses a source-repo-url outside github.com/voipbin/" {
     setup_fake_repo
     apply_fake_bump "sha256:$(printf 'c%.0s' {1..64})"
