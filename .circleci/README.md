@@ -6,8 +6,10 @@ CI-internal tooling for this repository, deliberately kept separate from
 never needs anything under this directory.
 
 - `scripts/open-versions-lock-pr.sh` — opens a PR against this repo bumping
-  one image's pin in `install/versions.lock`/`install/docker-compose.yml.dist`,
-  called by the release jobs in `monorepo`/`monorepo-voip`/`monorepo-javascript`
+  one image's pin in `install/versions.lock.dist`/`install/docker-compose.yml.dist`
+  (the committed templates new installs copy from - see `install/CLAUDE.md`'s
+  "versions.lock.dist vs versions.lock" section; merging this PR never touches
+  a running server), called by the release jobs in `monorepo`/`monorepo-voip`/`monorepo-javascript`
   after they push a new image (each of those repos clones this one and runs
   `install/scripts/bump-image-digest.sh` immediately before this script — see
   that script's header for why a single-service CI job doesn't need

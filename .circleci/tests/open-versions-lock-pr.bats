@@ -75,7 +75,7 @@ run_script() {
     # Regression test for the real bug: `git status --porcelain` (newline
     # form) renders a rename as "R  old -> new" on one line. Naive
     # `awk '{print $2}'` parsing extracts "old" - which for THIS scenario
-    # (renaming install/versions.lock itself away) is exactly the expected
+    # (renaming install/versions.lock.dist itself away) is exactly the expected
     # path, so the old parsing would WRONGLY treat this as "expected file
     # modified, all good" even though the actual file that would need
     # committing no longer exists under that name.
@@ -92,14 +92,14 @@ run_script() {
     setup_fake_repo
     (
         cd "$REPO_DIR" || exit 1
-        git mv install/versions.lock install/versions-renamed-away.lock
+        git mv install/versions.lock.dist install/versions-renamed-away.lock.dist
     )
     cd "$REPO_DIR" || exit 1
     GH_TOKEN="fake-token" run run_script "voipbin/bin-agent-manager" "cccccccccccccccccccccccccccccccccccccccc"
 
     [[ "$status" -ne 0 ]]
     [[ "$output" == *"unexpected dirty file"* ]]
-    [[ "$output" == *"versions-renamed-away.lock"* ]]
+    [[ "$output" == *"versions-renamed-away.lock.dist"* ]]
     run git -C "$REPO_DIR" branch --list "NOJIRA-Bump-*"
     [[ -z "$output" ]]
 }
@@ -116,15 +116,15 @@ run_script() {
         cd "$REPO_DIR" || exit 1
         # One-line tweak, tiny relative to the whole file - stays "R".
         sed -i 's/1111111111111111111111111111111111111111111111111111111111aa/1111111111111111111111111111111111111111111111111111111111ab/' \
-            install/versions.lock
-        git mv install/versions.lock install/versions-renamed-away.lock
+            install/versions.lock.dist
+        git mv install/versions.lock.dist install/versions-renamed-away.lock.dist
     )
     cd "$REPO_DIR" || exit 1
     GH_TOKEN="fake-token" run run_script "voipbin/bin-agent-manager" "cccccccccccccccccccccccccccccccccccccccc"
 
     [[ "$status" -ne 0 ]]
     [[ "$output" == *"unexpected dirty file"* ]]
-    [[ "$output" == *"versions-renamed-away.lock"* ]]
+    [[ "$output" == *"versions-renamed-away.lock.dist"* ]]
     run git -C "$REPO_DIR" branch --list "NOJIRA-Bump-*"
     [[ -z "$output" ]]
 }
@@ -206,7 +206,7 @@ run_script() {
     # changed), not just that the fix silenced it unconditionally.
     setup_fake_repo
     install_fake_curl
-    # Only touch docker-compose.yml.dist directly - versions.lock stays
+    # Only touch docker-compose.yml.dist directly - versions.lock.dist stays
     # byte-identical to the committed baseline.
     sed -i 's/1111111111111111111111111111111111111111111111111111111111aa/2222222222222222222222222222222222222222222222222222222222bb/' \
         "$REPO_DIR/install/docker-compose.yml.dist"
@@ -214,7 +214,7 @@ run_script() {
     GH_TOKEN="fake-token" run run_script "voipbin/bin-agent-manager" "cccccccccccccccccccccccccccccccccccccccc"
 
     [[ "$status" -eq 0 ]]
-    [[ "$output" == *"install/versions.lock is not modified"* ]]
+    [[ "$output" == *"install/versions.lock.dist is not modified"* ]]
     [[ "$output" != *"install/docker-compose.yml.dist is not modified"* ]]
 }
 

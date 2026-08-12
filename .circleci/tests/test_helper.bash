@@ -25,7 +25,7 @@ teardown_test_env() {
 }
 
 # Builds a fake voipbin/voipbin checkout: a bare "origin" repo plus a real
-# working clone, with install/versions.lock + install/docker-compose.yml.dist
+# working clone, with install/versions.lock.dist + install/docker-compose.yml.dist
 # committed at a known baseline. Returns the working clone's path via the
 # REPO_DIR global.
 setup_fake_repo() {
@@ -40,7 +40,7 @@ setup_fake_repo() {
         git config user.email "test@example.com"
         git config user.name "Test"
         mkdir -p install
-        cat > install/versions.lock <<'EOF'
+        cat > install/versions.lock.dist <<'EOF'
 {
   "images": {
     "voipbin/bin-agent-manager": "sha256:1111111111111111111111111111111111111111111111111111111111aa"
@@ -69,7 +69,7 @@ apply_fake_bump() {
     local new_digest="$1"
     python3 -c "
 import json
-p = '$REPO_DIR/install/versions.lock'
+p = '$REPO_DIR/install/versions.lock.dist'
 d = json.load(open(p))
 d['images']['voipbin/bin-agent-manager'] = '$new_digest'
 d['image_source_tags']['voipbin/bin-agent-manager'] = 'cccccccccccccccccccccccccccccccccccccccc'

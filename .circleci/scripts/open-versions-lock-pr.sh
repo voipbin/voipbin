@@ -1,14 +1,17 @@
 #!/bin/bash
-# VoIPBin - open a PR bumping one image's pin in install/versions.lock
+# VoIPBin - open a PR bumping one image's pin in install/versions.lock.dist
 #
 # CI-internal tooling, NOT part of the install/ self-hosting product surface
 # (deliberately kept out of install/scripts/ - see .circleci/README.md).
 #
 # Preconditions (caller's responsibility):
 #   - CWD is a git checkout of voipbin/voipbin, HEAD on the default branch,
-#     clean except for install/versions.lock and install/docker-compose.yml.dist
+#     clean except for install/versions.lock.dist and install/docker-compose.yml.dist
 #     already modified in the working tree (e.g. by
-#     install/scripts/bump-image-digest.sh) - NOT yet committed.
+#     install/scripts/bump-image-digest.sh) - NOT yet committed. Note this is
+#     the committed DIST template, not the untracked live versions.lock a
+#     running install actually uses (see install/CLAUDE.md's "versions.lock.dist
+#     vs versions.lock" section) - this PR only updates what new installs get.
 #   - The 'origin' remote is a plain https://github.com/voipbin/voipbin.git
 #     URL (no embedded credentials).
 #
@@ -16,7 +19,7 @@
 #   GH_TOKEN=<token> ./.circleci/scripts/open-versions-lock-pr.sh <image-repo> <source-commit> [<source-repo-url>]
 #
 #   <image-repo>        e.g. voipbin/bin-agent-manager - must match the
-#                       image whose entry was just changed in versions.lock.
+#                       image whose entry was just changed in versions.lock.dist.
 #   <source-commit>     full 40-char git SHA the new image was built from.
 #   <source-repo-url>   optional https URL to the source commit, linked in
 #                       the PR body for review convenience (e.g.
@@ -50,14 +53,14 @@
 set -e
 
 REPO_SLUG="voipbin/voipbin"
-EXPECTED_FILES=("install/versions.lock" "install/docker-compose.yml.dist")
+EXPECTED_FILES=("install/versions.lock.dist" "install/docker-compose.yml.dist")
 
 log_info()  { echo "[INFO] $*"; }
 log_warn()  { echo "[WARN] $*" >&2; }
 log_error() { echo "[ERROR] $*" >&2; }
 
 usage() {
-    sed -n '2,48p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'
+    sed -n '2,51p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'
 }
 
 if [[ "${1:-}" == "-h" || "${1:-}" == "--help" ]]; then
@@ -129,7 +132,7 @@ while i < len(parts):
 print('\n'.join(paths))
 ")"
 if [[ -z "$DIRTY_FILES" ]]; then
-    log_info "Nothing to PR: working tree is clean (versions.lock/docker-compose.yml.dist unchanged)."
+    log_info "Nothing to PR: working tree is clean (versions.lock.dist/docker-compose.yml.dist unchanged)."
     log_info "This is not an error - it means the digest bump was a no-op (already at that pin)."
     exit 0
 fi
@@ -164,9 +167,9 @@ done
 # ---- Read the old/new digest for the PR body (informational only) ----
 NEW_DIGEST="$(python3 -c "
 import json, sys
-print(json.load(open('install/versions.lock'))['images'].get(sys.argv[1], '?'))
+print(json.load(open('install/versions.lock.dist'))['images'].get(sys.argv[1], '?'))
 " "$IMAGE_REPO")"
-OLD_DIGEST="$(git show HEAD:install/versions.lock 2>/dev/null | python3 -c "
+OLD_DIGEST="$(git show HEAD:install/versions.lock.dist 2>/dev/null | python3 -c "
 import json, sys
 try:
     print(json.load(sys.stdin)['images'].get(sys.argv[1], '?'))
@@ -193,7 +196,7 @@ git checkout -b "$BRANCH"
 git add -- "${EXPECTED_FILES[@]}"
 git -c user.name="voipbin-ci" -c user.email="ci@voipbin.net" commit -m "Bump $SHORT_NAME image pin
 
-- voipbin: update versions.lock + docker-compose.yml.dist for
+- voipbin: update versions.lock.dist + docker-compose.yml.dist for
   $IMAGE_REPO to the image built from commit $SOURCE_COMMIT"
 
 # ---- Push using a per-invocation Authorization header, never a token in
@@ -217,8 +220,9 @@ trap 'rm -f "$PR_BODY_FILE"' EXIT
     fi
     echo ""
     echo "This PR still requires human review and merge like any other change to install/ -"
-    echo "nothing self-merges. See install/CLAUDE.md's docker-compose.yml.dist vs"
-    echo "docker-compose.yml section for how this propagates to a running server."
+    echo "nothing self-merges, and merging it does NOT deploy or touch any running server:"
+    echo "it only updates the template new installs copy on first setup. See"
+    echo "install/CLAUDE.md's \"versions.lock.dist vs versions.lock\" section for details."
 } > "$PR_BODY_FILE"
 
 # Not `set -e`-gated: a curl/API failure here must fall through to the
