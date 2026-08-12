@@ -152,7 +152,11 @@ if [[ -n "$UNEXPECTED" ]]; then
 fi
 
 for expected in "${EXPECTED_FILES[@]}"; do
-    if [[ ! " $DIRTY_FILES " == *" $expected "* ]]; then
+    found="false"
+    while IFS= read -r f; do
+        [[ "$f" == "$expected" ]] && found="true"
+    done <<< "$DIRTY_FILES"
+    if [[ "$found" == "false" ]]; then
         log_warn "$expected is not modified - proceeding anyway (the other file's change is enough to PR)"
     fi
 done
@@ -215,7 +219,7 @@ trap 'rm -f "$PR_BODY_FILE"' EXIT
 # Not `set -e`-gated: a curl/API failure here must fall through to the
 # explicit error handling below (which explains the branch is still safely
 # pushed), not abort the script mid-line with a bare curl error.
-PR_RESPONSE="$(curl -sf -X POST \
+PR_RESPONSE="$(curl -sf --max-time 30 -X POST \
     -H "Authorization: Bearer $GH_TOKEN" \
     -H "Accept: application/vnd.github+json" \
     "https://api.github.com/repos/$REPO_SLUG/pulls" \

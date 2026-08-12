@@ -161,6 +161,41 @@ run_script() {
     [[ "$output" == *"Authorization: Bearer fake-token-value"* ]]
 }
 
+@test "does not falsely warn 'not modified' for either expected file when both are actually modified" {
+    # Regression test: the "is not modified - proceeding anyway" warning
+    # used to compare a newline-delimited $DIRTY_FILES against a
+    # space-padded substring pattern, which never matched anything -
+    # meaning it fired for BOTH files on every single normal invocation,
+    # including this exact both-files-modified case. Assert it's silent
+    # here so a regression to that broken comparison is caught.
+    setup_fake_repo
+    install_fake_curl
+    apply_fake_bump "sha256:$(printf 'c%.0s' {1..64})"
+    cd "$REPO_DIR" || exit 1
+    GH_TOKEN="fake-token" run run_script "voipbin/bin-agent-manager" "cccccccccccccccccccccccccccccccccccccccc"
+
+    [[ "$status" -eq 0 ]]
+    [[ "$output" != *"is not modified"* ]]
+}
+
+@test "does warn 'not modified' for the one expected file that genuinely wasn't touched" {
+    # The positive-case counterpart: confirm the warning still fires
+    # correctly when it should (only one of the two expected files
+    # changed), not just that the fix silenced it unconditionally.
+    setup_fake_repo
+    install_fake_curl
+    # Only touch docker-compose.yml.dist directly - versions.lock stays
+    # byte-identical to the committed baseline.
+    sed -i 's/1111111111111111111111111111111111111111111111111111111111aa/2222222222222222222222222222222222222222222222222222222222bb/' \
+        "$REPO_DIR/install/docker-compose.yml.dist"
+    cd "$REPO_DIR" || exit 1
+    GH_TOKEN="fake-token" run run_script "voipbin/bin-agent-manager" "cccccccccccccccccccccccccccccccccccccccc"
+
+    [[ "$status" -eq 0 ]]
+    [[ "$output" == *"install/versions.lock is not modified"* ]]
+    [[ "$output" != *"install/docker-compose.yml.dist is not modified"* ]]
+}
+
 @test "GH_TOKEN value never appears in stdout/stderr output" {
     setup_fake_repo
     install_fake_curl
