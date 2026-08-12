@@ -5250,9 +5250,9 @@ Type 'registrar <subcommand> help' for more details.
         rc = subprocess.call(["bash", sync_script], cwd=project_dir, env=sync_env)
         if rc != 0:
             print(f"\n{red('Upgrade aborted:')} sync-compose-images.sh failed (exit {rc}).")
-            print("  docker-compose.yml was not modified (or only partially - the script writes")
-            print("  atomically via a temp file + rename, so a mid-run failure leaves the old")
-            print("  file intact). Old containers are still running the old digests.")
+            print("  docker-compose.yml was not modified - the script writes atomically via a")
+            print("  temp file + rename, so a mid-run failure leaves the old file intact.")
+            print("  Old containers are still running the old digests.")
             return
 
         # ---- Step 3: docker compose pull (fetch the NEW pinned digests) ----
