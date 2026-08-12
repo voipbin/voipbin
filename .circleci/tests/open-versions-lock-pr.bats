@@ -71,26 +71,35 @@ run_script() {
     [[ -z "$output" ]]
 }
 
-@test "refuses when an unexpected file is renamed INTO the tree (rename-aware parsing)" {
-    # Regression test: `git status --porcelain` (newline form) renders a
-    # rename as "R  old -> new" on one line - naive `awk '{print $2}'`
-    # parsing extracts "old" and never sees "new", which would let a
-    # renamed-in unexpected file slip past the guard silently. The script
-    # must use the -z (NUL-delimited) form instead, parsed rename-aware.
+@test "refuses when an EXPECTED file is renamed away (rename-aware parsing, the actual discriminating case)" {
+    # Regression test for the real bug: `git status --porcelain` (newline
+    # form) renders a rename as "R  old -> new" on one line. Naive
+    # `awk '{print $2}'` parsing extracts "old" - which for THIS scenario
+    # (renaming install/versions.lock itself away) is exactly the expected
+    # path, so the old parsing would WRONGLY treat this as "expected file
+    # modified, all good" even though the actual file that would need
+    # committing no longer exists under that name.
+    #
+    # IMPORTANT: this must be a PURE rename with NO content change - git's
+    # rename detection is similarity-based, and a rename bundled with a
+    # large-enough content edit (e.g. applying the digest bump first) gets
+    # reported as separate Add+Delete entries instead of a single "R" line,
+    # which does NOT exercise the buggy code path at all (verified: a
+    # rename-after-content-change version of this test passes even against
+    # the unfixed `awk '{print $2}'` parsing, making it a vacuous test - a
+    # pure rename is the only form that produces the "R  old -> new" line
+    # this fix targets).
     setup_fake_repo
-    apply_fake_bump "sha256:$(printf 'c%.0s' {1..64})"
     (
         cd "$REPO_DIR" || exit 1
-        echo "harmless content" > innocuous.txt
-        git add innocuous.txt
-        git mv innocuous.txt "install/sneaky-renamed-in.txt"
+        git mv install/versions.lock install/versions-renamed-away.lock
     )
     cd "$REPO_DIR" || exit 1
     GH_TOKEN="fake-token" run run_script "voipbin/bin-agent-manager" "cccccccccccccccccccccccccccccccccccccccc"
 
     [[ "$status" -ne 0 ]]
     [[ "$output" == *"unexpected dirty file"* ]]
-    [[ "$output" == *"sneaky-renamed-in.txt"* ]]
+    [[ "$output" == *"versions-renamed-away.lock"* ]]
     run git -C "$REPO_DIR" branch --list "NOJIRA-Bump-*"
     [[ -z "$output" ]]
 }
