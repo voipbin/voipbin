@@ -5278,8 +5278,11 @@ Type 'registrar <subcommand> help' for more details.
             print("  Recovery procedure:")
             print("    1. voipbin stop --all")
             print(f"    2. {restore_hint}    (restores pre-upgrade schema + data)")
-            print("    3. git checkout <previous commit>   (reverts compose/versions.lock/scripts)")
-            print("    4. voipbin start")
+            print("    3. git checkout <previous commit> -- docker-compose.yml.dist versions.lock scripts/")
+            print("       (pathspec-scoped: a bare 'git checkout <commit>' would revert this repo's")
+            print("       ENTIRE tree and detach HEAD, not just install/'s files)")
+            print(f"    4. COMPOSE_FILE={os.path.join(project_dir, 'docker-compose.yml')} bash scripts/sync-compose-images.sh")
+            print("    5. voipbin start")
             return
 
         # ---- Step 5: recreate changed containers ----
@@ -5287,7 +5290,10 @@ Type 'registrar <subcommand> help' for more details.
         rc = subprocess.call("docker compose up -d", shell=True, cwd=project_dir)
         if rc != 0:
             print(f"\n{red('Upgrade aborted:')} docker compose up -d failed (exit {rc}).")
-            print(f"  If services are broken: stop, then '{restore_hint}' and git checkout the previous commit.")
+            print(f"  If services are broken: stop, then '{restore_hint}', then")
+            print("  'git checkout <previous commit> -- docker-compose.yml.dist versions.lock scripts/'")
+            print("  (pathspec-scoped - a bare checkout would revert this repo's entire tree)")
+            print(f"  and 'COMPOSE_FILE={os.path.join(project_dir, 'docker-compose.yml')} bash scripts/sync-compose-images.sh'.")
             return
 
         # ---- Step 6: verify ----
@@ -5302,9 +5308,13 @@ Type 'registrar <subcommand> help' for more details.
             print("  Recovery options:")
             print("    - Data rollback:  stop services, then run:")
             print(f"        {restore_hint}")
-            print("    - Image rollback: git checkout the previous repo commit")
-            print("      (docker-compose.yml.dist + versions.lock + scripts are git-versioned; the")
-            print("      live docker-compose.yml is not), then re-sync it and recreate:")
+            print("    - Image rollback: restore the previous versions.lock/scripts (docker-compose.yml")
+            print("      is not git-versioned, only .dist is - see docker-compose.yml.dist's header):")
+            print("        git checkout <previous commit> -- docker-compose.yml.dist versions.lock scripts/")
+            print("      (pathspec-scoped on purpose: a bare 'git checkout <commit>' with no pathspec")
+            print("      would revert this repo's ENTIRE tree, not just install/, and leave you in")
+            print("      detached HEAD - the form above only restores those files' content, in place,")
+            print("      on your current branch)")
             print(f"        COMPOSE_FILE={os.path.join(project_dir, 'docker-compose.yml')} bash scripts/sync-compose-images.sh")
             print("        docker compose up -d")
             print(f"  {yellow('Do NOT use')} 'voipbin rollback' here: it replays docker-compose.override.yml")
@@ -6292,9 +6302,13 @@ Type 'registrar <subcommand> help' for more details.
             print("  pinned digests in docker-compose.yml and silently unpin this repo.")
             print("\n  What you probably want instead:")
             print(f"    - Data restore:   {bold('voipbin restore <ts> --force')}  (from backups/)")
-            print("    - Image rollback: git checkout the previous repo commit")
-            print("      (docker-compose.yml.dist + versions.lock + scripts are git-versioned;")
-            print("      the live docker-compose.yml is not), then re-sync it and recreate:")
+            print("    - Image rollback: restore the previous versions.lock/scripts (docker-compose.yml")
+            print("      is not git-versioned, only .dist is - see docker-compose.yml.dist's header):")
+            print("        git checkout <previous commit> -- docker-compose.yml.dist versions.lock scripts/")
+            print("      (pathspec-scoped on purpose: a bare 'git checkout <commit>' with no pathspec")
+            print("      would revert this repo's ENTIRE tree, not just install/, and leave you in")
+            print("      detached HEAD - the form above only restores those files' content, in place,")
+            print("      on your current branch)")
             print(f"        COMPOSE_FILE={os.path.join(project_dir, 'docker-compose.yml')} bash scripts/sync-compose-images.sh")
             print("        docker compose up -d")
             return

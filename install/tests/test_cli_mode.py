@@ -408,6 +408,142 @@ def test_tracked_paths_uses_compose_dist_not_live_file(cli_module):
     print("ok test_tracked_paths_uses_compose_dist_not_live_file")
 
 
+def test_upgrade_pinned_rollback_guidance_uses_scoped_checkout(cli_module, tmp_dir, log_path):
+    """VOIP-1333 regression: the verify-failure rollback message used to say
+    'git checkout the previous repo commit' with no pathspec, implying a
+    scoped revert of install/'s tracked files. In reality install/ is a
+    subdirectory of the real repo root, so a bare 'git checkout <commit>'
+    reverts the ENTIRE repo tree and leaves the operator in detached HEAD -
+    a real, reproduced footgun for a rollback instruction. The guidance
+    must now use a pathspec-scoped 'git checkout <commit> -- <paths>',
+    which restores just those files' content without touching HEAD."""
+    cli, project_dir = make_cli(tmp_dir, INTERNAL_ENV, cli_module)
+
+    # Force the verify-FAILED branch of _upgrade_pinned's resumed process by
+    # making docker compose pull itself fail, so we reach the rollback
+    # message without needing to stub migrate.sh/verify_stack too.
+    stub_bin = os.path.join(tmp_dir, "stub_bin")
+    with open(os.path.join(stub_bin, "docker"), "w") as f:
+        f.write("#!/bin/bash\nexit 1\n")
+
+    sync_stub_dir = os.path.join(project_dir, "scripts")
+    os.makedirs(sync_stub_dir, exist_ok=True)
+    sync_stub = os.path.join(sync_stub_dir, "sync-compose-images.sh")
+    with open(sync_stub, "w") as f:
+        f.write("#!/bin/bash\nexit 0\n")
+    os.chmod(sync_stub, os.stat(sync_stub).st_mode | stat.S_IEXEC | stat.S_IXGRP | stat.S_IXOTH)
+
+    out = capture(cli._upgrade_pinned, project_dir, False, False, "pull", None)
+
+    # docker compose pull failing aborts before the rollback message (that
+    # message only prints on a verify FAILURE after a successful pull/up),
+    # so this only proves Step 2b->3 ordering held; restore a passing
+    # docker stub and force verify to fail instead to reach the real text.
+    with open(os.path.join(stub_bin, "docker"), "w") as f:
+        f.write(
+            "#!/bin/bash\n"
+            'if [[ "$1" == "compose" && "$2" == "ps" ]]; then exit 0; fi\n'
+            "exit 0\n"
+        )
+    migrate_stub = os.path.join(sync_stub_dir, "migrate.sh")
+    with open(migrate_stub, "w") as f:
+        f.write("#!/bin/bash\nexit 0\n")
+    os.chmod(migrate_stub, os.stat(migrate_stub).st_mode | stat.S_IEXEC | stat.S_IXGRP | stat.S_IXOTH)
+    cli._verify_stack = lambda project_dir, timeout=120: False
+
+    out = capture(cli._upgrade_pinned, project_dir, False, False, "pull", None)
+
+    assert "Upgrade verification FAILED" in out, out
+    assert "git checkout the previous repo commit" not in out, out
+    assert "git checkout <previous commit> -- docker-compose.yml.dist versions.lock scripts/" in out, out
+    assert "pathspec-scoped on purpose" in out, out
+    assert "detached HEAD" in out, out
+    print("ok test_upgrade_pinned_rollback_guidance_uses_scoped_checkout")
+
+
+def test_upgrade_pinned_migration_failure_guidance_uses_scoped_checkout(cli_module, tmp_dir, log_path):
+    """VOIP-1333, third call site: Step 4's migration-failure recovery
+    procedure had the same unscoped 'git checkout <previous commit>'."""
+    cli, project_dir = make_cli(tmp_dir, INTERNAL_ENV, cli_module)
+    stub_bin = os.path.join(tmp_dir, "stub_bin")
+    with open(os.path.join(stub_bin, "docker"), "w") as f:
+        f.write("#!/bin/bash\nexit 0\n")  # compose pull succeeds
+
+    scripts_dir = os.path.join(project_dir, "scripts")
+    os.makedirs(scripts_dir, exist_ok=True)
+    sync_stub = os.path.join(scripts_dir, "sync-compose-images.sh")
+    with open(sync_stub, "w") as f:
+        f.write("#!/bin/bash\nexit 0\n")
+    os.chmod(sync_stub, os.stat(sync_stub).st_mode | stat.S_IEXEC | stat.S_IXGRP | stat.S_IXOTH)
+    migrate_stub = os.path.join(scripts_dir, "migrate.sh")
+    with open(migrate_stub, "w") as f:
+        f.write("#!/bin/bash\nexit 1\n")  # migration fails
+    os.chmod(migrate_stub, os.stat(migrate_stub).st_mode | stat.S_IEXEC | stat.S_IXGRP | stat.S_IXOTH)
+
+    out = capture(cli._upgrade_pinned, project_dir, False, False, "pull", None)
+
+    assert "migration failed" in out, out
+    assert "git checkout <previous commit>   (reverts" not in out, out
+    assert "git checkout <previous commit> -- docker-compose.yml.dist versions.lock scripts/" in out, out
+    assert "pathspec-scoped" in out, out
+    print("ok test_upgrade_pinned_migration_failure_guidance_uses_scoped_checkout")
+
+
+def test_upgrade_pinned_compose_up_failure_guidance_uses_scoped_checkout(cli_module, tmp_dir, log_path):
+    """VOIP-1333, fourth call site: Step 5's 'docker compose up -d failed'
+    recovery line had the same unscoped 'git checkout the previous
+    commit'."""
+    cli, project_dir = make_cli(tmp_dir, INTERNAL_ENV, cli_module)
+    stub_bin = os.path.join(tmp_dir, "stub_bin")
+    with open(os.path.join(stub_bin, "docker"), "w") as f:
+        f.write(
+            "#!/bin/bash\n"
+            'if [[ "$1" == "compose" && "$2" == "up" ]]; then exit 1; fi\n'
+            "exit 0\n"
+        )
+
+    scripts_dir = os.path.join(project_dir, "scripts")
+    os.makedirs(scripts_dir, exist_ok=True)
+    sync_stub = os.path.join(scripts_dir, "sync-compose-images.sh")
+    with open(sync_stub, "w") as f:
+        f.write("#!/bin/bash\nexit 0\n")
+    os.chmod(sync_stub, os.stat(sync_stub).st_mode | stat.S_IEXEC | stat.S_IXGRP | stat.S_IXOTH)
+    migrate_stub = os.path.join(scripts_dir, "migrate.sh")
+    with open(migrate_stub, "w") as f:
+        f.write("#!/bin/bash\nexit 0\n")
+    os.chmod(migrate_stub, os.stat(migrate_stub).st_mode | stat.S_IEXEC | stat.S_IXGRP | stat.S_IXOTH)
+
+    out = capture(cli._upgrade_pinned, project_dir, False, False, "pull", None)
+
+    assert "docker compose up -d failed" in out, out
+    assert "and git checkout the previous commit" not in out, out
+    assert "git checkout <previous commit> -- docker-compose.yml.dist versions.lock scripts/" in out, out
+    assert "pathspec-scoped" in out, out
+    print("ok test_upgrade_pinned_compose_up_failure_guidance_uses_scoped_checkout")
+
+
+def test_rollback_pinned_guard_uses_scoped_checkout(cli_module, tmp_dir):
+    """VOIP-1333 regression, second call site: cmd_rollback's pinned-repo
+    guard had the identical unscoped 'git checkout the previous repo
+    commit' footgun."""
+    project_dir = os.path.join(tmp_dir, "rollback-project")
+    os.makedirs(project_dir, exist_ok=True)
+    write_env(project_dir, INTERNAL_ENV)
+    with open(os.path.join(project_dir, "versions.lock"), "w") as f:
+        f.write("{}")
+    os.environ["VOIPBIN_PROJECT_DIR"] = project_dir
+    cli = cli_module.VoIPBinCLI()
+
+    out = capture(cli.cmd_rollback, [])
+
+    assert "rollback is disabled on a pinned repo" in out, out
+    assert "git checkout the previous repo commit" not in out, out
+    assert "git checkout <previous commit> -- docker-compose.yml.dist versions.lock scripts/" in out, out
+    assert "pathspec-scoped on purpose" in out, out
+    assert "detached HEAD" in out, out
+    print("ok test_rollback_pinned_guard_uses_scoped_checkout")
+
+
 def main():
     tmp_dir = tempfile.mkdtemp(prefix="voipbin-cli-mode-test.")
     prev_path = os.environ.get("PATH", "")
@@ -431,6 +567,10 @@ def main():
         test_doctor_noninteractive_dispatch_propagates_exit_code(cli_module, tmp_dir, log_path)
         test_upgrade_pinned_syncs_live_compose_before_pull(cli_module, tmp_dir, log_path)
         test_tracked_paths_uses_compose_dist_not_live_file(cli_module)
+        test_upgrade_pinned_rollback_guidance_uses_scoped_checkout(cli_module, tmp_dir, log_path)
+        test_upgrade_pinned_migration_failure_guidance_uses_scoped_checkout(cli_module, tmp_dir, log_path)
+        test_upgrade_pinned_compose_up_failure_guidance_uses_scoped_checkout(cli_module, tmp_dir, log_path)
+        test_rollback_pinned_guard_uses_scoped_checkout(cli_module, tmp_dir)
 
         print("All test_cli_mode.py tests passed")
     finally:
