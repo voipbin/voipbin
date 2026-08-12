@@ -63,6 +63,7 @@ load_check_env() {
     CHECK_HOST_IP=$(get_env_var "$ENV_FILE" HOST_EXTERNAL_IP)
     CHECK_KAMAILIO_IP=$(get_env_var "$ENV_FILE" KAMAILIO_EXTERNAL_IP)
     CHECK_DOMAIN_EXT=$(get_env_var "$ENV_FILE" DOMAIN_NAME_EXTENSION)
+    CHECK_WEB_REVERSE_PROXY=$(get_env_var "$ENV_FILE" WEB_REVERSE_PROXY)
     CHECK_PROFILES=$(get_env_var "$ENV_FILE" COMPOSE_PROFILES)
 }
 
@@ -234,6 +235,31 @@ check_api_ping() {
     fi
 }
 
+# VOIP-1325: the port-suffixed :8443 checks above (check_tls/check_api_ping)
+# hit api-manager DIRECTLY, bypassing Caddy entirely — so a Caddy that is up
+# but misconfigured (e.g. the round-2-review HIGH-A case: every proxied
+# request 502s) passes both of them while the actual customer-facing,
+# port-less path the whole flag exists for is completely broken. Only runs
+# when the proxy is actually enabled; skipped otherwise.
+check_web_proxy() {
+    if [[ "${CHECK_WEB_REVERSE_PROXY,,}" != "true" ]]; then
+        check_result web-proxy skip "WEB_REVERSE_PROXY is not enabled"
+        return
+    fi
+
+    local url="https://api.$CHECK_BASE_DOMAIN/ping"
+    local http_code
+    # No -k: this is the real path a customer's browser takes, so the chain
+    # must validate exactly like check_tls's external-mode branch does.
+    http_code=$(curl -fsS -o /dev/null -w '%{http_code}' --max-time 10 "$url" 2>/dev/null)
+
+    if [[ "$http_code" == "200" ]]; then
+        check_result web-proxy pass "$url -> 200 (via Caddy reverse proxy)"
+    else
+        check_result web-proxy fail "$url -> ${http_code:-no response} (Caddy reverse proxy — check: docker compose logs web-proxy)"
+    fi
+}
+
 # Realm config sanity: the RUNNING registrar-manager's DOMAIN_NAME_EXTENSION
 # must equal the .env value — a stale container keeps minting extensions with
 # the old realm domain.
@@ -354,6 +380,7 @@ main() {
     check_dns
     check_tls
     check_api_ping
+    check_web_proxy
     check_realm
     check_scheduler
     check_resolv_conf

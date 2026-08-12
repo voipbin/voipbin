@@ -90,6 +90,7 @@ load_doctor_env() {
     DOCTOR_KAMAILIO_IP=$(get_env_var "$ENV_FILE" KAMAILIO_EXTERNAL_IP)
     DOCTOR_DOMAIN_EXT=$(get_env_var "$ENV_FILE" DOMAIN_NAME_EXTENSION)
     DOCTOR_PROFILES=$(get_env_var "$ENV_FILE" COMPOSE_PROFILES)
+    DOCTOR_WEB_REVERSE_PROXY=$(get_env_var "$ENV_FILE" WEB_REVERSE_PROXY)
     DOCTOR_OS=$(detect_os)
 }
 
@@ -205,8 +206,10 @@ check_tools() {
 # systemd-resolved stubs 127.0.0.53/127.0.0.54 whitelisted; external mode
 # deploys no coredns so 53 is not ours to claim. 5060/5061/5066: wildcard or
 # the addresses kamailio needs. 8443/3003-3005: the published 0.0.0.0 bind
-# only. Ports held by our own running services pass; anything else on a needed
-# address fails (best-effort process name via ss -tulnp).
+# only. 80/443: only claimed when WEB_REVERSE_PROXY=true (Caddy, VOIP-1325) -
+# otherwise unowned and not our business. Ports held by our own running
+# services pass; anything else on a needed address fails (best-effort
+# process name via ss -tulnp).
 check_ports() {
     if [[ "$DOCTOR_OS" == "macos" ]]; then doctor_result ports skip "unsupported on macos"; return; fi
     if ! command -v ss &> /dev/null; then doctor_result ports skip "ss not available"; return; fi
@@ -238,6 +241,13 @@ check_ports() {
             3003) [[ "$wildcard" == "true" ]] && { relevant="true"; owner="square-admin"; } ;;
             3004) [[ "$wildcard" == "true" ]] && { relevant="true"; owner="square-meet"; } ;;
             3005) [[ "$wildcard" == "true" ]] && { relevant="true"; owner="square-talk"; } ;;
+            80|443)
+                # VOIP-1325: only claimed when the Caddy web-proxy is active
+                # (external mode + --web-reverse-proxy) — otherwise these are
+                # ordinary unclaimed ports and any listener there is none of
+                # our business.
+                [[ "${DOCTOR_WEB_REVERSE_PROXY,,}" == "true" && "$wildcard" == "true" ]] && { relevant="true"; owner="web-proxy"; }
+                ;;
             *) continue ;;
         esac
         [[ "$relevant" == "true" ]] || continue
@@ -248,12 +258,14 @@ check_ports() {
         seen+="$key"$'\n'
         conflicts+=("$addr:$port(${proc:-unknown})")
     done < <(ss -tulnp 2>/dev/null | awk 'NR>1 && $5 ~ /:/ {print $5, $7}')
+    local checked_ports="53 5060 5061 5066 8443 3003-3005"
+    [[ "${DOCTOR_WEB_REVERSE_PROXY,,}" == "true" ]] && checked_ports+=" 80 443"
     if [[ ${#conflicts[@]} -gt 0 ]]; then
         local first="${conflicts[0]}"
         first="${first%%(*}"; first="${first##*:}"
         doctor_fail ports "conflicting listeners: ${conflicts[*]}" "sudo lsof -i :$first to identify, then stop the conflicting service"
     else
-        doctor_result ports pass "no conflicting listeners on 53 5060 5061 5066 8443 3003-3005"
+        doctor_result ports pass "no conflicting listeners on $checked_ports"
     fi
 }
 

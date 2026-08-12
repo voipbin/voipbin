@@ -79,19 +79,59 @@ teardown() {
 }
 
 # =============================================================================
+# docker-compose.yml - web-proxy (Caddy reverse proxy, VOIP-1325)
+# =============================================================================
+
+@test "docker-compose.yml defines web-proxy service" {
+    assert_file_contains "$PROJECT_ROOT/docker-compose.yml" "  web-proxy:"
+}
+
+@test "docker-compose.yml gates web-proxy behind the web-proxy compose profile" {
+    assert_file_contains "$PROJECT_ROOT/docker-compose.yml" 'profiles: ["web-proxy"]'
+}
+
+@test "docker-compose.yml publishes web-proxy on host 80 and 443" {
+    assert_file_contains "$PROJECT_ROOT/docker-compose.yml" '"0.0.0.0:80:80"'
+    assert_file_contains "$PROJECT_ROOT/docker-compose.yml" '"0.0.0.0:443:443"'
+}
+
+@test "docker-compose.yml mounts the generated Caddyfile and certs into web-proxy" {
+    assert_file_contains "$PROJECT_ROOT/docker-compose.yml" "./config/caddy/Caddyfile:/etc/caddy/Caddyfile:ro"
+    assert_file_contains "$PROJECT_ROOT/docker-compose.yml" "./certs:/certs:ro"
+}
+
+@test "docker-compose.yml has a healthcheck for web-proxy" {
+    local block
+    block=$(sed -n '/^  web-proxy:/,/^  [a-z]/p' "$PROJECT_ROOT/docker-compose.yml")
+    [[ "$block" == *"healthcheck:"* ]]
+}
+
+@test "docker-compose.yml web-proxy depends on api-manager and the three square-* frontends" {
+    local block
+    block=$(sed -n '/^  web-proxy:/,/^  [a-z]/p' "$PROJECT_ROOT/docker-compose.yml")
+    [[ "$block" == *"- api-manager"* ]]
+    [[ "$block" == *"- square-admin"* ]]
+    [[ "$block" == *"- square-meet"* ]]
+    [[ "$block" == *"- square-talk"* ]]
+}
+
+# =============================================================================
 # docker-compose.yml - Web Service Port Mappings
 # =============================================================================
 
 @test "docker-compose.yml maps admin to port 3003" {
-    assert_file_contains "$PROJECT_ROOT/docker-compose.yml" "0.0.0.0:3003:80"
+    # SQUARE_BIND_ADDR (VOIP-1325): host address is templated (defaults to
+    # 0.0.0.0) so init.sh can bind it to 127.0.0.1 instead with
+    # --web-reverse-proxy, since Caddy becomes the sole external path then.
+    assert_file_contains "$PROJECT_ROOT/docker-compose.yml" 'SQUARE_BIND_ADDR:-0.0.0.0}:3003:80'
 }
 
 @test "docker-compose.yml maps meet to port 3004" {
-    assert_file_contains "$PROJECT_ROOT/docker-compose.yml" "0.0.0.0:3004:80"
+    assert_file_contains "$PROJECT_ROOT/docker-compose.yml" 'SQUARE_BIND_ADDR:-0.0.0.0}:3004:80'
 }
 
 @test "docker-compose.yml maps talk to port 3005" {
-    assert_file_contains "$PROJECT_ROOT/docker-compose.yml" "0.0.0.0:3005:80"
+    assert_file_contains "$PROJECT_ROOT/docker-compose.yml" 'SQUARE_BIND_ADDR:-0.0.0.0}:3005:80'
 }
 
 @test "docker-compose.yml maps api-manager to port 8443" {

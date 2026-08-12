@@ -42,6 +42,33 @@ teardown() {
     [[ "$status" -eq 0 ]]
 }
 
+@test "check_host_prereqs fails when WEB_REVERSE_PROXY=true but the Caddyfile is missing (VOIP-1325, review round 1 MED-4)" {
+    load_start_functions
+    create_env_file "DOMAIN_MODE=external" "BASE_DOMAIN=example.com" "COMPOSE_PROFILES=web-proxy" "WEB_REVERSE_PROXY=true"
+    mock_command_script "ip" 'echo "master"; exit 0'
+    RESOLV_CONF="$TEST_TEMP_DIR/resolv.conf"
+    echo "nameserver 8.8.8.8" > "$RESOLV_CONF"
+    # No config/caddy/Caddyfile created — setup-host.sh was skipped/aborted.
+
+    check_host_prereqs || true
+
+    [[ "$HOST_PREREQS_MISSING" == *'config/caddy/Caddyfile is missing'* ]]
+}
+
+@test "check_host_prereqs passes when WEB_REVERSE_PROXY=true and the Caddyfile exists" {
+    load_start_functions
+    create_env_file "DOMAIN_MODE=external" "BASE_DOMAIN=example.com" "COMPOSE_PROFILES=web-proxy" "WEB_REVERSE_PROXY=true"
+    mock_command_script "ip" 'echo "master"; exit 0'
+    RESOLV_CONF="$TEST_TEMP_DIR/resolv.conf"
+    echo "nameserver 8.8.8.8" > "$RESOLV_CONF"
+    mkdir -p "$TEST_TEMP_DIR/config/caddy"
+    touch "$TEST_TEMP_DIR/config/caddy/Caddyfile"
+
+    run check_host_prereqs
+
+    [[ "$status" -eq 0 ]]
+}
+
 @test "check_host_prereqs passes with interfaces present and resolv.conf at 127.0.0.1 (internal)" {
     load_start_functions
     create_env_file "DOMAIN_MODE=internal" "COMPOSE_PROFILES=internal-dns"

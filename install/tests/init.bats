@@ -557,6 +557,46 @@ teardown() {
 }
 
 # =============================================================================
+# --web-reverse-proxy (VOIP-1325)
+# =============================================================================
+
+@test "parse_args defaults INIT_WEB_REVERSE_PROXY to false" {
+    load_init_functions
+
+    parse_args
+
+    assert_equal "$INIT_WEB_REVERSE_PROXY" "false"
+}
+
+@test "parse_args accepts --web-reverse-proxy with external+byo and sets web-proxy profile" {
+    load_init_functions
+
+    parse_args --mode external --domain example.com --tls byo --cert c.pem --key k.pem \
+        --web-reverse-proxy --yes
+
+    assert_equal "$INIT_WEB_REVERSE_PROXY" "true"
+    assert_equal "$INIT_COMPOSE_PROFILES" "web-proxy"
+}
+
+@test "parse_args rejects --web-reverse-proxy in internal mode" {
+    load_init_functions
+
+    run parse_args --web-reverse-proxy --yes
+
+    [[ "$status" -eq 1 ]]
+    [[ "$output" == *'--web-reverse-proxy requires --mode external --tls byo'* ]]
+}
+
+@test "parse_args without --web-reverse-proxy leaves external mode's profile empty" {
+    load_init_functions
+
+    parse_args --mode external --domain example.com --tls byo --cert c.pem --key k.pem --yes
+
+    assert_equal "$INIT_WEB_REVERSE_PROXY" "false"
+    assert_equal "$INIT_COMPOSE_PROFILES" ""
+}
+
+# =============================================================================
 # check_existing_env_compat() matrix (design §2.7)
 # =============================================================================
 
@@ -621,6 +661,93 @@ teardown() {
     load_init_functions
     rm -f "$ENV_FILE"
     parse_args --yes
+
+    run check_existing_env_compat
+
+    [[ "$status" -eq 0 ]]
+}
+
+# =============================================================================
+# WEB_REVERSE_PROXY re-init guard (VOIP-1325, review round 1 HIGH-3) — same
+# footgun class and fail-closed shape as the EXTERNAL_IP_PINNED guard below.
+# =============================================================================
+
+@test "check_existing_env_compat refuses to silently drop WEB_REVERSE_PROXY on --force-reinit" {
+    load_init_functions
+    create_env_file "DOMAIN_MODE=external" "BASE_DOMAIN=example.com" "WEB_REVERSE_PROXY=true"
+    mock_command "docker" ""
+    RESOLV_BACKUP="$TEST_TEMP_DIR/no-such-backup"
+    parse_args --mode external --domain example.com --tls byo --cert c.pem --key k.pem --force-reinit --yes
+
+    run check_existing_env_compat
+
+    [[ "$status" -eq 1 ]]
+    [[ "$output" == *'existing install has WEB_REVERSE_PROXY=true'* ]]
+    [[ "$output" == *'--force-reinit requires re-passing --web-reverse-proxy explicitly'* ]]
+}
+
+@test "check_existing_env_compat refuses to silently drop WEB_REVERSE_PROXY on a same-mode/domain --yes overwrite" {
+    load_init_functions
+    create_env_file "DOMAIN_MODE=external" "BASE_DOMAIN=example.com" "WEB_REVERSE_PROXY=true"
+    mock_command "docker" ""
+    parse_args --mode external --domain example.com --tls byo --cert c.pem --key k.pem --yes
+
+    run check_existing_env_compat
+
+    [[ "$status" -eq 1 ]]
+    [[ "$output" == *'existing install has WEB_REVERSE_PROXY=true'* ]]
+}
+
+@test "check_existing_env_compat's WEB_REVERSE_PROXY guard does not block declining the interactive overwrite prompt (review round 2 MED-D)" {
+    # No --yes: without input, `read` hits EOF and $REPLY stays empty, which
+    # takes the same "not y" (decline) branch as an explicit N would — since
+    # nothing is about to be rewritten, the guard must not fire here at all.
+    load_init_functions
+    create_env_file "DOMAIN_MODE=external" "BASE_DOMAIN=example.com" "WEB_REVERSE_PROXY=true"
+    mock_command "docker" ""
+    parse_args --mode external --domain example.com --tls byo --cert c.pem --key k.pem
+
+    run check_existing_env_compat < /dev/null
+
+    [[ "$status" -eq 0 ]]
+    [[ "$output" != *'existing install has WEB_REVERSE_PROXY=true'* ]]
+    [[ "$output" == *'action=kept-existing'* ]]
+}
+
+@test "check_existing_env_compat's mode/domain-switch refusal is not masked by the WEB_REVERSE_PROXY guard (review round 2 MED-D)" {
+    # Switching mode/domain without --force-reinit is refused on its own,
+    # more specific grounds — the WEB_REVERSE_PROXY guard must not
+    # preempt that message with a less informative one.
+    load_init_functions
+    create_env_file "DOMAIN_MODE=external" "BASE_DOMAIN=example.com" "WEB_REVERSE_PROXY=true"
+    mock_command "docker" ""
+    parse_args --mode external --domain other.example.com --tls byo --cert c.pem --key k.pem --yes
+
+    run check_existing_env_compat
+
+    [[ "$status" -eq 1 ]]
+    [[ "$output" == *'Refusing to switch mode/domain on an existing install'* ]]
+    [[ "$output" != *'existing install has WEB_REVERSE_PROXY=true'* ]]
+}
+
+@test "check_existing_env_compat allows --force-reinit when --web-reverse-proxy is re-passed" {
+    load_init_functions
+    create_env_file "DOMAIN_MODE=external" "BASE_DOMAIN=example.com" "WEB_REVERSE_PROXY=true"
+    mock_command "docker" ""
+    RESOLV_BACKUP="$TEST_TEMP_DIR/no-such-backup"
+    parse_args --mode external --domain example.com --tls byo --cert c.pem --key k.pem \
+        --web-reverse-proxy --force-reinit --yes
+
+    run check_existing_env_compat
+
+    [[ "$status" -eq 0 ]]
+}
+
+@test "check_existing_env_compat is unaffected when the existing install never used WEB_REVERSE_PROXY" {
+    load_init_functions
+    create_env_file "DOMAIN_MODE=external" "BASE_DOMAIN=example.com"
+    mock_command "docker" ""
+    parse_args --mode external --domain example.com --tls byo --cert c.pem --key k.pem --yes
 
     run check_existing_env_compat
 
@@ -855,6 +982,82 @@ teardown() {
     [[ "$last_line" == *'mode=external'* ]]
     [[ "$last_line" == *'domain=example.com'* ]]
     [[ "$last_line" == *'tls=byo'* ]]
+}
+
+@test "init.sh --web-reverse-proxy writes WEB_REVERSE_PROXY=true and COMPOSE_PROFILES=web-proxy to .env" {
+    if [[ $EUID -eq 0 ]]; then
+        skip "test requires an unprivileged user"
+    fi
+    load_init_functions
+    mock_ip_route "192.168.1.100"
+    mock_command "docker" ""
+    # Wildcard fixture covers admin/meet/talk too, so the --web-reverse-proxy
+    # SAN check (install-certs.sh) passes alongside the base six names.
+    openssl req -x509 -nodes -newkey rsa:2048 \
+        -keyout "$TEST_TEMP_DIR/byo.key" -out "$TEST_TEMP_DIR/byo.pem" \
+        -days 90 -subj "/CN=example.com" \
+        -addext "subjectAltName=DNS:example.com,DNS:*.example.com,DNS:*.registrar.example.com" 2>/dev/null
+
+    run main --mode external --domain example.com --tls byo \
+        --cert "$TEST_TEMP_DIR/byo.pem" --key "$TEST_TEMP_DIR/byo.key" \
+        --web-reverse-proxy --yes
+
+    [[ "$status" -eq 0 ]]
+    assert_file_contains "$TEST_TEMP_DIR/.env" "WEB_REVERSE_PROXY=true"
+    assert_file_contains "$TEST_TEMP_DIR/.env" "COMPOSE_PROFILES=web-proxy"
+    # SQUARE_BIND_ADDR=127.0.0.1: admin/meet/talk's plaintext-HTTP ports must
+    # not also be published to 0.0.0.0 once Caddy is the intended sole path.
+    assert_file_contains "$TEST_TEMP_DIR/.env" "SQUARE_BIND_ADDR=127.0.0.1"
+    # API_URL/WEBSOCKET_URL must be port-less too, or the admin/meet/talk
+    # pages load port-less while every XHR/websocket they issue still hits
+    # :8443 — defeating the whole point of the flag (review round 1, HIGH-1).
+    assert_file_contains "$TEST_TEMP_DIR/.env" "API_URL=https://api.example.com/"
+    assert_file_contains "$TEST_TEMP_DIR/.env" "WEBSOCKET_URL=wss://api.example.com/v1.0/ws"
+    ! grep -q "API_URL=https://api.example.com:8443/" "$TEST_TEMP_DIR/.env"
+}
+
+@test "init.sh --web-reverse-proxy fails pre-flight when the cert is missing admin/meet/talk SANs" {
+    if [[ $EUID -eq 0 ]]; then
+        skip "test requires an unprivileged user"
+    fi
+    load_init_functions
+    mock_ip_route "192.168.1.100"
+    mock_command "docker" ""
+    # Only the base six names, not the web-reverse-proxy trio.
+    openssl req -x509 -nodes -newkey rsa:2048 \
+        -keyout "$TEST_TEMP_DIR/byo.key" -out "$TEST_TEMP_DIR/byo.pem" \
+        -days 90 -subj "/CN=example.com" \
+        -addext "subjectAltName=DNS:api.example.com,DNS:sip.example.com,DNS:sip-service.example.com,DNS:conference.example.com,DNS:trunk.example.com,DNS:registrar.example.com" 2>/dev/null
+
+    run main --mode external --domain example.com --tls byo \
+        --cert "$TEST_TEMP_DIR/byo.pem" --key "$TEST_TEMP_DIR/byo.key" \
+        --web-reverse-proxy --yes
+
+    [[ "$status" -eq 1 ]]
+    [[ ! -f "$TEST_TEMP_DIR/.env" ]]
+    [[ "$output" == *'certificate does not cover required web-reverse-proxy names'* ]]
+}
+
+@test "init.sh without --web-reverse-proxy does not write WEB_REVERSE_PROXY=true" {
+    if [[ $EUID -eq 0 ]]; then
+        skip "test requires an unprivileged user"
+    fi
+    load_init_functions
+    mock_ip_route "192.168.1.100"
+    mock_command "docker" ""
+    openssl req -x509 -nodes -newkey rsa:2048 \
+        -keyout "$TEST_TEMP_DIR/byo.key" -out "$TEST_TEMP_DIR/byo.pem" \
+        -days 90 -subj "/CN=example.com" \
+        -addext "subjectAltName=DNS:example.com,DNS:*.example.com,DNS:*.registrar.example.com" 2>/dev/null
+
+    run main --mode external --domain example.com --tls byo \
+        --cert "$TEST_TEMP_DIR/byo.pem" --key "$TEST_TEMP_DIR/byo.key" --yes
+
+    [[ "$status" -eq 0 ]]
+    assert_file_contains "$TEST_TEMP_DIR/.env" "WEB_REVERSE_PROXY=false"
+    assert_file_contains "$TEST_TEMP_DIR/.env" "COMPOSE_PROFILES="
+    assert_file_contains "$TEST_TEMP_DIR/.env" "SQUARE_BIND_ADDR=0.0.0.0"
+    ! grep -q "COMPOSE_PROFILES=web-proxy" "$TEST_TEMP_DIR/.env"
 }
 
 @test "init.sh byo summary reports operator-provided certs, no self-signed/rm -rf advice" {

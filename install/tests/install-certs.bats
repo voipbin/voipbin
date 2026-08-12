@@ -104,6 +104,56 @@ make_env_fixture() {
     [[ "$output" == *'outbound proxy sip.example.com are unaffected'* ]]
 }
 
+@test "--web-reverse-proxy passes a wildcard cert (admin/meet/talk already covered)" {
+    make_wildcard_cert
+
+    run bash "$SCRIPTS_DIR/install-certs.sh" --check-only --domain example.com --web-reverse-proxy \
+        "$FIXTURES/wildcard.pem" "$FIXTURES/wildcard.key"
+
+    [[ "$status" -eq 0 ]]
+    [[ "$output" == *'SAN covers web-reverse-proxy names (admin/meet/talk.example.com)'* ]]
+}
+
+@test "--web-reverse-proxy hard-fails a cert covering only the base six names" {
+    make_cert base_six "DNS:api.example.com,DNS:sip.example.com,DNS:sip-service.example.com,DNS:conference.example.com,DNS:trunk.example.com,DNS:registrar.example.com"
+
+    run bash "$SCRIPTS_DIR/install-certs.sh" --check-only --domain example.com --web-reverse-proxy \
+        "$FIXTURES/base_six.pem" "$FIXTURES/base_six.key"
+
+    [[ "$status" -eq 1 ]]
+    [[ "$output" == *'certificate does not cover required web-reverse-proxy names'* ]]
+    [[ "$output" == *'admin.example.com'* ]]
+    [[ "$output" == *'meet.example.com'* ]]
+    [[ "$output" == *'talk.example.com'* ]]
+}
+
+@test "without --web-reverse-proxy, admin/meet/talk coverage is never checked" {
+    # Same base-six-only cert as above, but the flag is omitted this time.
+    make_cert base_six_noflag "DNS:api.example.com,DNS:sip.example.com,DNS:sip-service.example.com,DNS:conference.example.com,DNS:trunk.example.com,DNS:registrar.example.com"
+
+    run bash "$SCRIPTS_DIR/install-certs.sh" --check-only --domain example.com \
+        "$FIXTURES/base_six_noflag.pem" "$FIXTURES/base_six_noflag.key"
+
+    [[ "$status" -eq 0 ]]
+    [[ "$output" != *'web-reverse-proxy names'* ]]
+}
+
+@test "--web-reverse-proxy is inferred from WEB_REVERSE_PROXY=true in .env when the flag is omitted" {
+    # Simulates a standalone re-run (e.g. certbot --deploy-hook renewal)
+    # against an existing install that has WEB_REVERSE_PROXY=true.
+    make_cert base_six_env "DNS:api.example.com,DNS:sip.example.com,DNS:sip-service.example.com,DNS:conference.example.com,DNS:trunk.example.com,DNS:registrar.example.com"
+    create_env_file \
+        "DOMAIN_MODE=external" \
+        "BASE_DOMAIN=example.com" \
+        "WEB_REVERSE_PROXY=true"
+
+    run bash "$SCRIPTS_DIR/install-certs.sh" --check-only \
+        "$FIXTURES/base_six_env.pem" "$FIXTURES/base_six_env.key"
+
+    [[ "$status" -eq 1 ]]
+    [[ "$output" == *'certificate does not cover required web-reverse-proxy names'* ]]
+}
+
 @test "mismatched private key hard-fails" {
     make_wildcard_cert
     make_cert other "DNS:example.com,DNS:*.example.com"
@@ -208,6 +258,29 @@ exit 0'
     [[ "$calls" == *'DOCKER:compose rm -sf api-manager hook-manager'* ]]
     [[ "$calls" == *'DOCKER:compose up -d api-manager hook-manager'* ]]
     [[ "$calls" == *'DOCKER:compose restart kamailio'* ]]
+    # web-proxy wasn't in the running-services list -> skipped with a note
+    [[ "$output" == *'web-proxy not running'* ]]
+}
+
+@test "recreate_services restarts web-proxy when it is running (VOIP-1325, review round 1 HIGH-2)" {
+    load_install_certs_functions
+    # Caddy loads file-mounted certs once at config-load time and does not
+    # watch them for changes -- a renewal must restart it explicitly or it
+    # silently keeps serving the old certificate on 443.
+    mock_command_script "docker" '
+echo "DOCKER:$*" >> "'"$TEST_TEMP_DIR"'/docker.log"
+if [[ "$1" == "compose" && "$2" == "ps" ]]; then
+    printf "api-manager\nkamailio\nweb-proxy\n"
+fi
+exit 0'
+
+    run recreate_services
+
+    [[ "$status" -eq 0 ]]
+    local calls
+    calls=$(cat "$TEST_TEMP_DIR/docker.log")
+    [[ "$calls" == *'DOCKER:compose restart web-proxy'* ]]
+    [[ "$output" == *'Restarting web-proxy'* ]]
 }
 
 @test "recreate_services ignores same-named containers from other compose projects" {

@@ -94,6 +94,10 @@ Options:
   --force-reinit              Rewrite .env/certs/Corefile for a new mode or
                               domain (never touches the database; prints the
                               live-state follow-up steps on completion)
+  --web-reverse-proxy         Enable the Caddy reverse proxy so api/admin/
+                              meet/talk are reachable without host port
+                              suffixes (external mode only, requires
+                              --tls byo; see README.md)
   -h, --help                  Show this help
 USAGE
 }
@@ -137,6 +141,7 @@ parse_args() {
     INIT_MODE_EXPLICIT="false"
     INIT_KAMAILIO_IP=""
     INIT_RTPENGINE_IP=""
+    INIT_WEB_REVERSE_PROXY="false"
 
     while [[ $# -gt 0 ]]; do
         case "$1" in
@@ -182,6 +187,10 @@ parse_args() {
                 ;;
             --force-reinit)
                 INIT_FORCE_REINIT="true"
+                shift
+                ;;
+            --web-reverse-proxy)
+                INIT_WEB_REVERSE_PROXY="true"
                 shift
                 ;;
             --help|-h)
@@ -232,6 +241,16 @@ parse_args() {
         die 1 "invalid domain: $INIT_DOMAIN (expected lowercase RFC-1123 labels, at least two labels, no scheme/port/trailing dot)"
     fi
 
+    # --web-reverse-proxy needs a real BYO certificate to terminate TLS for
+    # api/admin/meet/talk on the shared host IP (port 80/443, no per-service
+    # port suffix) - internal mode's mkcert/selfsigned certs only ever cover
+    # the individual :3003/:3004/:3005/:8443 access pattern this flag exists
+    # to replace, so requiring external+byo here avoids a confusing runtime
+    # failure instead of a clear one at parse time.
+    if [[ "$INIT_WEB_REVERSE_PROXY" == "true" && "$INIT_MODE" != "external" ]]; then
+        die 1 "--web-reverse-proxy requires --mode external --tls byo"
+    fi
+
     # --kamailio-ip/--rtpengine-ip: both-or-neither, since a single explicit
     # IP without its pair would leave the other auto-generated relative to
     # the *explicit* one's host+8 offset — almost never what's wanted once
@@ -250,6 +269,16 @@ parse_args() {
 
     INIT_COMPOSE_PROFILES="internal-dns"
     [[ "$INIT_MODE" == "external" ]] && INIT_COMPOSE_PROFILES=""
+    [[ "$INIT_WEB_REVERSE_PROXY" == "true" ]] && INIT_COMPOSE_PROFILES="web-proxy"
+
+    # SQUARE_BIND_ADDR (VOIP-1325): with the reverse proxy fronting
+    # admin/meet/talk on 443, publishing their plaintext-HTTP :3003-3005
+    # ports to 0.0.0.0 too would leave the exact cleartext-credential
+    # exposure the proxy exists to close. Bind those three to loopback
+    # only; Caddy's own published 0.0.0.0:80/443 (docker-compose.yml) is
+    # still the sole externally-reachable path to them.
+    INIT_SQUARE_BIND_ADDR="0.0.0.0"
+    [[ "$INIT_WEB_REVERSE_PROXY" == "true" ]] && INIT_SQUARE_BIND_ADDR="127.0.0.1"
 
     return 0
 }
@@ -307,6 +336,25 @@ print_force_reinit_followup() {
     echo ""
 }
 
+# check_web_reverse_proxy_restated <existing_web_reverse_proxy> <remedy>
+# Footgun guard, same class/fail-closed case-insensitivity as the
+# EXTERNAL_IP_PINNED guard in check_existing_env_compat: rewriting .env
+# without restating --web-reverse-proxy would silently drop
+# WEB_REVERSE_PROXY to false and COMPOSE_PROFILES to empty, dropping the
+# Caddy container on the next start.sh — every customer-facing port-less
+# URL goes dark with no error at any step. Called only from the points that
+# are actually about to rewrite .env (not merely refuse or prompt), so a
+# no-op "keep existing" or a mode/domain-switch refusal is never masked by
+# this message instead of its own more specific one.
+check_web_reverse_proxy_restated() {
+    local existing_web_reverse_proxy="$1"
+    local remedy="$2"
+
+    if [[ "${existing_web_reverse_proxy,,}" == "true" && "$INIT_WEB_REVERSE_PROXY" != "true" ]]; then
+        die 1 "existing install has WEB_REVERSE_PROXY=true; $remedy, or it will be silently disabled (COMPOSE_PROFILES loses web-proxy and the Caddy container stops on the next start.sh)"
+    fi
+}
+
 # Compare the requested (mode, domain) against an existing .env. Same
 # mode+domain keeps today's overwrite-prompt semantics (--yes auto-confirms);
 # a switch is refused (SIP realms embed the domain in the database, §2.7)
@@ -314,10 +362,11 @@ print_force_reinit_followup() {
 check_existing_env_compat() {
     [[ -f "$ENV_FILE" ]] || return 0
 
-    local existing_mode existing_domain
+    local existing_mode existing_domain existing_web_reverse_proxy
     existing_mode=$(get_domain_mode "$ENV_FILE")
     existing_domain=$(get_env_var "$ENV_FILE" BASE_DOMAIN)
     [[ -z "$existing_domain" ]] && existing_domain="voipbin.test"
+    existing_web_reverse_proxy="$(get_env_var "$ENV_FILE" WEB_REVERSE_PROXY)"
 
     if [[ "$INIT_FORCE_REINIT" == "true" ]]; then
         # Footgun guard: without an explicit --mode, the internal/voipbin.test
@@ -355,6 +404,9 @@ check_existing_env_compat() {
             die 1 "existing install has pinned external IPs (EXTERNAL_IP_PINNED=true); --force-reinit requires re-passing --kamailio-ip/--rtpengine-ip explicitly, or the auto-generated host+8 offset will silently replace them with an address you don't own"
         fi
 
+        check_web_reverse_proxy_restated "$existing_web_reverse_proxy" \
+            "--force-reinit requires re-passing --web-reverse-proxy explicitly"
+
         log_warn "--force-reinit: rewriting .env/certs/Corefile for mode=$INIT_MODE domain=$TARGET_DOMAIN"
         return 0
     fi
@@ -362,6 +414,8 @@ check_existing_env_compat() {
     if [[ "$existing_mode" == "$INIT_MODE" && "$existing_domain" == "$TARGET_DOMAIN" ]]; then
         log_warn ".env file already exists at $ENV_FILE"
         if [[ "$INIT_YES" == "true" ]]; then
+            check_web_reverse_proxy_restated "$existing_web_reverse_proxy" \
+                "re-run with --web-reverse-proxy explicitly"
             log_info "Overwriting existing .env (--yes)"
             return 0
         fi
@@ -373,6 +427,10 @@ check_existing_env_compat() {
             emit_result ok "mode=$existing_mode domain=$existing_domain action=kept-existing"
             exit 0
         fi
+        # Interactive confirm (y): same guard, now that the operator has
+        # actually agreed to the overwrite.
+        check_web_reverse_proxy_restated "$existing_web_reverse_proxy" \
+            "re-run with --web-reverse-proxy explicitly"
         return 0
     fi
 
@@ -583,7 +641,9 @@ main() {
             # no half-written .env. Full install runs after .env exists.
             if [[ "$INIT_MODE" == "external" ]]; then
                 log_info "  Pre-flight certificate validation..."
-                if ! "$SCRIPT_DIR/install-certs.sh" --check-only --domain "$INIT_DOMAIN" "$INIT_CERT_FILE" "$INIT_KEY_FILE"; then
+                local preflight_certs_args=(--check-only --domain "$INIT_DOMAIN")
+                [[ "$INIT_WEB_REVERSE_PROXY" == "true" ]] && preflight_certs_args+=(--web-reverse-proxy)
+                if ! "$SCRIPT_DIR/install-certs.sh" "${preflight_certs_args[@]}" "$INIT_CERT_FILE" "$INIT_KEY_FILE"; then
                     die 1 "certificate pre-flight failed for $INIT_CERT_FILE (see install-certs.sh output above)"
                 fi
             fi
@@ -761,7 +821,7 @@ GCPEOF
     # Single source of truth for the 11 domain-dependent values (§2.1):
     # for voipbin.test the derived values are byte-identical to the historic
     # literals, which is how internal mode stays unchanged.
-    derive_domain_env "$TARGET_DOMAIN"
+    derive_domain_env "$TARGET_DOMAIN" "$INIT_WEB_REVERSE_PROXY"
 
     cat > "$ENV_FILE" << EOF
 # ==============================================================================
@@ -801,10 +861,18 @@ HOOK_SSL_PRIVKEY_BASE64=$API_SSL_PRIVKEY_BASE64
 # ==============================================================================
 # DOMAIN_MODE: internal (CoreDNS serves *.voipbin.test) | external (operator DNS)
 DOMAIN_MODE=$INIT_MODE
-# COMPOSE_PROFILES: internal-dns enables the coredns service; empty in external mode
+# COMPOSE_PROFILES: internal-dns enables the coredns service; web-proxy
+# enables the Caddy reverse proxy (VOIP-1325); empty in plain external mode
 COMPOSE_PROFILES=$INIT_COMPOSE_PROFILES
 # TLS_MODE: mkcert | selfsigned | byo
 TLS_MODE=$INIT_TLS_MODE
+# WEB_REVERSE_PROXY: true enables the Caddy reverse proxy so api/admin/meet/talk
+# are reachable without host port suffixes (external mode only, VOIP-1325)
+WEB_REVERSE_PROXY=$INIT_WEB_REVERSE_PROXY
+# SQUARE_BIND_ADDR: host bind address for admin/meet/talk's published ports.
+# 127.0.0.1 when WEB_REVERSE_PROXY=true (Caddy is the only external path to
+# these plaintext-HTTP ports); 0.0.0.0 otherwise. See docker-compose.yml.
+SQUARE_BIND_ADDR=$INIT_SQUARE_BIND_ADDR
 
 # ==============================================================================
 # SIP/VoIP Network Configuration
@@ -935,7 +1003,9 @@ EOF
     # that .env exists — layout under certs/ plus the .env base64 rewrite.
     if [[ "$INIT_MODE" == "external" ]]; then
         log_step "Installing BYO certificates..."
-        if ! "$SCRIPT_DIR/install-certs.sh" --domain "$INIT_DOMAIN" "$INIT_CERT_FILE" "$INIT_KEY_FILE"; then
+        local install_certs_args=(--domain "$INIT_DOMAIN")
+        [[ "$INIT_WEB_REVERSE_PROXY" == "true" ]] && install_certs_args+=(--web-reverse-proxy)
+        if ! "$SCRIPT_DIR/install-certs.sh" "${install_certs_args[@]}" "$INIT_CERT_FILE" "$INIT_KEY_FILE"; then
             die 1 "certificate installation failed for $INIT_CERT_FILE (see install-certs.sh output above)"
         fi
         echo ""
@@ -977,11 +1047,23 @@ EOF
     # Summary URLs/domains derive from the selected base domain (same approach
     # as start.sh's summary) — internal mode stays voipbin.test byte-for-byte,
     # external mode shows the operator's real domain.
-    log_info "Web Services (Docker port mapping):"
-    log_info "  http://admin.${TARGET_DOMAIN}:3003"
-    log_info "  http://meet.${TARGET_DOMAIN}:3004"
-    log_info "  http://talk.${TARGET_DOMAIN}:3005"
-    log_info "  https://api.${TARGET_DOMAIN}:8443"
+    if [[ "$INIT_WEB_REVERSE_PROXY" == "true" ]]; then
+        # VOIP-1325: with the Caddy proxy, :3003-3005 are bound to
+        # 127.0.0.1 (SQUARE_BIND_ADDR) and unreachable from anywhere but
+        # this host — printing them here would send the operator to a URL
+        # that doesn't work for anyone but themselves logged into the box.
+        log_info "Web Services (via Caddy reverse proxy, no port suffix):"
+        log_info "  https://admin.${TARGET_DOMAIN}"
+        log_info "  https://meet.${TARGET_DOMAIN}"
+        log_info "  https://talk.${TARGET_DOMAIN}"
+        log_info "  https://api.${TARGET_DOMAIN}"
+    else
+        log_info "Web Services (Docker port mapping):"
+        log_info "  http://admin.${TARGET_DOMAIN}:3003"
+        log_info "  http://meet.${TARGET_DOMAIN}:3004"
+        log_info "  http://talk.${TARGET_DOMAIN}:3005"
+        log_info "  https://api.${TARGET_DOMAIN}:8443"
+    fi
     echo ""
     log_info "SIP Services:"
     log_info "  sip.${TARGET_DOMAIN}    → $KAMAILIO_EXTERNAL_IP"

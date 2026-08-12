@@ -382,6 +382,88 @@ exit 1'
 }
 
 # =============================================================================
+# Web reverse proxy liveness (VOIP-1325, review round 3 MEDIUM)
+# =============================================================================
+# check_tls/check_api_ping hit api-manager directly on :8443, bypassing
+# Caddy entirely — a Caddy that is up but misconfigured (round 2 review
+# HIGH-A: every proxied request 502s) would pass both while the actual
+# port-less customer path is completely broken. check_web_proxy closes that
+# gap by probing the port-less URL that only Caddy answers.
+
+@test "web-proxy skips when WEB_REVERSE_PROXY is not enabled" {
+    load_check_install_functions
+    create_env_file "DOMAIN_MODE=external" "BASE_DOMAIN=example.com"
+    load_check_env
+
+    run check_web_proxy
+
+    [[ "$output" == *'CHECK web-proxy: skip'* ]]
+}
+
+@test "web-proxy skips when WEB_REVERSE_PROXY=false explicitly" {
+    load_check_install_functions
+    create_env_file "DOMAIN_MODE=external" "BASE_DOMAIN=example.com" "WEB_REVERSE_PROXY=false"
+    load_check_env
+
+    run check_web_proxy
+
+    [[ "$output" == *'CHECK web-proxy: skip'* ]]
+}
+
+@test "web-proxy passes when the port-less URL returns 200 through Caddy" {
+    load_check_install_functions
+    create_env_file "DOMAIN_MODE=external" "BASE_DOMAIN=example.com" "WEB_REVERSE_PROXY=true"
+    load_check_env
+    mock_command_script "curl" '
+echo "CURL:$*" >> "'"$TEST_TEMP_DIR"'/curl.log"
+echo -n "200"
+exit 0'
+
+    run check_web_proxy
+
+    [[ "$output" == *'CHECK web-proxy: pass'* ]]
+    [[ "$output" == *'https://api.example.com/ping -> 200'* ]]
+    # Must probe the port-LESS URL, not :8443 (that would defeat the point
+    # of this check — it exists specifically to bypass the same bug that
+    # check_tls/check_api_ping's :8443 probes cannot catch).
+    local calls
+    calls=$(cat "$TEST_TEMP_DIR/curl.log")
+    [[ "$calls" == *'https://api.example.com/ping'* ]]
+    [[ "$calls" != *':8443'* ]]
+    # No -k: the chain must validate for real, same as check_tls's
+    # external-mode branch — this is the actual path a customer's browser
+    # takes, TLS trust included.
+    [[ "$calls" != *'-k '* && "$calls" != *' -k'* ]]
+}
+
+@test "web-proxy fails when the port-less URL is unreachable (e.g. Caddy 502s every request)" {
+    load_check_install_functions
+    create_env_file "DOMAIN_MODE=external" "BASE_DOMAIN=example.com" "WEB_REVERSE_PROXY=true"
+    load_check_env
+    mock_command_script "curl" '
+echo -n "502"
+exit 0'
+
+    run check_web_proxy
+
+    [[ "$output" == *'CHECK web-proxy: fail'* ]]
+    [[ "$output" == *'https://api.example.com/ping -> 502'* ]]
+    [[ "$output" == *'docker compose logs web-proxy'* ]]
+}
+
+@test "web-proxy fails with 'no response' detail on a connection failure (curl exits non-zero)" {
+    load_check_install_functions
+    create_env_file "DOMAIN_MODE=external" "BASE_DOMAIN=example.com" "WEB_REVERSE_PROXY=true"
+    load_check_env
+    mock_command_script "curl" 'exit 7'
+
+    run check_web_proxy
+
+    [[ "$output" == *'CHECK web-proxy: fail'* ]]
+    [[ "$output" == *'no response'* ]]
+}
+
+# =============================================================================
 # Scheduler present and firing (VOIP-1281)
 # =============================================================================
 

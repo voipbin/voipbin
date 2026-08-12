@@ -394,6 +394,17 @@ check_host_prereqs() {
         return 1
     fi
 
+    # VOIP-1325: setup-host.sh's step_setup_web_proxy is the only thing that
+    # writes config/caddy/Caddyfile. Without this check, a skipped/aborted
+    # setup-host.sh run surfaces as `docker compose up` mounting a
+    # nonexistent path as an empty directory and Caddy failing to start with
+    # an opaque error, instead of the usual clear "run setup-host.sh" gate.
+    if [ "$(get_env_var "$PROJECT_DIR/.env" WEB_REVERSE_PROXY)" = "true" ] \
+        && [ ! -f "$PROJECT_DIR/config/caddy/Caddyfile" ]; then
+        HOST_PREREQS_MISSING="WEB_REVERSE_PROXY=true but config/caddy/Caddyfile is missing"
+        return 1
+    fi
+
     return 0
 }
 
@@ -954,15 +965,28 @@ main() {
     echo "-----------------------------------------------"
     echo "  Web Consoles"
     echo "-----------------------------------------------"
-    echo "  Admin UI:      http://admin.${base_domain}:3003"
-    echo "  Meet:          http://meet.${base_domain}:3004"
-    echo "  Talk:          http://talk.${base_domain}:3005"
-    echo "  API Manager:   https://api.${base_domain}:8443"
+    if [ "${WEB_REVERSE_PROXY:-false}" = "true" ]; then
+        # VOIP-1325: with the Caddy proxy, :3003-3005 are bound to
+        # 127.0.0.1 (SQUARE_BIND_ADDR) — the port-suffixed URLs below only
+        # work from this host itself, not for the customers this flag exists
+        # to serve.
+        echo "  Admin UI:      https://admin.${base_domain}"
+        echo "  Meet:          https://meet.${base_domain}"
+        echo "  Talk:          https://talk.${base_domain}"
+        echo "  API Manager:   https://api.${base_domain}"
+    else
+        echo "  Admin UI:      http://admin.${base_domain}:3003"
+        echo "  Meet:          http://meet.${base_domain}:3004"
+        echo "  Talk:          http://talk.${base_domain}:3005"
+        echo "  API Manager:   https://api.${base_domain}:8443"
+    fi
     echo "  RabbitMQ:      http://localhost:15672 (${RABBITMQ_DEFAULT_USER:-guest} / ${RABBITMQ_DEFAULT_PASS:-guest})"
     echo ""
-    echo "  NOTE: If you see ERR_CERT_AUTHORITY_INVALID, visit"
-    echo "        https://api.${base_domain}:8443 first and accept the certificate."
-    echo ""
+    if [ "${WEB_REVERSE_PROXY:-false}" != "true" ]; then
+        echo "  NOTE: If you see ERR_CERT_AUTHORITY_INVALID, visit"
+        echo "        https://api.${base_domain}:8443 first and accept the certificate."
+        echo ""
+    fi
     if dev_seed_enabled; then
         echo "-----------------------------------------------"
         echo "  Default Admin Account (created on first run)"
