@@ -108,6 +108,20 @@ print(d['images']['voipbin/bin-call-manager'])
     [[ "$output" == "sha256:1111111111111111111111111111111111111111111111111111111111aa" ]]
 }
 
+@test "bump-image-digest.sh rejects an untracked image BEFORE attempting registry resolution" {
+    # Uses a real tag:ref form (not a bare sha256:) precisely so a bug that
+    # checks tracking AFTER resolution would try to hit the network here
+    # (no docker/registry access in this test sandbox - it would hang or
+    # fail with a network/auth error, not the clean "no established entry"
+    # message this asserts).
+    run bash "$PROJECT_DIR/scripts/bump-image-digest.sh" \
+        "voipbin/bin-does-not-exist" "voipbin/bin-does-not-exist:deadbeef" "ffffffffffffffffffffffffffffffffffffffff"
+
+    [[ "$status" -ne 0 ]]
+    [[ "$output" == *"no established entry"* ]]
+    [[ "$output" != *"Resolving digest"* ]]
+}
+
 @test "bump-image-digest.sh refuses a source-commit that isn't a full 40-char SHA" {
     run bash "$PROJECT_DIR/scripts/bump-image-digest.sh" \
         "voipbin/bin-agent-manager" "sha256:$(printf 'a%.0s' {1..64})" "not-a-sha"

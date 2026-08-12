@@ -942,7 +942,7 @@ else:
     if not digest and data:
         digest = data[0].get("Descriptor", {}).get("digest", "")
 
-if not digest:
+if not digest.startswith("sha256:"):
     sys.exit(1)
 print(digest)
 '
