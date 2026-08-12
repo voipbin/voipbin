@@ -906,3 +906,44 @@ voip_internal_interfaces_ok() {
     done
     return 0
 }
+
+# Resolves a docker image ref (name:tag or name@digest) to its registry
+# manifest digest ("sha256:<64hex>"), preferring linux/amd64 for a
+# multi-platform manifest list. Extracted from generate-versions-lock.sh's
+# original resolve_digest() (unchanged there - this is a new shared copy,
+# not a refactor of that already-reviewed script) so other scripts (e.g.
+# bump-image-digest.sh, used by CI to resolve the digest of an image it just
+# pushed) don't duplicate the manifest-parsing logic. Returns non-zero and
+# prints nothing on any failure (unreachable registry, unknown ref, no
+# linux/amd64 platform in a multi-arch list).
+resolve_image_digest() {
+    local ref="$1"
+
+    docker manifest inspect -v "$ref" 2>/dev/null | python3 -c '
+import json, sys
+
+try:
+    data = json.load(sys.stdin)
+except Exception:
+    sys.exit(1)
+
+# Single-platform image: a dict with Descriptor. Multi-platform manifest list:
+# a list of per-platform entries. Prefer linux/amd64 for the latter.
+if isinstance(data, dict):
+    digest = data.get("Descriptor", {}).get("digest", "")
+else:
+    digest = ""
+    for entry in data:
+        desc = entry.get("Descriptor", {})
+        platform = desc.get("platform", {})
+        if platform.get("os") == "linux" and platform.get("architecture") == "amd64":
+            digest = desc.get("digest", "")
+            break
+    if not digest and data:
+        digest = data[0].get("Descriptor", {}).get("digest", "")
+
+if not digest.startswith("sha256:"):
+    sys.exit(1)
+print(digest)
+'
+}
