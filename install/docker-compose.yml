@@ -229,7 +229,7 @@ services:
   # RTPEngine - Media proxy for RTP/SRTP handling
   # Uses host network for optimal media performance
   rtpengine:
-    image: voipbin/voip-rtpengine@sha256:795adc2c6232af184267e6d4fc21ce87c32c285333a27273885ebe4a32c508de
+    image: voipbin/voip-rtpengine@sha256:8b0635b08c4d62651a648a22a1d85b9a44b029599478cb88814eb8ed1005430d
     logging: *default-logging
     restart: unless-stopped
     network_mode: host
@@ -240,6 +240,7 @@ services:
       # Internal: RTPEngine's own IP on internal network (setup via scripts/setup-voip-network.sh)
       - RTPENGINE_INTERFACE=pub/${RTPENGINE_EXTERNAL_IP:-127.0.0.1};priv/10.100.0.201
       - RTPENGINE_LISTEN_HTTP=${RTPENGINE_LISTEN_HTTP:-9101}
+      - RTPENGINE_LISTEN_NG=${RTPENGINE_LISTEN_NG:-22222}
       - RTPENGINE_LISTEN_CLI=127.0.0.1:2220
       - RTPENGINE_PORT_MIN=${RTPENGINE_PORT_MIN:-20000}
       - RTPENGINE_PORT_MAX=${RTPENGINE_PORT_MAX:-30000}
@@ -269,7 +270,7 @@ services:
   # Kamailio SIP proxy - uses host network for SIP/RTP
   # Config is generated at startup via environment variables
   kamailio:
-    image: voipbin/voip-kamailio@sha256:68657d319fa71169e0709f9712467a6916f76c02be7f5c10028737fc78fcee93
+    image: voipbin/voip-kamailio@sha256:2c6f42f6a9ad5def7dddaab0494ee3e87289a122b8b3d72c534e381d87e8c1ef
     container_name: voipbin-kamailio
     restart: unless-stopped
     network_mode: host
@@ -301,8 +302,12 @@ services:
       - ASTERISK_CALL_LB_ADDR=10.100.0.210:5060
       - ASTERISK_REGISTRAR_LB_ADDR=10.100.0.211:5060
       - ASTERISK_LISTEN_PORT=5060
-      # RTPEngine WebSocket endpoint (on host network)
-      - RTPENGINE_SOCKS=ws://127.0.0.1:9101/ng
+      # RTPEngine ng control endpoint (on host network).
+      # NOTE: as of the voip-kamailio image built from monorepo-voip commit
+      # 3e395a56 (NOJIRA-switch-kamailio-rtpengine-to-udp), the lwsc module
+      # and wsapi=lwsc config were removed, so this MUST be a udp:// socket
+      # matching rtpengine's RTPENGINE_LISTEN_NG port above, not ws://.
+      - RTPENGINE_SOCKS=udp:127.0.0.1:22222
       # Monitoring
       - HOMER_URI=${HOMER_URI:-sip:127.0.0.1:9060}
       # Redis for cache (exposed on host port 6379). See KAMAILIO_DB_HOST note above.
@@ -330,7 +335,7 @@ services:
 
   # Asterisk Call Server - handles call routing and media
   asterisk-call:
-    image: voipbin/voip-asterisk-call@sha256:b32ac7a4f52381b13906d3e60f1acd32b52ef709bcb701452418b9f68d52c8f1
+    image: voipbin/voip-asterisk-call@sha256:ac6d57398fdbf1b9243b4def8ea22952ed55445f91365aee0d9cf985b94b6232
     logging: *default-logging
     container_name: voipbin-ast-call
     restart: unless-stopped
@@ -411,7 +416,7 @@ services:
 
   # Asterisk Conference Server - handles conference/confbridge calls
   asterisk-conference:
-    image: voipbin/voip-asterisk-conference@sha256:9373e55da26ae4da02250543e94a5d1918e3cc7bda197c98ed712c21919a6780
+    image: voipbin/voip-asterisk-conference@sha256:250881ae43e93238a4c66774bf7cbc7daea364c7d7ab5899c31a128fa344cc0e
     logging: *default-logging
     restart: unless-stopped
     hostname: voipbin-ast-conf
@@ -479,7 +484,7 @@ services:
 
   # Asterisk Registrar Server - handles SIP registration for extensions
   asterisk-registrar:
-    image: voipbin/voip-asterisk-registrar@sha256:8e008c0704c9eee46e2675e69cbc9766fd1f5bdaebd58ecd029a2a135ea42466
+    image: voipbin/voip-asterisk-registrar@sha256:8ca9db325b34bc03b5365f9a2492f7163ca2383802856b4af1f0fc5b7f7b6d71
     logging: *default-logging
     container_name: voipbin-ast-registrar
     restart: unless-stopped
@@ -1533,7 +1538,7 @@ services:
   # To avoid this, install mkcert: mkcert -install && rm -rf certs/ && ./scripts/init.sh
 
   square-admin:
-    image: voipbin/square-admin@sha256:7d669682dee77925f765d4171332b58a5d1ce8d8c3633b46069556222f1f4eed
+    image: voipbin/square-admin@sha256:67b3d0378f74c545160e7908a1a1f1980c92b953ee542dd3a0e2fc23ede63fb5
     logging: *default-logging
     healthcheck:
       test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://127.0.0.1:80/"]
@@ -1562,7 +1567,7 @@ services:
       - REACT_APP_REGISTRAR_DOMAIN=${REGISTRAR_DOMAIN:-registrar.voipbin.test}
 
   square-meet:
-    image: voipbin/square-meet@sha256:56ccd44d7cabc0c02724d17b39c2bc2c9e8e5fd1dd94365076ee8247821d6c8c
+    image: voipbin/square-meet@sha256:395a410f8d889f0200b0198752489cde565598dcb28fdddad6ec18642db23309
     logging: *default-logging
     healthcheck:
       test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://127.0.0.1:80/"]
@@ -1586,7 +1591,7 @@ services:
       - REACT_APP_CONFERENCE_DOMAIN=${CONFERENCE_DOMAIN:-conference.voipbin.test}
 
   square-talk:
-    image: voipbin/square-talk@sha256:e3f7f6be89a02576b50093ce7ca1c8d0730626bae717e0c943af82794991a252
+    image: voipbin/square-talk@sha256:36d28fbf1e0fff176ed122d2fd0632294a74766c4c1c1b7d3f5cab8be16c6eed
     logging: *default-logging
     healthcheck:
       test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://127.0.0.1:80/"]
