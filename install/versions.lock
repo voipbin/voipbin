@@ -4,8 +4,8 @@
   "target_commit": "9010e457e7082b0f028a4e96f3b467dc0c34d5fb",
   "target_commit_desc": "VOIP-1305-Fix-confbridge-recording-ids-uuid-encoding (2026-08-10)",
   "dbscheme_monorepo_commit": "9010e457e7082b0f028a4e96f3b467dc0c34d5fb",
-  "generated": "2026-08-12T12:45:52.848534Z",
-  "generated_by": "scripts/generate-versions-lock.sh",
+  "generated": "2026-08-12T13:15:00.000000Z",
+  "generated_by": "scripts/generate-versions-lock.sh (bin-* images) + manual docker pull :latest (separate-repo images below)",
   "images": {
     "voipbin/bin-agent-manager": "sha256:c3ef215c7142b86db817b0ce1ebf2da627c16105cc78b36e2b70ea8edb7f424f",
     "voipbin/bin-ai-manager": "sha256:fec988a16eed8a4cd164dab9e554ebd02290ce3d8277785eef89253514d1945f",
@@ -40,15 +40,15 @@
     "voipbin/bin-tts-manager": "sha256:f6ac3fed699b89ee9d60e00665ba873879d7fef474b29c1b648faea5dd8942fd",
     "voipbin/bin-webchat-manager": "sha256:dccaeb9c424a285c83e438f10c73d6d7be9e807e779cf66f3689ef518fb8dbbe",
     "voipbin/bin-webhook-manager": "sha256:d0a33e192799da3d3a9a2644deaba07c55c7f3c55fd559fd40d0eb93588134f4",
-    "voipbin/square-admin": "sha256:7d669682dee77925f765d4171332b58a5d1ce8d8c3633b46069556222f1f4eed",
-    "voipbin/square-meet": "sha256:56ccd44d7cabc0c02724d17b39c2bc2c9e8e5fd1dd94365076ee8247821d6c8c",
-    "voipbin/square-talk": "sha256:e3f7f6be89a02576b50093ce7ca1c8d0730626bae717e0c943af82794991a252",
-    "voipbin/voip-asterisk-call": "sha256:b32ac7a4f52381b13906d3e60f1acd32b52ef709bcb701452418b9f68d52c8f1",
-    "voipbin/voip-asterisk-conference": "sha256:9373e55da26ae4da02250543e94a5d1918e3cc7bda197c98ed712c21919a6780",
+    "voipbin/square-admin": "sha256:67b3d0378f74c545160e7908a1a1f1980c92b953ee542dd3a0e2fc23ede63fb5",
+    "voipbin/square-meet": "sha256:395a410f8d889f0200b0198752489cde565598dcb28fdddad6ec18642db23309",
+    "voipbin/square-talk": "sha256:36d28fbf1e0fff176ed122d2fd0632294a74766c4c1c1b7d3f5cab8be16c6eed",
+    "voipbin/voip-asterisk-call": "sha256:ac6d57398fdbf1b9243b4def8ea22952ed55445f91365aee0d9cf985b94b6232",
+    "voipbin/voip-asterisk-conference": "sha256:250881ae43e93238a4c66774bf7cbc7daea364c7d7ab5899c31a128fa344cc0e",
     "voipbin/voip-asterisk-proxy": "sha256:1f30231fb4bc52a475f74d6996b7e03d03d9e44ec87f36ebbf05d88079436cf5",
-    "voipbin/voip-asterisk-registrar": "sha256:8e008c0704c9eee46e2675e69cbc9766fd1f5bdaebd58ecd029a2a135ea42466",
-    "voipbin/voip-kamailio": "sha256:68657d319fa71169e0709f9712467a6916f76c02be7f5c10028737fc78fcee93",
-    "voipbin/voip-rtpengine": "sha256:795adc2c6232af184267e6d4fc21ce87c32c285333a27273885ebe4a32c508de"
+    "voipbin/voip-asterisk-registrar": "sha256:8ca9db325b34bc03b5365f9a2492f7163ca2383802856b4af1f0fc5b7f7b6d71",
+    "voipbin/voip-kamailio": "sha256:2c6f42f6a9ad5def7dddaab0494ee3e87289a122b8b3d72c534e381d87e8c1ef",
+    "voipbin/voip-rtpengine": "sha256:8b0635b08c4d62651a648a22a1d85b9a44b029599478cb88814eb8ed1005430d"
   },
   "image_source_tags": {
     "voipbin/bin-agent-manager": "ef3f540ddc2f15426dec439c7cf3371a819ecca6",
@@ -84,18 +84,18 @@
     "voipbin/bin-tts-manager": "d831bb76c3c8a8c56281f420d8aecbd3107f645f",
     "voipbin/bin-webchat-manager": "d831bb76c3c8a8c56281f420d8aecbd3107f645f",
     "voipbin/bin-webhook-manager": "98f24eca469948cb040484bebaf3d5b286cf0bee",
-    "voipbin/square-admin": "fc883fd9d4dd033997ff6217fd72624ee734e5c2",
-    "voipbin/square-meet": "8f15d5b48f47aa3f3e491a6ee044e0543c1874d0",
-    "voipbin/square-talk": "2825980a9efe9d5598dcfd434c29ed2f0f8a3e20",
-    "voipbin/voip-asterisk-call": "3f3e54bf6b6a99ff7a8f1e6beb8992cf7560a548",
-    "voipbin/voip-asterisk-conference": "3f3e54bf6b6a99ff7a8f1e6beb8992cf7560a548",
+    "voipbin/square-admin": "880ee9ac3127a8b4ea8eb46c4c2f77650e5291d2",
+    "voipbin/square-meet": "095721d3e41cb619dff784fc1bc338adbadccee8",
+    "voipbin/square-talk": "0ea8cb7f1308c0347ff9f130a77fc71705f55330",
+    "voipbin/voip-asterisk-call": "f8c319b28cd82e3733f40626c1794929bb24510b",
+    "voipbin/voip-asterisk-conference": "f8c319b28cd82e3733f40626c1794929bb24510b",
     "voipbin/voip-asterisk-proxy": "8e6b520ad33a5b9e11f83c72d9725b93aba8a303",
-    "voipbin/voip-asterisk-registrar": "3f3e54bf6b6a99ff7a8f1e6beb8992cf7560a548",
-    "voipbin/voip-kamailio": "8119b7a99acda936fe515ac8e729fa35f343abce",
-    "voipbin/voip-rtpengine": "f585f6a3639fcd47a32c81c6bb891764c978ab74"
+    "voipbin/voip-asterisk-registrar": "f8c319b28cd82e3733f40626c1794929bb24510b",
+    "voipbin/voip-kamailio": "3e395a56d4be1f62e10dbe774a7310e84cf2a778",
+    "voipbin/voip-rtpengine": "0467cf178933a0f9179e4fd5761bc2f6ffd296a9"
   },
   "note_separate_repos": [
     "square-*",
-    "voip-* (asterisk/kamailio/rtpengine) are built from separate repos; pinned by timestamp proximity to 2026-02-20, not monorepo ancestry"
+    "voip-* (asterisk/kamailio/rtpengine) are built from separate repos; not resolved by generate-versions-lock.sh's monorepo ancestry walk. Updated 2026-08-12 by pulling each repo's :latest tag directly from Docker Hub and recording the resulting manifest digest (image_source_tags below are the corresponding monorepo-voip/monorepo-javascript HEAD commits for those directories at pull time, best-effort — the separate build pipelines are GitLab CI, not the GitHub monorepo, so exact commit-to-digest provenance is not guaranteed the way it is for generate-versions-lock.sh's bin-* resolution)"
   ]
 }
