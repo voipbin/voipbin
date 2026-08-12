@@ -461,6 +461,67 @@ def test_upgrade_pinned_rollback_guidance_uses_scoped_checkout(cli_module, tmp_d
     print("ok test_upgrade_pinned_rollback_guidance_uses_scoped_checkout")
 
 
+def test_upgrade_pinned_migration_failure_guidance_uses_scoped_checkout(cli_module, tmp_dir, log_path):
+    """VOIP-1333, third call site: Step 4's migration-failure recovery
+    procedure had the same unscoped 'git checkout <previous commit>'."""
+    cli, project_dir = make_cli(tmp_dir, INTERNAL_ENV, cli_module)
+    stub_bin = os.path.join(tmp_dir, "stub_bin")
+    with open(os.path.join(stub_bin, "docker"), "w") as f:
+        f.write("#!/bin/bash\nexit 0\n")  # compose pull succeeds
+
+    scripts_dir = os.path.join(project_dir, "scripts")
+    os.makedirs(scripts_dir, exist_ok=True)
+    sync_stub = os.path.join(scripts_dir, "sync-compose-images.sh")
+    with open(sync_stub, "w") as f:
+        f.write("#!/bin/bash\nexit 0\n")
+    os.chmod(sync_stub, os.stat(sync_stub).st_mode | stat.S_IEXEC | stat.S_IXGRP | stat.S_IXOTH)
+    migrate_stub = os.path.join(scripts_dir, "migrate.sh")
+    with open(migrate_stub, "w") as f:
+        f.write("#!/bin/bash\nexit 1\n")  # migration fails
+    os.chmod(migrate_stub, os.stat(migrate_stub).st_mode | stat.S_IEXEC | stat.S_IXGRP | stat.S_IXOTH)
+
+    out = capture(cli._upgrade_pinned, project_dir, False, False, "pull", None)
+
+    assert "migration failed" in out, out
+    assert "git checkout <previous commit>   (reverts" not in out, out
+    assert "git checkout <previous commit> -- docker-compose.yml.dist versions.lock scripts/" in out, out
+    assert "pathspec-scoped" in out, out
+    print("ok test_upgrade_pinned_migration_failure_guidance_uses_scoped_checkout")
+
+
+def test_upgrade_pinned_compose_up_failure_guidance_uses_scoped_checkout(cli_module, tmp_dir, log_path):
+    """VOIP-1333, fourth call site: Step 5's 'docker compose up -d failed'
+    recovery line had the same unscoped 'git checkout the previous
+    commit'."""
+    cli, project_dir = make_cli(tmp_dir, INTERNAL_ENV, cli_module)
+    stub_bin = os.path.join(tmp_dir, "stub_bin")
+    with open(os.path.join(stub_bin, "docker"), "w") as f:
+        f.write(
+            "#!/bin/bash\n"
+            'if [[ "$1" == "compose" && "$2" == "up" ]]; then exit 1; fi\n'
+            "exit 0\n"
+        )
+
+    scripts_dir = os.path.join(project_dir, "scripts")
+    os.makedirs(scripts_dir, exist_ok=True)
+    sync_stub = os.path.join(scripts_dir, "sync-compose-images.sh")
+    with open(sync_stub, "w") as f:
+        f.write("#!/bin/bash\nexit 0\n")
+    os.chmod(sync_stub, os.stat(sync_stub).st_mode | stat.S_IEXEC | stat.S_IXGRP | stat.S_IXOTH)
+    migrate_stub = os.path.join(scripts_dir, "migrate.sh")
+    with open(migrate_stub, "w") as f:
+        f.write("#!/bin/bash\nexit 0\n")
+    os.chmod(migrate_stub, os.stat(migrate_stub).st_mode | stat.S_IEXEC | stat.S_IXGRP | stat.S_IXOTH)
+
+    out = capture(cli._upgrade_pinned, project_dir, False, False, "pull", None)
+
+    assert "docker compose up -d failed" in out, out
+    assert "and git checkout the previous commit" not in out, out
+    assert "git checkout <previous commit> -- docker-compose.yml.dist versions.lock scripts/" in out, out
+    assert "pathspec-scoped" in out, out
+    print("ok test_upgrade_pinned_compose_up_failure_guidance_uses_scoped_checkout")
+
+
 def test_rollback_pinned_guard_uses_scoped_checkout(cli_module, tmp_dir):
     """VOIP-1333 regression, second call site: cmd_rollback's pinned-repo
     guard had the identical unscoped 'git checkout the previous repo
@@ -507,6 +568,8 @@ def main():
         test_upgrade_pinned_syncs_live_compose_before_pull(cli_module, tmp_dir, log_path)
         test_tracked_paths_uses_compose_dist_not_live_file(cli_module)
         test_upgrade_pinned_rollback_guidance_uses_scoped_checkout(cli_module, tmp_dir, log_path)
+        test_upgrade_pinned_migration_failure_guidance_uses_scoped_checkout(cli_module, tmp_dir, log_path)
+        test_upgrade_pinned_compose_up_failure_guidance_uses_scoped_checkout(cli_module, tmp_dir, log_path)
         test_rollback_pinned_guard_uses_scoped_checkout(cli_module, tmp_dir)
 
         print("All test_cli_mode.py tests passed")

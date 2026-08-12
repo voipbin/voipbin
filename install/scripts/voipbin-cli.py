@@ -5278,8 +5278,11 @@ Type 'registrar <subcommand> help' for more details.
             print("  Recovery procedure:")
             print("    1. voipbin stop --all")
             print(f"    2. {restore_hint}    (restores pre-upgrade schema + data)")
-            print("    3. git checkout <previous commit>   (reverts compose/versions.lock/scripts)")
-            print("    4. voipbin start")
+            print("    3. git checkout <previous commit> -- docker-compose.yml.dist versions.lock scripts/")
+            print("       (pathspec-scoped: a bare 'git checkout <commit>' would revert this repo's")
+            print("       ENTIRE tree and detach HEAD, not just install/'s files)")
+            print(f"    4. COMPOSE_FILE={os.path.join(project_dir, 'docker-compose.yml')} bash scripts/sync-compose-images.sh")
+            print("    5. voipbin start")
             return
 
         # ---- Step 5: recreate changed containers ----
@@ -5287,7 +5290,10 @@ Type 'registrar <subcommand> help' for more details.
         rc = subprocess.call("docker compose up -d", shell=True, cwd=project_dir)
         if rc != 0:
             print(f"\n{red('Upgrade aborted:')} docker compose up -d failed (exit {rc}).")
-            print(f"  If services are broken: stop, then '{restore_hint}' and git checkout the previous commit.")
+            print(f"  If services are broken: stop, then '{restore_hint}', then")
+            print("  'git checkout <previous commit> -- docker-compose.yml.dist versions.lock scripts/'")
+            print("  (pathspec-scoped - a bare checkout would revert this repo's entire tree)")
+            print(f"  and 'COMPOSE_FILE={os.path.join(project_dir, 'docker-compose.yml')} bash scripts/sync-compose-images.sh'.")
             return
 
         # ---- Step 6: verify ----
