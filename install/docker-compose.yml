@@ -240,6 +240,7 @@ services:
       # Internal: RTPEngine's own IP on internal network (setup via scripts/setup-voip-network.sh)
       - RTPENGINE_INTERFACE=pub/${RTPENGINE_EXTERNAL_IP:-127.0.0.1};priv/10.100.0.201
       - RTPENGINE_LISTEN_HTTP=${RTPENGINE_LISTEN_HTTP:-9101}
+      - RTPENGINE_LISTEN_NG=${RTPENGINE_LISTEN_NG:-22222}
       - RTPENGINE_LISTEN_CLI=127.0.0.1:2220
       - RTPENGINE_PORT_MIN=${RTPENGINE_PORT_MIN:-20000}
       - RTPENGINE_PORT_MAX=${RTPENGINE_PORT_MAX:-30000}
@@ -301,8 +302,12 @@ services:
       - ASTERISK_CALL_LB_ADDR=10.100.0.210:5060
       - ASTERISK_REGISTRAR_LB_ADDR=10.100.0.211:5060
       - ASTERISK_LISTEN_PORT=5060
-      # RTPEngine WebSocket endpoint (on host network)
-      - RTPENGINE_SOCKS=ws://127.0.0.1:9101/ng
+      # RTPEngine ng control endpoint (on host network).
+      # NOTE: as of the voip-kamailio image built from monorepo-voip commit
+      # 3e395a56 (NOJIRA-switch-kamailio-rtpengine-to-udp), the lwsc module
+      # and wsapi=lwsc config were removed, so this MUST be a udp:// socket
+      # matching rtpengine's RTPENGINE_LISTEN_NG port above, not ws://.
+      - RTPENGINE_SOCKS=udp:127.0.0.1:22222
       # Monitoring
       - HOMER_URI=${HOMER_URI:-sip:127.0.0.1:9060}
       # Redis for cache (exposed on host port 6379). See KAMAILIO_DB_HOST note above.
