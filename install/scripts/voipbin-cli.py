@@ -77,13 +77,15 @@ PROTECTED_PATHS = [
 ]
 
 # Files/directories that are tracked for script updates
-# NOTE: docker-compose.yml (no suffix) is the untracked, locally-generated
-# live compose file (see docker-compose.yml.dist's header comment) - it is
-# gitignored and would never show a diff anyway. docker-compose.yml.dist is
-# the committed file that actually changes upstream.
+# NOTE: docker-compose.yml/versions.lock (no suffix) are the untracked,
+# locally-generated live copies (see docker-compose.yml.dist's/
+# versions.lock.dist's header comment/"_comment" field) - gitignored and
+# would never show a diff anyway. The .dist files are the committed copies
+# that actually change upstream.
 TRACKED_PATHS = [
     "scripts/",
     "docker-compose.yml.dist",
+    "versions.lock.dist",
     ".env.template",
     "config/",
     "tests/",
@@ -5109,15 +5111,23 @@ Type 'registrar <subcommand> help' for more details.
 
         pinned = os.path.exists(os.path.join(project_dir, "versions.lock"))
 
-        if resume_from == "pull" and not pinned:
-            # The pulled commit REMOVED versions.lock (unpin release). Falling
-            # through to the unpinned path silently would skip migrations -
-            # tell the operator what happened instead.
-            print(f"{yellow('!')} Resumed after git pull, but versions.lock is GONE in the new")
-            print("  commit (the release unpinned this repo). The pinned upgrade flow does")
-            print("  not apply anymore - run 'update all' again to use the standard path,")
-            print("  and run scripts/migrate.sh manually if the release requires migrations.")
-            return
+        if resume_from == "pull":
+            # "Did the just-pulled release unpin this product" must be
+            # detected from versions.lock.dist (the file `git pull` can
+            # actually change), NOT the live `versions.lock` used for
+            # `pinned` above - the live file is untracked/operator-owned
+            # after the versions.lock.dist split and can never be touched
+            # by a pull either way, so checking it here would never fire.
+            dist_still_pinned = os.path.exists(os.path.join(project_dir, "versions.lock.dist"))
+            if not dist_still_pinned:
+                # The pulled commit REMOVED versions.lock.dist (unpin release).
+                # Falling through to the unpinned path silently would skip
+                # migrations - tell the operator what happened instead.
+                print(f"{yellow('!')} Resumed after git pull, but versions.lock.dist is GONE in the new")
+                print("  commit (the release unpinned this repo). The pinned upgrade flow does")
+                print("  not apply anymore - run 'update all' again to use the standard path,")
+                print("  and run scripts/migrate.sh manually if the release requires migrations.")
+                return
 
         if subcommand == "scripts":
             self._update_scripts(project_dir, check_only)
@@ -5189,11 +5199,12 @@ Type 'registrar <subcommand> help' for more details.
         if check_only:
             print(f"\n{yellow('Dry-run:')} pinned repo detected (versions.lock). 'update all' would run:")
             print("  1. backup                  - full data backup into backups/<ts>/ (skip with --skip-backup)")
-            print("  2. update scripts          - git pull (new docker-compose.yml.dist + versions.lock + scripts)")
+            print("  2. update scripts          - git pull (new docker-compose.yml.dist + versions.lock.dist + scripts)")
             print("     (the CLI then re-execs itself so steps 2b-6 run the NEW code)")
             print("  2b. sync compose digests   - scripts/sync-compose-images.sh reconciles the LIVE")
-            print("     docker-compose.yml's image: lines against the new versions.lock (the live file")
-            print("     is untracked - git pull alone never touches it, see docker-compose.yml.dist header)")
+            print("     docker-compose.yml's image: lines against the new versions.lock.dist (both live")
+            print("     files are untracked - git pull alone never touches them, see each .dist file's")
+            print("     header comment/\"_comment\" field)")
             print("  3. docker compose pull     - fetch the new pinned digests")
             print("  4. scripts/migrate.sh      - alembic migrations at the new dbscheme pin (abort on failure)")
             print("  5. docker compose up -d    - recreate only containers whose digest changed")
@@ -5231,15 +5242,20 @@ Type 'registrar <subcommand> help' for more details.
         restore_hint = f"voipbin restore {backup_ts} --force" if backup_ts else "voipbin restore <ts> --force"
 
         # ---- Step 2b: reconcile the LIVE docker-compose.yml's image digests ----
-        # docker-compose.yml is untracked (install/.gitignore) after the
-        # docker-compose.yml.dist split, so step 2's `git pull` updated
-        # docker-compose.yml.dist and versions.lock but never touched the
-        # live docker-compose.yml `docker compose pull`/`up -d` below
-        # actually read. Without this step the pinned upgrade would silently
+        # Both docker-compose.yml and versions.lock are untracked
+        # (install/.gitignore) after their respective .dist splits, so
+        # step 2's `git pull` updated docker-compose.yml.dist and
+        # versions.lock.dist but never touched the live docker-compose.yml
+        # `docker compose pull`/`up -d` below actually read (nor the live
+        # versions.lock, which stays operator-owned and isn't read by this
+        # flow at all). Without this step the pinned upgrade would silently
         # no-op: same digests pulled/recreated, "Upgrade complete!" printed,
-        # nothing actually upgraded.
+        # nothing actually upgraded. sync-compose-images.sh's own default
+        # LOCK_FILE (versions.lock.dist) is exactly the file this step just
+        # pulled, so no explicit COMPOSE_FILE/LOCK_FILE pairing juggling is
+        # needed here beyond pointing COMPOSE_FILE at the live file below.
         sync_script = os.path.join(project_dir, "scripts", "sync-compose-images.sh")
-        print(f"\n{blue('==>')} Step 2b/6: syncing docker-compose.yml image digests from versions.lock...")
+        print(f"\n{blue('==>')} Step 2b/6: syncing docker-compose.yml image digests from versions.lock.dist...")
         if not os.path.exists(sync_script):
             print(f"\n{red('Upgrade aborted:')} {sync_script} not found.")
             print("  The 'update scripts' step may have pulled an incomplete tree -")
@@ -5278,7 +5294,7 @@ Type 'registrar <subcommand> help' for more details.
             print("  Recovery procedure:")
             print("    1. voipbin stop --all")
             print(f"    2. {restore_hint}    (restores pre-upgrade schema + data)")
-            print("    3. git checkout <previous commit> -- docker-compose.yml.dist versions.lock scripts/")
+            print("    3. git checkout <previous commit> -- docker-compose.yml.dist versions.lock.dist scripts/")
             print("       (pathspec-scoped: a bare 'git checkout <commit>' would revert this repo's")
             print("       ENTIRE tree and detach HEAD, not just install/'s files)")
             print(f"    4. COMPOSE_FILE={os.path.join(project_dir, 'docker-compose.yml')} bash scripts/sync-compose-images.sh")
@@ -5291,7 +5307,7 @@ Type 'registrar <subcommand> help' for more details.
         if rc != 0:
             print(f"\n{red('Upgrade aborted:')} docker compose up -d failed (exit {rc}).")
             print(f"  If services are broken: stop, then '{restore_hint}', then")
-            print("  'git checkout <previous commit> -- docker-compose.yml.dist versions.lock scripts/'")
+            print("  'git checkout <previous commit> -- docker-compose.yml.dist versions.lock.dist scripts/'")
             print("  (pathspec-scoped - a bare checkout would revert this repo's entire tree)")
             print(f"  and 'COMPOSE_FILE={os.path.join(project_dir, 'docker-compose.yml')} bash scripts/sync-compose-images.sh'.")
             return
@@ -5310,7 +5326,7 @@ Type 'registrar <subcommand> help' for more details.
             print(f"        {restore_hint}")
             print("    - Image rollback: restore the previous versions.lock/scripts (docker-compose.yml")
             print("      is not git-versioned, only .dist is - see docker-compose.yml.dist's header):")
-            print("        git checkout <previous commit> -- docker-compose.yml.dist versions.lock scripts/")
+            print("        git checkout <previous commit> -- docker-compose.yml.dist versions.lock.dist scripts/")
             print("      (pathspec-scoped on purpose: a bare 'git checkout <commit>' with no pathspec")
             print("      would revert this repo's ENTIRE tree, not just install/, and leave you in")
             print("      detached HEAD - the form above only restores those files' content, in place,")
@@ -6304,7 +6320,7 @@ Type 'registrar <subcommand> help' for more details.
             print(f"    - Data restore:   {bold('voipbin restore <ts> --force')}  (from backups/)")
             print("    - Image rollback: restore the previous versions.lock/scripts (docker-compose.yml")
             print("      is not git-versioned, only .dist is - see docker-compose.yml.dist's header):")
-            print("        git checkout <previous commit> -- docker-compose.yml.dist versions.lock scripts/")
+            print("        git checkout <previous commit> -- docker-compose.yml.dist versions.lock.dist scripts/")
             print("      (pathspec-scoped on purpose: a bare 'git checkout <commit>' with no pathspec")
             print("      would revert this repo's ENTIRE tree, not just install/, and leave you in")
             print("      detached HEAD - the form above only restores those files' content, in place,")

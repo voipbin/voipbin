@@ -21,9 +21,15 @@
 #                     in image_source_tags for traceability.
 #
 # Environment:
-#   LOCK_FILE     path to versions.lock       (default: <project>/versions.lock)
+#   LOCK_FILE     path to the lock file to bump  (default: <project>/versions.lock.dist)
 #   COMPOSE_FILE  passed through to sync-compose-images.sh unchanged (its own
 #                 default is docker-compose.yml.dist - see that script's header)
+#
+# Defaults to versions.lock.dist (the committed template new installs copy
+# from) rather than the live versions.lock, which is untracked and
+# operator-owned after first install - see versions.lock.dist's own
+# "_comment" field for the full rationale. Point LOCK_FILE at your live
+# versions.lock if you want to bump that copy directly instead.
 #
 # Why this exists (not generate-versions-lock.sh):
 #   generate-versions-lock.sh resolves ALL tracked images by walking monorepo
@@ -58,10 +64,10 @@ PROJECT_DIR="$(dirname "$SCRIPT_DIR")"
 # resolve_image_digest)
 source "$SCRIPT_DIR/common.sh"
 
-export LOCK_FILE="${LOCK_FILE:-$PROJECT_DIR/versions.lock}"
+export LOCK_FILE="${LOCK_FILE:-$PROJECT_DIR/versions.lock.dist}"
 
 usage() {
-    sed -n '2,44p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'
+    sed -n '2,56p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'
 }
 
 if [[ "${1:-}" == "-h" || "${1:-}" == "--help" ]]; then

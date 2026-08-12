@@ -102,6 +102,15 @@ git show <that commit>^:./docker-compose.yml > docker-compose.yml
 silently copying `.dist` — but doing the recovery proactively, before
 running any other command, is safer than relying on that reminder.
 
+`versions.lock` gets the identical treatment for the identical reason:
+copied once from `versions.lock.dist` on first install, then untracked and
+left alone. Deploying a new image and updating `versions.lock.dist` are
+deliberately decoupled — the live `versions.lock` is yours to manage on
+your own schedule after install, not something an automated deploy path
+touches. If you're upgrading an install that predates this split, the same
+recovery applies: `git log --all --oneline --diff-filter=D -- versions.lock`
+then `git show <that commit>^:./versions.lock > versions.lock`.
+
 See [Install Modes](#install-modes) for `external` mode (a real domain
 instead of `voipbin.test`).
 

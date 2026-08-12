@@ -40,7 +40,7 @@ removes it so the next `init.sh` re-copies a fresh one from `.dist`. To
 adopt upstream changes (new services, image digest bumps), diff the two
 files and merge deliberately, or run `scripts/sync-compose-images.sh` with
 `COMPOSE_FILE=docker-compose.yml` to pull in just the image digest updates
-from `versions.lock`. See `docker-compose.yml.dist`'s own header comment
+from `versions.lock.dist`. See `docker-compose.yml.dist`'s own header comment
 for the full rationale.
 
 **Upgrading an install that predates this split (IMPORTANT, one-time):**
@@ -65,6 +65,33 @@ cwd (unlike `git log`/`git diff`'s pathspecs), so it fails from inside
 and prints this same guidance instead of silently copying `.dist`, but
 doing it proactively is safer than relying on that reminder firing at the
 right time.
+
+### versions.lock.dist vs versions.lock
+
+Same split, same rationale, applied to `versions.lock`: `versions.lock` is
+copied once from the committed `versions.lock.dist` on first `init.sh` run
+and is then untracked (`install/.gitignore`) — a later `git pull` updates
+`versions.lock.dist` but never rewrites the live `versions.lock`. The live
+file is meant to be operator-owned from here on, updated on its own
+schedule and independently of any automated deploy path (deploying a new
+image and updating `versions.lock.dist` are two deliberately decoupled
+things — see `versions.lock.dist`'s own `"_comment"` field). `init.sh`
+never overwrites an existing `versions.lock`, not even on `--force-reinit`;
+`clean.sh --purge` removes it so the next `init.sh` re-copies a fresh one
+from `.dist`. To adopt upstream pin changes, diff the two files and merge
+deliberately, or run `scripts/generate-versions-lock.sh`/
+`scripts/bump-image-digest.sh` with `LOCK_FILE=versions.lock` to update the
+live copy directly.
+
+**Upgrading an install that predates this split (IMPORTANT, one-time):**
+identical migration transition to `docker-compose.yml.dist` above, and for
+the identical reason - `versions.lock` was git-tracked before this change.
+Recover the real pre-pull file (run these from this `install/` directory):
+`git log --all --oneline --diff-filter=D -- versions.lock` finds the
+commit that DELETED it, then `git show <commit>^:./versions.lock >
+versions.lock` (same `^`/`./` caveats as the `docker-compose.yml` recovery
+above apply here too). `init.sh` also detects this itself (existing `.env`
++ missing `versions.lock`) and prints this same guidance.
 
 ### Other Useful Commands
 
@@ -263,11 +290,12 @@ The base domain is baked into database state (extension SIP realms are
 `{customer_id}.registrar.<domain>`), so `init.sh` refuses a mode or domain
 switch on an existing `.env`. Escape hatches: full reset
 (`./scripts/clean.sh --volumes --purge`, always the combined form — this also
-removes the live `docker-compose.yml`, re-copied fresh from
-`docker-compose.yml.dist` on the next `init.sh` run) or `init.sh --force-reinit`
-(rewrites `.env`/certs/Corefile, never the database and never
-`docker-compose.yml` — see "docker-compose.yml.dist vs docker-compose.yml"
-above — and prints the live-state follow-up: recreate extensions via the
+removes the live `docker-compose.yml`/`versions.lock`, re-copied fresh from
+`docker-compose.yml.dist`/`versions.lock.dist` on the next `init.sh` run) or
+`init.sh --force-reinit` (rewrites `.env`/certs/Corefile, never the database
+and never `docker-compose.yml`/`versions.lock` — see "docker-compose.yml.dist
+vs docker-compose.yml"/"versions.lock.dist vs versions.lock" above — and
+prints the live-state follow-up: recreate extensions via the
 API and recreate `registrar-manager`, `api-manager`, `hook-manager`,
 `customer-manager`, `square-*`). `--force-reinit` without an explicit
 `--mode` is refused when it would silently target a different mode or

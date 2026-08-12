@@ -10,6 +10,9 @@ setup() {
     # Create docker-compose.yml.dist (required by init.sh's compose-file copy
     # step; content doesn't matter for these tests, only its existence)
     touch "$PROJECT_DIR/docker-compose.yml.dist"
+    # Create versions.lock.dist (required by init.sh's lock-file copy step;
+    # content doesn't matter for these tests, only its existence)
+    touch "$PROJECT_DIR/versions.lock.dist"
 }
 
 teardown() {
@@ -1404,6 +1407,201 @@ exit 0'
     [[ "$status" -eq 0 ]]
     [[ -f "$TEST_TEMP_DIR/docker-compose.yml" ]]
     [[ "$output" != *"docker-compose.yml is missing but .env already existed"* ]]
+}
+
+# =============================================================================
+# versions.lock.dist -> versions.lock (dist/live split): identical rationale
+# and mechanics to the docker-compose.yml.dist block above - the live file is
+# untracked (install/.gitignore) so it is never touched by a later `git
+# pull`, is copied once on first install, and is never overwritten
+# afterward, not even on --force-reinit.
+# =============================================================================
+
+@test "init.sh copies versions.lock.dist to versions.lock when missing" {
+    load_init_functions
+    mock_ip_route "192.168.1.100"
+    mock_command_script "mkcert" '
+while [[ $# -gt 0 ]]; do
+    case "$1" in
+        -cert-file) echo "stub-cert" > "$2"; shift 2 ;;
+        -key-file) echo "stub-key" > "$2"; shift 2 ;;
+        -CAROOT) echo "/stub/caroot"; exit 0 ;;
+        -check) exit 0 ;;
+        -install) exit 0 ;;
+        *) shift ;;
+    esac
+done
+exit 0'
+    echo "MARKER: lock dist content" > "$PROJECT_DIR/versions.lock.dist"
+
+    run main --yes
+
+    [[ "$status" -eq 0 ]]
+    [[ -f "$TEST_TEMP_DIR/versions.lock" ]]
+    diff "$TEST_TEMP_DIR/versions.lock" "$TEST_TEMP_DIR/versions.lock.dist"
+}
+
+@test "init.sh --force-reinit never overwrites an existing versions.lock" {
+    load_init_functions
+    mock_ip_route "192.168.1.100"
+    mock_command_script "mkcert" '
+while [[ $# -gt 0 ]]; do
+    case "$1" in
+        -cert-file) echo "stub-cert" > "$2"; shift 2 ;;
+        -key-file) echo "stub-key" > "$2"; shift 2 ;;
+        -CAROOT) echo "/stub/caroot"; exit 0 ;;
+        -check) exit 0 ;;
+        -install) exit 0 ;;
+        *) shift ;;
+    esac
+done
+exit 0'
+    echo "MARKER: lock dist v1" > "$PROJECT_DIR/versions.lock.dist"
+
+    run main --yes
+    [[ "$status" -eq 0 ]]
+
+    # Operator hand-updated the live lock file after install (e.g. pinned a
+    # different image manually).
+    echo "MARKER: operator customized this lock" > "$TEST_TEMP_DIR/versions.lock"
+    # Simulate an upstream repo update shipping a different .dist.
+    echo "MARKER: lock dist v2, must NOT be adopted" > "$PROJECT_DIR/versions.lock.dist"
+
+    run main --force-reinit --yes
+
+    [[ "$status" -eq 0 ]]
+    grep -q "operator customized this lock" "$TEST_TEMP_DIR/versions.lock"
+    ! grep -q "lock dist v2" "$TEST_TEMP_DIR/versions.lock"
+}
+
+@test "init.sh dies cleanly when versions.lock.dist is missing" {
+    load_init_functions
+    mock_ip_route "192.168.1.100"
+    mock_command_script "mkcert" '
+while [[ $# -gt 0 ]]; do
+    case "$1" in
+        -cert-file) echo "stub-cert" > "$2"; shift 2 ;;
+        -key-file) echo "stub-key" > "$2"; shift 2 ;;
+        -CAROOT) echo "/stub/caroot"; exit 0 ;;
+        -check) exit 0 ;;
+        -install) exit 0 ;;
+        *) shift ;;
+    esac
+done
+exit 0'
+    rm -f "$PROJECT_DIR/versions.lock.dist"
+
+    run main --yes
+
+    [[ "$status" -eq 2 ]]
+    [[ "$output" == *"versions.lock.dist not found"* ]]
+    [[ ! -f "$TEST_TEMP_DIR/versions.lock" ]]
+}
+
+@test "init.sh warns loudly (but still recovers) when versions.lock is missing on an already-initialized install" {
+    # Simulates an install that predates the versions.lock.dist split
+    # pulling this change: git's rename silently deletes the tracked
+    # versions.lock, .env is untouched and still present. A plain
+    # 'init.sh --yes' re-run must not silently paper over that with today's
+    # .dist as if nothing happened.
+    load_init_functions
+    mock_ip_route "192.168.1.100"
+    mock_command_script "mkcert" '
+while [[ $# -gt 0 ]]; do
+    case "$1" in
+        -cert-file) echo "stub-cert" > "$2"; shift 2 ;;
+        -key-file) echo "stub-key" > "$2"; shift 2 ;;
+        -CAROOT) echo "/stub/caroot"; exit 0 ;;
+        -check) exit 0 ;;
+        -install) exit 0 ;;
+        *) shift ;;
+    esac
+done
+exit 0'
+    create_env_file "DOMAIN_MODE=internal" "BASE_DOMAIN=voipbin.test"
+    echo "MARKER: lock dist content" > "$PROJECT_DIR/versions.lock.dist"
+    # versions.lock deliberately absent (simulating the git-rename delete)
+
+    run main --yes
+
+    [[ "$status" -eq 0 ]]
+    [[ -f "$TEST_TEMP_DIR/versions.lock" ]]
+    [[ "$output" == *"versions.lock is missing but .env already existed"* ]]
+    [[ "$output" == *"git log --all --oneline --diff-filter=D -- versions.lock"* ]]
+    # Same ^ / leading ./ caveats as the docker-compose.yml.dist recovery
+    # command above - see "init.sh's printed recovery command actually
+    # recovers the file when executed" for a real-git-history proof of both.
+    [[ "$output" == *"git show <that commit>^:./versions.lock"* ]]
+}
+
+@test "init.sh's printed versions.lock recovery command actually recovers the file when executed" {
+    # Same real-git-history proof as "init.sh's printed recovery command
+    # actually recovers the file when executed" above, retargeted at
+    # versions.lock - both the ^ (parent commit, since the file is already
+    # gone in the deleting commit itself) and the leading ./ (git show
+    # resolves <path> from the repo root, not cwd) are load-bearing.
+    if ! command -v git &>/dev/null; then
+        skip "git not available"
+    fi
+
+    local repo="$TEST_TEMP_DIR/lock-recovery-repo"
+    mkdir -p "$repo/install"
+    (
+        cd "$repo" || exit 1
+        git init -q
+        git config user.email "test@example.com"
+        git config user.name "Test"
+
+        # Pre-split commit: versions.lock is a normal tracked file.
+        echo "ORIGINAL PRE-SPLIT LOCK CONTENT" > install/versions.lock
+        git add install/versions.lock
+        git commit -q -m "pre-split"
+
+        # Split commit: the exact transition that deletes it.
+        git rm -q install/versions.lock
+        mkdir -p install
+        echo "versions.lock" > install/.gitignore
+        echo "DIST LOCK CONTENT (current HEAD, NOT what was running)" > install/versions.lock.dist
+        git add install/versions.lock.dist install/.gitignore
+        git commit -q -m "split commit (simulates this PR)"
+    )
+
+    (
+        cd "$repo/install" || exit 1
+        local del_commit
+        del_commit=$(git log --all --oneline --diff-filter=D -- versions.lock | head -1 | cut -d' ' -f1)
+        [[ -n "$del_commit" ]] || { echo "no deletion commit found" >&2; exit 1; }
+        git show "${del_commit}^:./versions.lock" > versions.lock.recovered
+    )
+
+    [[ -f "$repo/install/versions.lock.recovered" ]]
+    run cat "$repo/install/versions.lock.recovered"
+    [[ "$output" == "ORIGINAL PRE-SPLIT LOCK CONTENT" ]]
+    [[ "$output" != "DIST LOCK CONTENT (current HEAD, NOT what was running)" ]]
+}
+
+@test "init.sh does not warn about the versions.lock migration on a genuinely fresh install" {
+    load_init_functions
+    mock_ip_route "192.168.1.100"
+    mock_command_script "mkcert" '
+while [[ $# -gt 0 ]]; do
+    case "$1" in
+        -cert-file) echo "stub-cert" > "$2"; shift 2 ;;
+        -key-file) echo "stub-key" > "$2"; shift 2 ;;
+        -CAROOT) echo "/stub/caroot"; exit 0 ;;
+        -check) exit 0 ;;
+        -install) exit 0 ;;
+        *) shift ;;
+    esac
+done
+exit 0'
+    # No pre-existing .env - a real fresh install.
+
+    run main --yes
+
+    [[ "$status" -eq 0 ]]
+    [[ -f "$TEST_TEMP_DIR/versions.lock" ]]
+    [[ "$output" != *"versions.lock is missing but .env already existed"* ]]
 }
 
 # =============================================================================
