@@ -86,8 +86,12 @@ copy whatever `docker-compose.yml.dist` is at the current commit, which may
 not match what you were actually running. Instead, before or immediately
 after that `git pull`, recover your actual pre-pull file:
 ```bash
-git log --all --oneline -- docker-compose.yml   # find the last commit that tracked it
-git show <that commit>:docker-compose.yml > docker-compose.yml
+git log --all --oneline --diff-filter=D -- docker-compose.yml
+# ^ finds the commit that DELETED it (the split commit, e.g. this pull).
+# The file lived in that commit's PARENT - use <commit>^, not the commit
+# itself (`git show <commit>:docker-compose.yml` fails with "exists on
+# disk, but not in '<commit>'" - it was already gone there).
+git show <that commit>^:docker-compose.yml > docker-compose.yml
 ```
 `init.sh` also detects this case itself (an existing `.env` plus a missing
 `docker-compose.yml`) and prints this same recovery guidance rather than

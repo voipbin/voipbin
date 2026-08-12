@@ -1314,7 +1314,12 @@ exit 0'
     [[ "$status" -eq 0 ]]
     [[ -f "$TEST_TEMP_DIR/docker-compose.yml" ]]
     [[ "$output" == *"docker-compose.yml is missing but .env already existed"* ]]
-    [[ "$output" == *"git log --all --oneline -- docker-compose.yml"* ]]
+    [[ "$output" == *"git log --all --oneline --diff-filter=D -- docker-compose.yml"* ]]
+    # The ^ matters: `git show <commit>:docker-compose.yml` on the DELETING
+    # commit itself fails ("exists on disk, but not in '<commit>'") since the
+    # file is already gone there - the recovery command must target the
+    # parent, not the commit git-log finds.
+    [[ "$output" == *"git show <that commit>^:docker-compose.yml"* ]]
 }
 
 @test "init.sh does not warn about the compose migration on a genuinely fresh install" {
