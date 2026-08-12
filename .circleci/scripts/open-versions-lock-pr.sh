@@ -178,8 +178,13 @@ SHORT_NAME="${IMAGE_REPO#voipbin/}"
 SHORT_COMMIT="${SOURCE_COMMIT:0:12}"
 BRANCH="NOJIRA-Bump-${SHORT_NAME}-${SHORT_COMMIT}"
 # Sanitize: branch names built from image names only contain [a-z0-9-],
-# but guard defensively against anything unexpected sneaking through.
-BRANCH="$(echo "$BRANCH" | tr -c 'A-Za-z0-9._-' '-')"
+# but guard defensively against anything unexpected sneaking through. Pure
+# bash parameter expansion, not `echo ... | tr -c ...` - `echo` appends a
+# trailing newline, and `tr -c` (complementing the allowed set) translates
+# that newline into a literal trailing '-' that command substitution does
+# NOT strip (it only strips trailing newlines), leaving every branch
+# name/PR title with a spurious trailing hyphen.
+BRANCH="${BRANCH//[^A-Za-z0-9._-]/-}"
 
 log_info "Branch: $BRANCH"
 log_info "$IMAGE_REPO: $OLD_DIGEST -> $NEW_DIGEST"

@@ -161,6 +161,28 @@ run_script() {
     [[ "$output" == *"Authorization: Bearer fake-token-value"* ]]
 }
 
+@test "branch name has no spurious trailing hyphen" {
+    # Regression test: `echo "$BRANCH" | tr -c '...' '-'` used to translate
+    # echo's trailing newline into a literal trailing '-' that command
+    # substitution doesn't strip, so every branch name/PR title ended in a
+    # stray hyphen. Assert the EXACT expected name (not a wildcard glob,
+    # which is what every other test uses and is why this went unnoticed
+    # for 5 review rounds).
+    setup_fake_repo
+    install_fake_curl
+    apply_fake_bump "sha256:$(printf 'c%.0s' {1..64})"
+    cd "$REPO_DIR" || exit 1
+    GH_TOKEN="fake-token" run run_script "voipbin/bin-agent-manager" "cccccccccccccccccccccccccccccccccccccccc"
+
+    [[ "$status" -eq 0 ]]
+    [[ "$output" == *"Branch: NOJIRA-Bump-bin-agent-manager-cccccccccccc"* ]]
+    [[ "$output" != *"NOJIRA-Bump-bin-agent-manager-cccccccccccc-"* ]]
+
+    local exact_ref
+    exact_ref="$(git -C "$REPO_DIR" ls-remote origin | awk '{print $2}' | grep 'NOJIRA-Bump')"
+    [[ "$exact_ref" == "refs/heads/NOJIRA-Bump-bin-agent-manager-cccccccccccc" ]]
+}
+
 @test "does not falsely warn 'not modified' for either expected file when both are actually modified" {
     # Regression test: the "is not modified - proceeding anyway" warning
     # used to compare a newline-delimited $DIRTY_FILES against a
