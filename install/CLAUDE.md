@@ -43,6 +43,22 @@ files and merge deliberately, or run `scripts/sync-compose-images.sh` with
 from `versions.lock`. See `docker-compose.yml.dist`'s own header comment
 for the full rationale.
 
+**Upgrading an install that predates this split (IMPORTANT, one-time):**
+before this change `docker-compose.yml` was git-tracked. The first
+`git pull` that introduces `docker-compose.yml.dist` deletes the tracked
+`docker-compose.yml` from the working tree as an ordinary rename — no
+warning, no conflict — and `docker compose` then fails ("no configuration
+file provided") until it's recovered. Re-running `init.sh` is NOT the fix:
+it copies whatever `docker-compose.yml.dist` is at the CURRENT commit,
+which may differ from what was actually running. Recover the real
+pre-pull file instead: `git log --all --oneline -- docker-compose.yml` to
+find the last commit that tracked it, then
+`git show <commit>:docker-compose.yml > docker-compose.yml`. `init.sh`
+also detects this itself (existing `.env` + missing `docker-compose.yml`)
+and prints this same guidance instead of silently copying `.dist`, but
+doing it proactively is safer than relying on that reminder firing at the
+right time.
+
 ### Other Useful Commands
 
 ```bash

@@ -1285,6 +1285,62 @@ exit 0'
     [[ ! -f "$TEST_TEMP_DIR/docker-compose.yml" ]]
 }
 
+@test "init.sh warns loudly (but still recovers) when docker-compose.yml is missing on an already-initialized install" {
+    # Simulates an install that predates the docker-compose.yml.dist split
+    # pulling this change: git's rename silently deletes the tracked
+    # docker-compose.yml, .env is untouched and still present. A plain
+    # 'init.sh --yes' re-run must not silently paper over that with today's
+    # .dist as if nothing happened.
+    load_init_functions
+    mock_ip_route "192.168.1.100"
+    mock_command_script "mkcert" '
+while [[ $# -gt 0 ]]; do
+    case "$1" in
+        -cert-file) echo "stub-cert" > "$2"; shift 2 ;;
+        -key-file) echo "stub-key" > "$2"; shift 2 ;;
+        -CAROOT) echo "/stub/caroot"; exit 0 ;;
+        -check) exit 0 ;;
+        -install) exit 0 ;;
+        *) shift ;;
+    esac
+done
+exit 0'
+    create_env_file "DOMAIN_MODE=internal" "BASE_DOMAIN=voipbin.test"
+    echo "MARKER: dist content" > "$PROJECT_DIR/docker-compose.yml.dist"
+    # docker-compose.yml deliberately absent (simulating the git-rename delete)
+
+    run main --yes
+
+    [[ "$status" -eq 0 ]]
+    [[ -f "$TEST_TEMP_DIR/docker-compose.yml" ]]
+    [[ "$output" == *"docker-compose.yml is missing but .env already existed"* ]]
+    [[ "$output" == *"git log --all --oneline -- docker-compose.yml"* ]]
+}
+
+@test "init.sh does not warn about the compose migration on a genuinely fresh install" {
+    load_init_functions
+    mock_ip_route "192.168.1.100"
+    mock_command_script "mkcert" '
+while [[ $# -gt 0 ]]; do
+    case "$1" in
+        -cert-file) echo "stub-cert" > "$2"; shift 2 ;;
+        -key-file) echo "stub-key" > "$2"; shift 2 ;;
+        -CAROOT) echo "/stub/caroot"; exit 0 ;;
+        -check) exit 0 ;;
+        -install) exit 0 ;;
+        *) shift ;;
+    esac
+done
+exit 0'
+    # No pre-existing .env - a real fresh install.
+
+    run main --yes
+
+    [[ "$status" -eq 0 ]]
+    [[ -f "$TEST_TEMP_DIR/docker-compose.yml" ]]
+    [[ "$output" != *"docker-compose.yml is missing but .env already existed"* ]]
+}
+
 # =============================================================================
 # VOIP-1329: AMI_USERNAME/AMI_PASSWORD must be the fixed "asterisk"/"asterisk"
 # pair, NOT randomly generated - they must match the voip-asterisk-call/

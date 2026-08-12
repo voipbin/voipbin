@@ -75,6 +75,25 @@ To adopt upstream changes (new services, image digest bumps), diff the two
 files and merge deliberately, or run `scripts/sync-compose-images.sh` with
 `COMPOSE_FILE=docker-compose.yml` to pull in just the image digest updates.
 
+**Upgrading an install that predates this split:** before this change,
+`docker-compose.yml` was a normal git-tracked file. The first `git pull`
+that brings in `docker-compose.yml.dist` turns that path into an ordinary
+git rename — your tracked `docker-compose.yml` is deleted from the working
+tree with no warning or conflict, and `docker-compose.yml.dist` appears in
+its place. `docker compose` commands fail ("no configuration file
+provided") until you recover it. **Do not just re-run `init.sh`** — it will
+copy whatever `docker-compose.yml.dist` is at the current commit, which may
+not match what you were actually running. Instead, before or immediately
+after that `git pull`, recover your actual pre-pull file:
+```bash
+git log --all --oneline -- docker-compose.yml   # find the last commit that tracked it
+git show <that commit>:docker-compose.yml > docker-compose.yml
+```
+`init.sh` also detects this case itself (an existing `.env` plus a missing
+`docker-compose.yml`) and prints this same recovery guidance rather than
+silently copying `.dist` — but doing the recovery proactively, before
+running any other command, is safer than relying on that reminder.
+
 See [Install Modes](#install-modes) for `external` mode (a real domain
 instead of `voipbin.test`).
 
