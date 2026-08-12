@@ -1,3 +1,22 @@
+# This is the DISTRIBUTION copy, committed to the repo. `init.sh` copies it
+# to `docker-compose.yml` (untracked, install/.gitignore) on first install
+# only, and never overwrites an existing `docker-compose.yml` afterward —
+# not even on `--force-reinit`. That is deliberate: `docker-compose.yml` is
+# the file `docker compose` actually reads (implicit cwd discovery, no `-f`
+# flag anywhere in this repo's scripts), and it must stay reachable by
+# `git pull` for it to be safe to keep the local, live file out of git —
+# so a repo update never silently rewrites a running server's compose
+# config. To pick up upstream changes from a newer docker-compose.yml.dist
+# (new services, image digest bumps, etc.), diff it against your live
+# docker-compose.yml and merge deliberately, or run
+# scripts/sync-compose-images.sh with COMPOSE_FILE=docker-compose.yml to
+# pull in just the image digest updates from versions.lock.
+#
+# This file is still a complete, standalone-runnable compose file in its
+# own right (see scripts/sync-compose-images.sh's header comment) — the
+# dist/live split changes which copy is authoritative for `docker compose`
+# to read, not the file's own validity.
+#
 # Default log rotation for every service: without this, docker's json-file
 # driver grows without bound and eventually fills the disk on a long-lived
 # single-server deployment.

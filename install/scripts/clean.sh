@@ -210,6 +210,13 @@ main() {
             rm -f "$PROJECT_DIR/.env"
         fi
 
+        # Remove live docker-compose.yml (generated from docker-compose.yml.dist
+        # by init.sh; re-copied fresh on the next init.sh run)
+        if [ -f "$PROJECT_DIR/docker-compose.yml" ]; then
+            log_info "Removing docker-compose.yml..."
+            rm -f "$PROJECT_DIR/docker-compose.yml"
+        fi
+
         # Remove generated CoreDNS config
         if [ -d "$PROJECT_DIR/config/coredns" ]; then
             log_info "Removing CoreDNS config..."
@@ -247,7 +254,7 @@ main() {
     [ "$CLEAN_IMAGES" = true ] && actions+=("Docker images removed")
     [ "$TEARDOWN_NETWORK" = true ] && actions+=("Network interfaces removed")
     [ "$TEARDOWN_DNS" = true ] && actions+=("DNS config removed")
-    [ "$PURGE" = true ] && actions+=("Generated files purged (.env, certs, configs)")
+    [ "$PURGE" = true ] && actions+=("Generated files purged (.env, docker-compose.yml, certs, configs)")
 
     for action in "${actions[@]}"; do
         log_info "$action"

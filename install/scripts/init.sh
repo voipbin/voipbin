@@ -1000,6 +1000,25 @@ EOF
     log_info "  Created $ENV_FILE"
     echo ""
 
+    # docker-compose.yml (live copy): copied from docker-compose.yml.dist on
+    # first install only. The live file is intentionally untracked
+    # (install/.gitignore) so a later `git pull` never silently rewrites a
+    # running server's compose config — see docker-compose.yml.dist's header
+    # comment for the full rationale. Idempotent and NOT re-run by
+    # --force-reinit: an existing docker-compose.yml (including one the
+    # operator has customized) is never overwritten.
+    local compose_dist="$PROJECT_DIR/docker-compose.yml.dist"
+    local compose_live="$PROJECT_DIR/docker-compose.yml"
+    if [[ ! -f "$compose_live" ]]; then
+        if [[ ! -f "$compose_dist" ]]; then
+            die 2 "docker-compose.yml.dist not found at $compose_dist"
+        fi
+        log_step "Creating docker-compose.yml..."
+        cp "$compose_dist" "$compose_live"
+        log_info "  Created $compose_live (from docker-compose.yml.dist)"
+        echo ""
+    fi
+
     # Step 7.5 (external mode only, §2.6): full BYO certificate install now
     # that .env exists — layout under certs/ plus the .env base64 rewrite.
     if [[ "$INIT_MODE" == "external" ]]; then

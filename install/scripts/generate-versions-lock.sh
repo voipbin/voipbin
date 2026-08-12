@@ -41,7 +41,7 @@
 # literal digest value "NEW" (see SEEDED_DIGEST_MARKER below). Such an entry has
 # NO current pin to fall back to, so the fallback path above is a trap for it: a
 # placeholder that failed to resolve would be written back as a legitimate-looking
-# pin, propagate into docker-compose.yml via scripts/sync-compose-images.sh, and
+# pin, propagate into docker-compose.yml.dist via scripts/sync-compose-images.sh, and
 # only fail at `docker compose pull` on a customer machine. Therefore a seeded
 # entry that cannot be resolved at the target commit is a HARD ERROR: the script
 # exits non-zero and versions.lock is NOT written. Established entries are
@@ -415,9 +415,9 @@ PYEOF
     fi
 
     echo ""
-    log_warn "docker-compose.yml pins image digests independently of this lock."
+    log_warn "docker-compose.yml.dist pins image digests independently of this lock."
     log_warn "Run ./scripts/sync-compose-images.sh to propagate the new pins, or the"
-    log_warn "regenerated lock has no effect on what actually runs."
+    log_warn "regenerated lock has no effect on what fresh installs run."
 }
 
 main "$@"

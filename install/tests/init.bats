@@ -7,6 +7,9 @@ setup() {
     setup_test_env
     # Create .env.template (required by init.sh)
     touch "$PROJECT_DIR/.env.template"
+    # Create docker-compose.yml.dist (required by init.sh's compose-file copy
+    # step; content doesn't matter for these tests, only its existence)
+    touch "$PROJECT_DIR/docker-compose.yml.dist"
 }
 
 teardown() {
@@ -1192,6 +1195,94 @@ exit 0'
     [[ "$asterisk_pw" =~ ^[0-9a-f]{32}$ ]]
     [[ -n "$mysql_root_pw" ]]
     [[ "$asterisk_pw" != "$mysql_root_pw" ]]
+}
+
+# =============================================================================
+# docker-compose.yml.dist -> docker-compose.yml (dist/live split): the live
+# file is untracked (install/.gitignore) so a later `git pull` never
+# silently rewrites a running server's compose config. init.sh copies it
+# once on first install and must never overwrite an existing one afterward,
+# not even on --force-reinit.
+# =============================================================================
+
+@test "init.sh copies docker-compose.yml.dist to docker-compose.yml when missing" {
+    load_init_functions
+    mock_ip_route "192.168.1.100"
+    mock_command_script "mkcert" '
+while [[ $# -gt 0 ]]; do
+    case "$1" in
+        -cert-file) echo "stub-cert" > "$2"; shift 2 ;;
+        -key-file) echo "stub-key" > "$2"; shift 2 ;;
+        -CAROOT) echo "/stub/caroot"; exit 0 ;;
+        -check) exit 0 ;;
+        -install) exit 0 ;;
+        *) shift ;;
+    esac
+done
+exit 0'
+    echo "MARKER: dist content" > "$PROJECT_DIR/docker-compose.yml.dist"
+
+    run main --yes
+
+    [[ "$status" -eq 0 ]]
+    [[ -f "$TEST_TEMP_DIR/docker-compose.yml" ]]
+    diff "$TEST_TEMP_DIR/docker-compose.yml" "$TEST_TEMP_DIR/docker-compose.yml.dist"
+}
+
+@test "init.sh --force-reinit never overwrites an existing docker-compose.yml" {
+    load_init_functions
+    mock_ip_route "192.168.1.100"
+    mock_command_script "mkcert" '
+while [[ $# -gt 0 ]]; do
+    case "$1" in
+        -cert-file) echo "stub-cert" > "$2"; shift 2 ;;
+        -key-file) echo "stub-key" > "$2"; shift 2 ;;
+        -CAROOT) echo "/stub/caroot"; exit 0 ;;
+        -check) exit 0 ;;
+        -install) exit 0 ;;
+        *) shift ;;
+    esac
+done
+exit 0'
+    echo "MARKER: dist v1" > "$PROJECT_DIR/docker-compose.yml.dist"
+
+    run main --yes
+    [[ "$status" -eq 0 ]]
+
+    # Operator hand-customized the live file after install.
+    echo "MARKER: operator customized this line" > "$TEST_TEMP_DIR/docker-compose.yml"
+    # Simulate an upstream repo update shipping a different .dist.
+    echo "MARKER: dist v2, must NOT be adopted" > "$PROJECT_DIR/docker-compose.yml.dist"
+
+    run main --force-reinit --yes
+
+    [[ "$status" -eq 0 ]]
+    grep -q "operator customized this line" "$TEST_TEMP_DIR/docker-compose.yml"
+    ! grep -q "dist v2" "$TEST_TEMP_DIR/docker-compose.yml"
+}
+
+@test "init.sh dies cleanly when docker-compose.yml.dist is missing" {
+    load_init_functions
+    mock_ip_route "192.168.1.100"
+    mock_command_script "mkcert" '
+while [[ $# -gt 0 ]]; do
+    case "$1" in
+        -cert-file) echo "stub-cert" > "$2"; shift 2 ;;
+        -key-file) echo "stub-key" > "$2"; shift 2 ;;
+        -CAROOT) echo "/stub/caroot"; exit 0 ;;
+        -check) exit 0 ;;
+        -install) exit 0 ;;
+        *) shift ;;
+    esac
+done
+exit 0'
+    rm -f "$PROJECT_DIR/docker-compose.yml.dist"
+
+    run main --yes
+
+    [[ "$status" -eq 2 ]]
+    [[ "$output" == *"docker-compose.yml.dist not found"* ]]
+    [[ ! -f "$TEST_TEMP_DIR/docker-compose.yml" ]]
 }
 
 # =============================================================================

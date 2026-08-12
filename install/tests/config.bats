@@ -1,6 +1,11 @@
 #!/usr/bin/env bats
 # Configuration validation tests
-# Validates docker-compose.yml, .env.template, and generated configs
+# Validates docker-compose.yml.dist, .env.template, and generated configs.
+#
+# These tests run against a bare repo checkout (no init.sh run), so they
+# target docker-compose.yml.dist — the committed file — not the live,
+# untracked docker-compose.yml that only exists after init.sh runs. See
+# init.bats for tests covering the .dist -> live copy behavior itself.
 
 load 'test_helper'
 
@@ -13,20 +18,20 @@ teardown() {
 }
 
 # =============================================================================
-# docker-compose.yml - YAML Syntax Validation
+# docker-compose.yml.dist - YAML Syntax Validation
 # =============================================================================
 
-@test "docker-compose.yml exists" {
-    [[ -f "$PROJECT_ROOT/docker-compose.yml" ]]
+@test "docker-compose.yml.dist exists" {
+    [[ -f "$PROJECT_ROOT/docker-compose.yml.dist" ]]
 }
 
-@test "docker-compose.yml is valid YAML" {
+@test "docker-compose.yml.dist is valid YAML" {
     # Use Python's yaml parser (more portable than requiring Docker)
     # Falls back to docker compose if python3/pyyaml not available
     if command -v python3 &>/dev/null && python3 -c "import yaml" 2>/dev/null; then
-        run python3 -c "import yaml; yaml.safe_load(open('$PROJECT_ROOT/docker-compose.yml'))"
+        run python3 -c "import yaml; yaml.safe_load(open('$PROJECT_ROOT/docker-compose.yml.dist'))"
     elif command -v docker &>/dev/null; then
-        run docker compose -f "$PROJECT_ROOT/docker-compose.yml" config --quiet 2>&1
+        run docker compose -f "$PROJECT_ROOT/docker-compose.yml.dist" config --quiet 2>&1
     else
         skip "Neither python3+pyyaml nor docker available for YAML validation"
     fi
@@ -39,82 +44,82 @@ teardown() {
 }
 
 # =============================================================================
-# docker-compose.yml - Required Services
+# docker-compose.yml.dist - Required Services
 # =============================================================================
 
-@test "docker-compose.yml defines db service" {
-    assert_file_contains "$PROJECT_ROOT/docker-compose.yml" "  db:"
+@test "docker-compose.yml.dist defines db service" {
+    assert_file_contains "$PROJECT_ROOT/docker-compose.yml.dist" "  db:"
 }
 
-@test "docker-compose.yml defines redis service" {
-    assert_file_contains "$PROJECT_ROOT/docker-compose.yml" "  redis:"
+@test "docker-compose.yml.dist defines redis service" {
+    assert_file_contains "$PROJECT_ROOT/docker-compose.yml.dist" "  redis:"
 }
 
-@test "docker-compose.yml defines rabbitmq service" {
-    assert_file_contains "$PROJECT_ROOT/docker-compose.yml" "  rabbitmq:"
+@test "docker-compose.yml.dist defines rabbitmq service" {
+    assert_file_contains "$PROJECT_ROOT/docker-compose.yml.dist" "  rabbitmq:"
 }
 
-@test "docker-compose.yml defines coredns service" {
-    assert_file_contains "$PROJECT_ROOT/docker-compose.yml" "  coredns:"
+@test "docker-compose.yml.dist defines coredns service" {
+    assert_file_contains "$PROJECT_ROOT/docker-compose.yml.dist" "  coredns:"
 }
 
-@test "docker-compose.yml defines kamailio service" {
-    assert_file_contains "$PROJECT_ROOT/docker-compose.yml" "  kamailio:"
+@test "docker-compose.yml.dist defines kamailio service" {
+    assert_file_contains "$PROJECT_ROOT/docker-compose.yml.dist" "  kamailio:"
 }
 
-@test "docker-compose.yml defines api-manager service" {
-    assert_file_contains "$PROJECT_ROOT/docker-compose.yml" "  api-manager:"
+@test "docker-compose.yml.dist defines api-manager service" {
+    assert_file_contains "$PROJECT_ROOT/docker-compose.yml.dist" "  api-manager:"
 }
 
-@test "docker-compose.yml defines square-admin service" {
-    assert_file_contains "$PROJECT_ROOT/docker-compose.yml" "  square-admin:"
+@test "docker-compose.yml.dist defines square-admin service" {
+    assert_file_contains "$PROJECT_ROOT/docker-compose.yml.dist" "  square-admin:"
 }
 
-@test "docker-compose.yml defines square-meet service" {
-    assert_file_contains "$PROJECT_ROOT/docker-compose.yml" "  square-meet:"
+@test "docker-compose.yml.dist defines square-meet service" {
+    assert_file_contains "$PROJECT_ROOT/docker-compose.yml.dist" "  square-meet:"
 }
 
-@test "docker-compose.yml defines square-talk service" {
-    assert_file_contains "$PROJECT_ROOT/docker-compose.yml" "  square-talk:"
+@test "docker-compose.yml.dist defines square-talk service" {
+    assert_file_contains "$PROJECT_ROOT/docker-compose.yml.dist" "  square-talk:"
 }
 
 # =============================================================================
-# docker-compose.yml - web-proxy (Caddy reverse proxy, VOIP-1325)
+# docker-compose.yml.dist - web-proxy (Caddy reverse proxy, VOIP-1325)
 # =============================================================================
 
-@test "docker-compose.yml defines web-proxy service" {
-    assert_file_contains "$PROJECT_ROOT/docker-compose.yml" "  web-proxy:"
+@test "docker-compose.yml.dist defines web-proxy service" {
+    assert_file_contains "$PROJECT_ROOT/docker-compose.yml.dist" "  web-proxy:"
 }
 
-@test "docker-compose.yml gates web-proxy behind the web-proxy compose profile" {
-    assert_file_contains "$PROJECT_ROOT/docker-compose.yml" 'profiles: ["web-proxy"]'
+@test "docker-compose.yml.dist gates web-proxy behind the web-proxy compose profile" {
+    assert_file_contains "$PROJECT_ROOT/docker-compose.yml.dist" 'profiles: ["web-proxy"]'
 }
 
-@test "docker-compose.yml publishes web-proxy on HOST_EXTERNAL_IP's 80 and 443, not a 0.0.0.0 wildcard" {
+@test "docker-compose.yml.dist publishes web-proxy on HOST_EXTERNAL_IP's 80 and 443, not a 0.0.0.0 wildcard" {
     # Kamailio binds host ports 80/443 on its own dedicated
     # KAMAILIO_EXTERNAL_IP (network_mode: host, e.g. for WSS) — a wildcard
     # 0.0.0.0 publish for Caddy collides with that at the kernel bind layer
     # even though the IPs differ (confirmed live on bm-nyc-01: "address
     # already in use" starting web-proxy). HOST_EXTERNAL_IP is also the
     # address every admin/meet/talk/api DNS record targets.
-    assert_file_contains "$PROJECT_ROOT/docker-compose.yml" '"${HOST_EXTERNAL_IP:-0.0.0.0}:80:80"'
-    assert_file_contains "$PROJECT_ROOT/docker-compose.yml" '"${HOST_EXTERNAL_IP:-0.0.0.0}:443:443"'
+    assert_file_contains "$PROJECT_ROOT/docker-compose.yml.dist" '"${HOST_EXTERNAL_IP:-0.0.0.0}:80:80"'
+    assert_file_contains "$PROJECT_ROOT/docker-compose.yml.dist" '"${HOST_EXTERNAL_IP:-0.0.0.0}:443:443"'
 }
 
-@test "docker-compose.yml mounts the generated Caddyfile and certs into web-proxy" {
-    assert_file_contains "$PROJECT_ROOT/docker-compose.yml" "./config/caddy/Caddyfile:/etc/caddy/Caddyfile:ro"
-    assert_file_contains "$PROJECT_ROOT/docker-compose.yml" "./certs:/certs:ro"
+@test "docker-compose.yml.dist mounts the generated Caddyfile and certs into web-proxy" {
+    assert_file_contains "$PROJECT_ROOT/docker-compose.yml.dist" "./config/caddy/Caddyfile:/etc/caddy/Caddyfile:ro"
+    assert_file_contains "$PROJECT_ROOT/docker-compose.yml.dist" "./certs:/certs:ro"
 }
 
-@test "docker-compose.yml has a healthcheck for web-proxy" {
+@test "docker-compose.yml.dist has a healthcheck for web-proxy" {
     local block
-    block=$(sed -n '/^  web-proxy:/,/^  [a-z]/p' "$PROJECT_ROOT/docker-compose.yml")
+    block=$(sed -n '/^  web-proxy:/,/^  [a-z]/p' "$PROJECT_ROOT/docker-compose.yml.dist")
     [[ "$block" == *"healthcheck:"* ]]
 }
 
-@test "docker-compose.yml web-proxy depends on api-manager and the three square-* frontends" {
+@test "docker-compose.yml.dist web-proxy depends on api-manager and the three square-* frontends" {
     local block
-    block=$(sed -n '/^  web-proxy:/,/^  [a-z]/p' "$PROJECT_ROOT/docker-compose.yml")
+    block=$(sed -n '/^  web-proxy:/,/^  [a-z]/p' "$PROJECT_ROOT/docker-compose.yml.dist")
     [[ "$block" == *"- api-manager"* ]]
     [[ "$block" == *"- square-admin"* ]]
     [[ "$block" == *"- square-meet"* ]]
@@ -122,43 +127,43 @@ teardown() {
 }
 
 # =============================================================================
-# docker-compose.yml - Web Service Port Mappings
+# docker-compose.yml.dist - Web Service Port Mappings
 # =============================================================================
 
-@test "docker-compose.yml maps admin to port 3003" {
+@test "docker-compose.yml.dist maps admin to port 3003" {
     # SQUARE_BIND_ADDR (VOIP-1325): host address is templated (defaults to
     # 0.0.0.0) so init.sh can bind it to 127.0.0.1 instead with
     # --web-reverse-proxy, since Caddy becomes the sole external path then.
-    assert_file_contains "$PROJECT_ROOT/docker-compose.yml" 'SQUARE_BIND_ADDR:-0.0.0.0}:3003:80'
+    assert_file_contains "$PROJECT_ROOT/docker-compose.yml.dist" 'SQUARE_BIND_ADDR:-0.0.0.0}:3003:80'
 }
 
-@test "docker-compose.yml maps meet to port 3004" {
-    assert_file_contains "$PROJECT_ROOT/docker-compose.yml" 'SQUARE_BIND_ADDR:-0.0.0.0}:3004:80'
+@test "docker-compose.yml.dist maps meet to port 3004" {
+    assert_file_contains "$PROJECT_ROOT/docker-compose.yml.dist" 'SQUARE_BIND_ADDR:-0.0.0.0}:3004:80'
 }
 
-@test "docker-compose.yml maps talk to port 3005" {
-    assert_file_contains "$PROJECT_ROOT/docker-compose.yml" 'SQUARE_BIND_ADDR:-0.0.0.0}:3005:80'
+@test "docker-compose.yml.dist maps talk to port 3005" {
+    assert_file_contains "$PROJECT_ROOT/docker-compose.yml.dist" 'SQUARE_BIND_ADDR:-0.0.0.0}:3005:80'
 }
 
-@test "docker-compose.yml maps api-manager to port 8443" {
-    assert_file_contains "$PROJECT_ROOT/docker-compose.yml" "0.0.0.0:8443:443"
-}
-
-# =============================================================================
-# docker-compose.yml - Network Configuration
-# =============================================================================
-
-@test "docker-compose.yml defines default network" {
-    assert_file_contains "$PROJECT_ROOT/docker-compose.yml" "networks:"
-    assert_file_contains "$PROJECT_ROOT/docker-compose.yml" "  default:"
-}
-
-@test "docker-compose.yml default network uses 10.100.0.0/16 subnet" {
-    assert_file_contains "$PROJECT_ROOT/docker-compose.yml" "10.100.0.0/16"
+@test "docker-compose.yml.dist maps api-manager to port 8443" {
+    assert_file_contains "$PROJECT_ROOT/docker-compose.yml.dist" "0.0.0.0:8443:443"
 }
 
 # =============================================================================
-# docker-compose.yml - Container Fixed IPs
+# docker-compose.yml.dist - Network Configuration
+# =============================================================================
+
+@test "docker-compose.yml.dist defines default network" {
+    assert_file_contains "$PROJECT_ROOT/docker-compose.yml.dist" "networks:"
+    assert_file_contains "$PROJECT_ROOT/docker-compose.yml.dist" "  default:"
+}
+
+@test "docker-compose.yml.dist default network uses 10.100.0.0/16 subnet" {
+    assert_file_contains "$PROJECT_ROOT/docker-compose.yml.dist" "10.100.0.0/16"
+}
+
+# =============================================================================
+# docker-compose.yml.dist - Container Fixed IPs
 # =============================================================================
 # NOTE: admin/meet/talk/api-manager static ipv4_address pins were removed in
 # Phase 1 of the horizontal-scale-architecture design (docs/plans/2026-07-05):
@@ -168,69 +173,72 @@ teardown() {
 # ARE referenced by Kamailio's hardcoded routing) until Phase 3 replaces them
 # with dispatcher-list generation.
 
-@test "docker-compose.yml does not assign a fixed IP to admin (removed Phase 1)" {
+@test "docker-compose.yml.dist does not assign a fixed IP to admin (removed Phase 1)" {
     # Capture the FULL square-admin service block (from its header to the next
     # top-level service key), not just a fixed line count — a fixed -A2/-A3
     # window can silently stop short of the networks: block if unrelated
     # lines are inserted above it, turning this into a false-pass guard.
-    run sed -n '/^  square-admin:/,/^  [a-zA-Z_-]\+:/p' "$PROJECT_ROOT/docker-compose.yml"
+    run sed -n '/^  square-admin:/,/^  [a-zA-Z_-]\+:/p' "$PROJECT_ROOT/docker-compose.yml.dist"
     [[ "$output" != *"ipv4_address: 10.100.0.101"* ]]
 }
 
-@test "docker-compose.yml does not assign a fixed IP to meet (removed Phase 1)" {
-    run sed -n '/^  square-meet:/,/^  [a-zA-Z_-]\+:/p' "$PROJECT_ROOT/docker-compose.yml"
+@test "docker-compose.yml.dist does not assign a fixed IP to meet (removed Phase 1)" {
+    run sed -n '/^  square-meet:/,/^  [a-zA-Z_-]\+:/p' "$PROJECT_ROOT/docker-compose.yml.dist"
     [[ "$output" != *"ipv4_address: 10.100.0.102"* ]]
 }
 
-@test "docker-compose.yml does not assign a fixed IP to talk (removed Phase 1)" {
-    run sed -n '/^  square-talk:/,/^  [a-zA-Z_-]\+:/p' "$PROJECT_ROOT/docker-compose.yml"
+@test "docker-compose.yml.dist does not assign a fixed IP to talk (removed Phase 1)" {
+    run sed -n '/^  square-talk:/,/^  [a-zA-Z_-]\+:/p' "$PROJECT_ROOT/docker-compose.yml.dist"
     [[ "$output" != *"ipv4_address: 10.100.0.103"* ]]
 }
 
-@test "docker-compose.yml does not assign a fixed IP to api-manager (removed Phase 1)" {
-    run sed -n '/^  api-manager:/,/^  [a-zA-Z_-]\+:/p' "$PROJECT_ROOT/docker-compose.yml"
+@test "docker-compose.yml.dist does not assign a fixed IP to api-manager (removed Phase 1)" {
+    run sed -n '/^  api-manager:/,/^  [a-zA-Z_-]\+:/p' "$PROJECT_ROOT/docker-compose.yml.dist"
     [[ "$output" != *"ipv4_address: 10.100.0.100"* ]]
 }
 
 # =============================================================================
-# docker-compose.yml - State-layer address externalization (Phase 1)
+# docker-compose.yml.dist - State-layer address externalization (Phase 1)
 # =============================================================================
 # All bin-* app services must use ${DB_HOST:-db}/${REDIS_HOST:-redis}/
 # ${RABBITMQ_HOST:-rabbitmq} instead of hardcoded compose service names, so
 # an operator splitting the state layer onto a separate host only needs to
 # change .env (no compose edits). Verifies zero hardcoded stragglers remain.
 
-@test "docker-compose.yml uses \${MYSQL_ROOT_PASSWORD} in DATABASE_DSN (not hardcoded root_password)" {
-    run grep -c 'DATABASE_DSN=root:${MYSQL_ROOT_PASSWORD}@tcp' "$PROJECT_ROOT/docker-compose.yml"
+@test "docker-compose.yml.dist uses \${MYSQL_ROOT_PASSWORD} in DATABASE_DSN (not hardcoded root_password)" {
+    run grep -c 'DATABASE_DSN=root:${MYSQL_ROOT_PASSWORD}@tcp' "$PROJECT_ROOT/docker-compose.yml.dist"
     [ "$output" -ge 1 ]
-    run grep -c "DATABASE_DSN=root:root_password@" "$PROJECT_ROOT/docker-compose.yml"
+    run grep -c "DATABASE_DSN=root:root_password@" "$PROJECT_ROOT/docker-compose.yml.dist"
     [ "$output" -eq 0 ]
 }
 
-@test "docker-compose.yml uses \${MYSQL_ROOT_PASSWORD} in DATABASE_DSN_BIN/DATABASE_DSN_ASTERISK (registrar-manager, not hardcoded root_password)" {
-    run grep -cE 'DATABASE_DSN_(BIN|ASTERISK)=root:\$\{MYSQL_ROOT_PASSWORD\}@tcp' "$PROJECT_ROOT/docker-compose.yml"
+@test "docker-compose.yml.dist uses \${MYSQL_ROOT_PASSWORD} in DATABASE_DSN_BIN/DATABASE_DSN_ASTERISK (registrar-manager, not hardcoded root_password)" {
+    run grep -cE 'DATABASE_DSN_(BIN|ASTERISK)=root:\$\{MYSQL_ROOT_PASSWORD\}@tcp' "$PROJECT_ROOT/docker-compose.yml.dist"
     [ "$output" -ge 1 ]
-    run grep -cE "DATABASE_DSN_(BIN|ASTERISK)=root:root_password@" "$PROJECT_ROOT/docker-compose.yml"
+    run grep -cE "DATABASE_DSN_(BIN|ASTERISK)=root:root_password@" "$PROJECT_ROOT/docker-compose.yml.dist"
     [ "$output" -eq 0 ]
 }
 
-@test "docker-compose.yml has no hardcoded RABBITMQ_ADDRESS (all externalized via RABBITMQ_HOST)" {
-    run grep -c "RABBITMQ_ADDRESS=amqp://guest:guest@rabbitmq:5672" "$PROJECT_ROOT/docker-compose.yml"
+@test "docker-compose.yml.dist has no hardcoded RABBITMQ_ADDRESS (all externalized via RABBITMQ_HOST)" {
+    run grep -c "RABBITMQ_ADDRESS=amqp://guest:guest@rabbitmq:5672" "$PROJECT_ROOT/docker-compose.yml.dist"
     [ "$output" -eq 0 ]
 }
 
-@test "docker-compose.yml has no hardcoded REDIS_ADDRESS (all externalized via REDIS_HOST)" {
-    run grep -c "REDIS_ADDRESS=redis:6379" "$PROJECT_ROOT/docker-compose.yml"
+@test "docker-compose.yml.dist has no hardcoded REDIS_ADDRESS (all externalized via REDIS_HOST)" {
+    run grep -c "REDIS_ADDRESS=redis:6379" "$PROJECT_ROOT/docker-compose.yml.dist"
     [ "$output" -eq 0 ]
 }
 
-@test "docker-compose.yml has no hardcoded DATABASE_ASTERISK_HOST (externalized via DB_HOST)" {
-    run grep -cE "DATABASE_ASTERISK_HOST=db$" "$PROJECT_ROOT/docker-compose.yml"
+@test "docker-compose.yml.dist has no hardcoded DATABASE_ASTERISK_HOST (externalized via DB_HOST)" {
+    run grep -cE "DATABASE_ASTERISK_HOST=db$" "$PROJECT_ROOT/docker-compose.yml.dist"
     [ "$output" -eq 0 ]
 }
 
 @test "docker compose config renders identical DB/Redis/RabbitMQ addresses at defaults (no behavior change)" {
-    run bash -c "cd '$PROJECT_ROOT' && docker compose config 2>/dev/null | grep -m1 'DATABASE_DSN:'"
+    # Explicit -f: this runs against a bare checkout, where only
+    # docker-compose.yml.dist exists (docker-compose.yml is the untracked
+    # live copy init.sh creates, so implicit cwd discovery would fail here).
+    run bash -c "cd '$PROJECT_ROOT' && docker compose -f docker-compose.yml.dist config 2>/dev/null | grep -m1 'DATABASE_DSN:'"
     [[ "$output" == *"tcp(db:3306)/bin_manager"* ]]
 }
 
@@ -241,19 +249,19 @@ teardown() {
 }
 
 # =============================================================================
-# docker-compose.yml - Port Conflict Detection
+# docker-compose.yml.dist - Port Conflict Detection
 # =============================================================================
 
-@test "docker-compose.yml has no duplicate host port mappings" {
+@test "docker-compose.yml.dist has no duplicate host port mappings" {
     # Extract all host ports from port mappings (format: "host:container" or "0.0.0.0:host:container")
-    local ports=$(grep -oE '^\s*-\s*"[0-9.]*:?[0-9]+:[0-9]+"' "$PROJECT_ROOT/docker-compose.yml" | \
+    local ports=$(grep -oE '^\s*-\s*"[0-9.]*:?[0-9]+:[0-9]+"' "$PROJECT_ROOT/docker-compose.yml.dist" | \
                   grep -oE '[0-9]+:[0-9]+"' | \
                   cut -d: -f1 | \
                   sort)
 
     # Validate we found ports
     if [[ -z "$ports" ]]; then
-        echo "No port mappings found in docker-compose.yml" >&2
+        echo "No port mappings found in docker-compose.yml.dist" >&2
         return 1
     fi
 
@@ -371,7 +379,7 @@ teardown() {
     assert_file_contains "$SCRIPTS_DIR/setup-voip-network.sh" '["rtpengine-int"]="10.100.0.201"'
 }
 
-@test "docker-compose.yml kamailio uses expected internal IP" {
+@test "docker-compose.yml.dist kamailio uses expected internal IP" {
     # Kamailio should reference the internal IP for the internal network
-    assert_file_contains "$PROJECT_ROOT/docker-compose.yml" "KAMAILIO_INTERNAL_ADDR=10.100.0.200"
+    assert_file_contains "$PROJECT_ROOT/docker-compose.yml.dist" "KAMAILIO_INTERNAL_ADDR=10.100.0.200"
 }

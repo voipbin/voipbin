@@ -61,11 +61,19 @@ This is the recommended path for a fresh install, since it isolates the one
 step that actually needs root (`setup-host.sh`):
 
 ```bash
-./scripts/init.sh --yes          # 1. Generate .env and certificates
+./scripts/init.sh --yes          # 1. Generate .env, certificates, docker-compose.yml
 sudo ./scripts/setup-host.sh     # 2. The single sudo command (host mutations)
 ./scripts/start.sh               # 3. Start all 25+ services
 ./scripts/check-install.sh       # 4. Self-verify the install
 ```
+
+`docker-compose.yml` is copied from the committed `docker-compose.yml.dist`
+the first time `init.sh` runs, then left alone (untracked, `install/.gitignore`)
+for the life of the install — a later `git pull` in this repo updates
+`docker-compose.yml.dist` but never touches your live `docker-compose.yml`.
+To adopt upstream changes (new services, image digest bumps), diff the two
+files and merge deliberately, or run `scripts/sync-compose-images.sh` with
+`COMPOSE_FILE=docker-compose.yml` to pull in just the image digest updates.
 
 See [Install Modes](#install-modes) for `external` mode (a real domain
 instead of `voipbin.test`).
@@ -281,7 +289,7 @@ Besides the classic `sudo ./voipbin` flow, the sandbox supports a
 AI agent (or a human without standing root) can drive the install:
 
 ```bash
-./scripts/init.sh --yes          # 1. Generate .env and certificates (unprivileged)
+./scripts/init.sh --yes          # 1. Generate .env, certificates, docker-compose.yml (unprivileged)
 sudo ./scripts/setup-host.sh     # 2. The single sudo command (host mutations)
 ./scripts/start.sh               # 3. Start all services (unprivileged)
 ./scripts/check-install.sh       # 4. Self-verify the install (unprivileged)
