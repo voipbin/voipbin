@@ -71,6 +71,41 @@ run_script() {
     [[ -z "$output" ]]
 }
 
+@test "refuses when an unexpected file is renamed INTO the tree (rename-aware parsing)" {
+    # Regression test: `git status --porcelain` (newline form) renders a
+    # rename as "R  old -> new" on one line - naive `awk '{print $2}'`
+    # parsing extracts "old" and never sees "new", which would let a
+    # renamed-in unexpected file slip past the guard silently. The script
+    # must use the -z (NUL-delimited) form instead, parsed rename-aware.
+    setup_fake_repo
+    apply_fake_bump "sha256:$(printf 'c%.0s' {1..64})"
+    (
+        cd "$REPO_DIR" || exit 1
+        echo "harmless content" > innocuous.txt
+        git add innocuous.txt
+        git mv innocuous.txt "install/sneaky-renamed-in.txt"
+    )
+    cd "$REPO_DIR" || exit 1
+    GH_TOKEN="fake-token" run run_script "voipbin/bin-agent-manager" "cccccccccccccccccccccccccccccccccccccccc"
+
+    [[ "$status" -ne 0 ]]
+    [[ "$output" == *"unexpected dirty file"* ]]
+    [[ "$output" == *"sneaky-renamed-in.txt"* ]]
+    run git -C "$REPO_DIR" branch --list "NOJIRA-Bump-*"
+    [[ -z "$output" ]]
+}
+
+@test "refuses a source-repo-url outside github.com/voipbin/" {
+    setup_fake_repo
+    apply_fake_bump "sha256:$(printf 'c%.0s' {1..64})"
+    cd "$REPO_DIR" || exit 1
+    GH_TOKEN="fake-token" run run_script "voipbin/bin-agent-manager" "cccccccccccccccccccccccccccccccccccccccc" \
+        "https://evil.example.com/phishing"
+
+    [[ "$status" -ne 0 ]]
+    [[ "$output" == *"source-repo-url must start with"* ]]
+}
+
 @test "happy path: commits, pushes, and opens a PR with the correct digests in the body" {
     setup_fake_repo
     install_fake_curl

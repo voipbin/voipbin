@@ -32,6 +32,11 @@
 #              curl header. Both approaches keep the token out of anything
 #              that could later leak via `git remote -v`, `.git/config`, a
 #              cached git credential store, or shell history replay.
+#              Residual, accepted exposure: like any credential passed as a
+#              command-line argument, it is briefly visible to other
+#              processes on the same host via `ps`/`/proc/<pid>/cmdline`
+#              while the `git`/`curl` child process runs - standard for a
+#              single-tenant CI runner, not eliminated by the above.
 #
 # Safety: refuses to run (exits 1, no branch/commit/push attempted) if the
 # working tree has ANY dirty file other than the two expected ones - this
@@ -52,7 +57,7 @@ log_warn()  { echo "[WARN] $*" >&2; }
 log_error() { echo "[ERROR] $*" >&2; }
 
 usage() {
-    sed -n '2,33p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'
+    sed -n '2,48p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'
 }
 
 if [[ "${1:-}" == "-h" || "${1:-}" == "--help" ]]; then
@@ -84,13 +89,45 @@ if ! [[ "$SOURCE_COMMIT" =~ ^[0-9a-f]{40}$ ]]; then
     exit 1
 fi
 
+# Rendered as a clickable link in the (public, human-reviewed) PR body -
+# constrained to voipbin's own GitHub org so this can't become an arbitrary
+# link-injection vector even though the design assumes CI-trusted callers.
+if [[ -n "$SOURCE_REPO_URL" ]] && ! [[ "$SOURCE_REPO_URL" =~ ^https://github\.com/voipbin/ ]]; then
+    log_error "source-repo-url must start with https://github.com/voipbin/ (got: $SOURCE_REPO_URL)"
+    exit 1
+fi
+
 if ! git rev-parse --git-dir &> /dev/null; then
     log_error "not inside a git checkout"
     exit 1
 fi
 
 # ---- Narrow scope guard: refuse anything but the two expected dirty files ----
-DIRTY_FILES="$(git status --porcelain | awk '{print $2}')"
+# Uses `git status --porcelain=v1 -z` (NUL-delimited) parsed in Python, NOT
+# `awk '{print $2}'` on the newline form - the newline form renders a
+# rename/copy as "XY old -> new" on ONE line, so naive whitespace-splitting
+# silently extracts the OLD path and never sees the new one, which would
+# let a renamed-away expected file (or a renamed-in unexpected file) slip
+# past this guard undetected. The -z form instead emits the new path, then
+# (only for R/C status codes) a second NUL-terminated field with the old
+# path - parsed explicitly below so nothing is missed.
+DIRTY_FILES="$(git status --porcelain=v1 -z | python3 -c "
+import sys
+data = sys.stdin.buffer.read()
+parts = data.split(b'\x00')
+paths = []
+i = 0
+while i < len(parts):
+    entry = parts[i]
+    i += 1
+    if not entry:
+        continue
+    status, path = entry[:2], entry[3:]
+    paths.append(path.decode('utf-8', 'surrogateescape'))
+    if status[0:1] in (b'R', b'C') or status[1:2] in (b'R', b'C'):
+        i += 1  # skip the paired orig-path field
+print('\n'.join(paths))
+")"
 if [[ -z "$DIRTY_FILES" ]]; then
     log_info "Nothing to PR: working tree is clean (versions.lock/docker-compose.yml.dist unchanged)."
     log_info "This is not an error - it means the digest bump was a no-op (already at that pin)."
