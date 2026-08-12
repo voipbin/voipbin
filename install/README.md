@@ -61,11 +61,46 @@ This is the recommended path for a fresh install, since it isolates the one
 step that actually needs root (`setup-host.sh`):
 
 ```bash
-./scripts/init.sh --yes          # 1. Generate .env and certificates
+./scripts/init.sh --yes          # 1. Generate .env, certificates, docker-compose.yml
 sudo ./scripts/setup-host.sh     # 2. The single sudo command (host mutations)
 ./scripts/start.sh               # 3. Start all 25+ services
 ./scripts/check-install.sh       # 4. Self-verify the install
 ```
+
+`docker-compose.yml` is copied from the committed `docker-compose.yml.dist`
+the first time `init.sh` runs, then left alone (untracked, `install/.gitignore`)
+for the life of the install — a later `git pull` in this repo updates
+`docker-compose.yml.dist` but never touches your live `docker-compose.yml`.
+To adopt upstream changes (new services, image digest bumps), diff the two
+files and merge deliberately, or run `scripts/sync-compose-images.sh` with
+`COMPOSE_FILE=docker-compose.yml` to pull in just the image digest updates.
+
+**Upgrading an install that predates this split:** before this change,
+`docker-compose.yml` was a normal git-tracked file. The first `git pull`
+that brings in `docker-compose.yml.dist` turns that path into an ordinary
+git rename — your tracked `docker-compose.yml` is deleted from the working
+tree with no warning or conflict, and `docker-compose.yml.dist` appears in
+its place. `docker compose` commands fail ("no configuration file
+provided") until you recover it. **Do not just re-run `init.sh`** — it will
+copy whatever `docker-compose.yml.dist` is at the current commit, which may
+not match what you were actually running. Instead, before or immediately
+after that `git pull`, recover your actual pre-pull file (run these from
+this `install/` directory):
+```bash
+git log --all --oneline --diff-filter=D -- docker-compose.yml
+# ^ finds the commit that DELETED it (the split commit, e.g. this pull).
+# The file lived in that commit's PARENT - use <commit>^, not the commit
+# itself (`git show <commit>:docker-compose.yml` fails with "exists on
+# disk, but not in '<commit>'" - it was already gone there). The leading
+# ./ matters too: `git show <rev>:<path>` resolves <path> from the REPO
+# ROOT, not the cwd (unlike git log/diff's pathspecs) - without it this
+# fails from inside install/ with "exists, but not '<bare-name>'".
+git show <that commit>^:./docker-compose.yml > docker-compose.yml
+```
+`init.sh` also detects this case itself (an existing `.env` plus a missing
+`docker-compose.yml`) and prints this same recovery guidance rather than
+silently copying `.dist` — but doing the recovery proactively, before
+running any other command, is safer than relying on that reminder.
 
 See [Install Modes](#install-modes) for `external` mode (a real domain
 instead of `voipbin.test`).
@@ -281,7 +316,7 @@ Besides the classic `sudo ./voipbin` flow, the sandbox supports a
 AI agent (or a human without standing root) can drive the install:
 
 ```bash
-./scripts/init.sh --yes          # 1. Generate .env and certificates (unprivileged)
+./scripts/init.sh --yes          # 1. Generate .env, certificates, docker-compose.yml (unprivileged)
 sudo ./scripts/setup-host.sh     # 2. The single sudo command (host mutations)
 ./scripts/start.sh               # 3. Start all services (unprivileged)
 ./scripts/check-install.sh       # 4. Self-verify the install (unprivileged)

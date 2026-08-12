@@ -7,6 +7,9 @@ setup() {
     setup_test_env
     # Create .env.template (required by init.sh)
     touch "$PROJECT_DIR/.env.template"
+    # Create docker-compose.yml.dist (required by init.sh's compose-file copy
+    # step; content doesn't matter for these tests, only its existence)
+    touch "$PROJECT_DIR/docker-compose.yml.dist"
 }
 
 teardown() {
@@ -1192,6 +1195,215 @@ exit 0'
     [[ "$asterisk_pw" =~ ^[0-9a-f]{32}$ ]]
     [[ -n "$mysql_root_pw" ]]
     [[ "$asterisk_pw" != "$mysql_root_pw" ]]
+}
+
+# =============================================================================
+# docker-compose.yml.dist -> docker-compose.yml (dist/live split): the live
+# file is untracked (install/.gitignore) so a later `git pull` never
+# silently rewrites a running server's compose config. init.sh copies it
+# once on first install and must never overwrite an existing one afterward,
+# not even on --force-reinit.
+# =============================================================================
+
+@test "init.sh copies docker-compose.yml.dist to docker-compose.yml when missing" {
+    load_init_functions
+    mock_ip_route "192.168.1.100"
+    mock_command_script "mkcert" '
+while [[ $# -gt 0 ]]; do
+    case "$1" in
+        -cert-file) echo "stub-cert" > "$2"; shift 2 ;;
+        -key-file) echo "stub-key" > "$2"; shift 2 ;;
+        -CAROOT) echo "/stub/caroot"; exit 0 ;;
+        -check) exit 0 ;;
+        -install) exit 0 ;;
+        *) shift ;;
+    esac
+done
+exit 0'
+    echo "MARKER: dist content" > "$PROJECT_DIR/docker-compose.yml.dist"
+
+    run main --yes
+
+    [[ "$status" -eq 0 ]]
+    [[ -f "$TEST_TEMP_DIR/docker-compose.yml" ]]
+    diff "$TEST_TEMP_DIR/docker-compose.yml" "$TEST_TEMP_DIR/docker-compose.yml.dist"
+}
+
+@test "init.sh --force-reinit never overwrites an existing docker-compose.yml" {
+    load_init_functions
+    mock_ip_route "192.168.1.100"
+    mock_command_script "mkcert" '
+while [[ $# -gt 0 ]]; do
+    case "$1" in
+        -cert-file) echo "stub-cert" > "$2"; shift 2 ;;
+        -key-file) echo "stub-key" > "$2"; shift 2 ;;
+        -CAROOT) echo "/stub/caroot"; exit 0 ;;
+        -check) exit 0 ;;
+        -install) exit 0 ;;
+        *) shift ;;
+    esac
+done
+exit 0'
+    echo "MARKER: dist v1" > "$PROJECT_DIR/docker-compose.yml.dist"
+
+    run main --yes
+    [[ "$status" -eq 0 ]]
+
+    # Operator hand-customized the live file after install.
+    echo "MARKER: operator customized this line" > "$TEST_TEMP_DIR/docker-compose.yml"
+    # Simulate an upstream repo update shipping a different .dist.
+    echo "MARKER: dist v2, must NOT be adopted" > "$PROJECT_DIR/docker-compose.yml.dist"
+
+    run main --force-reinit --yes
+
+    [[ "$status" -eq 0 ]]
+    grep -q "operator customized this line" "$TEST_TEMP_DIR/docker-compose.yml"
+    ! grep -q "dist v2" "$TEST_TEMP_DIR/docker-compose.yml"
+}
+
+@test "init.sh dies cleanly when docker-compose.yml.dist is missing" {
+    load_init_functions
+    mock_ip_route "192.168.1.100"
+    mock_command_script "mkcert" '
+while [[ $# -gt 0 ]]; do
+    case "$1" in
+        -cert-file) echo "stub-cert" > "$2"; shift 2 ;;
+        -key-file) echo "stub-key" > "$2"; shift 2 ;;
+        -CAROOT) echo "/stub/caroot"; exit 0 ;;
+        -check) exit 0 ;;
+        -install) exit 0 ;;
+        *) shift ;;
+    esac
+done
+exit 0'
+    rm -f "$PROJECT_DIR/docker-compose.yml.dist"
+
+    run main --yes
+
+    [[ "$status" -eq 2 ]]
+    [[ "$output" == *"docker-compose.yml.dist not found"* ]]
+    [[ ! -f "$TEST_TEMP_DIR/docker-compose.yml" ]]
+}
+
+@test "init.sh warns loudly (but still recovers) when docker-compose.yml is missing on an already-initialized install" {
+    # Simulates an install that predates the docker-compose.yml.dist split
+    # pulling this change: git's rename silently deletes the tracked
+    # docker-compose.yml, .env is untouched and still present. A plain
+    # 'init.sh --yes' re-run must not silently paper over that with today's
+    # .dist as if nothing happened.
+    load_init_functions
+    mock_ip_route "192.168.1.100"
+    mock_command_script "mkcert" '
+while [[ $# -gt 0 ]]; do
+    case "$1" in
+        -cert-file) echo "stub-cert" > "$2"; shift 2 ;;
+        -key-file) echo "stub-key" > "$2"; shift 2 ;;
+        -CAROOT) echo "/stub/caroot"; exit 0 ;;
+        -check) exit 0 ;;
+        -install) exit 0 ;;
+        *) shift ;;
+    esac
+done
+exit 0'
+    create_env_file "DOMAIN_MODE=internal" "BASE_DOMAIN=voipbin.test"
+    echo "MARKER: dist content" > "$PROJECT_DIR/docker-compose.yml.dist"
+    # docker-compose.yml deliberately absent (simulating the git-rename delete)
+
+    run main --yes
+
+    [[ "$status" -eq 0 ]]
+    [[ -f "$TEST_TEMP_DIR/docker-compose.yml" ]]
+    [[ "$output" == *"docker-compose.yml is missing but .env already existed"* ]]
+    [[ "$output" == *"git log --all --oneline --diff-filter=D -- docker-compose.yml"* ]]
+    # Both the ^ and the leading ./ matter: `git show <commit>:docker-compose.yml`
+    # on the DELETING commit itself fails ("exists on disk, but not in
+    # '<commit>'") since the file is already gone there - must target the
+    # parent. And `git show <rev>:<path>` resolves <path> from the repo
+    # ROOT, not the cwd - without ./ this fails from inside install/.
+    # See "init.sh's printed recovery command actually recovers the file
+    # when executed" below, which runs this exact command against real git
+    # history instead of just checking the text is present.
+    [[ "$output" == *"git show <that commit>^:./docker-compose.yml"* ]]
+}
+
+@test "init.sh's printed recovery command actually recovers the file when executed" {
+    # Regression test for two real bugs the string-match test above cannot
+    # catch: round 4 found `git show <commit>:docker-compose.yml` (missing
+    # the ^) always fails on the deleting commit; round 5 found
+    # `git show <commit>^:docker-compose.yml` (missing the leading ./)
+    # always fails once run from an install/ subdirectory, because
+    # `git show <rev>:<path>` resolves <path> from the repo root, not cwd
+    # (unlike git log/diff's pathspecs). This test builds a real throwaway
+    # git repo shaped like the actual voipbin/install/ split, and executes
+    # the literal command sequence init.sh prints - not just greps for it.
+    if ! command -v git &>/dev/null; then
+        skip "git not available"
+    fi
+
+    local repo="$TEST_TEMP_DIR/recovery-repo"
+    mkdir -p "$repo/install"
+    (
+        cd "$repo" || exit 1
+        git init -q
+        git config user.email "test@example.com"
+        git config user.name "Test"
+
+        # Pre-split commit: docker-compose.yml is a normal tracked file.
+        echo "ORIGINAL PRE-SPLIT CONTENT" > install/docker-compose.yml
+        git add install/docker-compose.yml
+        git commit -q -m "pre-split"
+
+        # Split commit: the exact transition that deletes it (git rename
+        # to gitignored is add-new-file + delete-old-file in one commit).
+        # `git rm` prunes the now-empty install/ dir, so recreate it first.
+        git rm -q install/docker-compose.yml
+        mkdir -p install
+        echo "docker-compose.yml" > install/.gitignore
+        echo "DIST CONTENT (current HEAD, NOT what was running)" > install/docker-compose.yml.dist
+        git add install/docker-compose.yml.dist install/.gitignore
+        git commit -q -m "split commit (simulates this PR)"
+    )
+
+    # Run the EXACT commands init.sh prints, from install/ (the documented
+    # working directory), and capture what they actually produce.
+    (
+        cd "$repo/install" || exit 1
+        local del_commit
+        del_commit=$(git log --all --oneline --diff-filter=D -- docker-compose.yml | head -1 | cut -d' ' -f1)
+        [[ -n "$del_commit" ]] || { echo "no deletion commit found" >&2; exit 1; }
+        git show "${del_commit}^:./docker-compose.yml" > docker-compose.yml.recovered
+    )
+
+    [[ -f "$repo/install/docker-compose.yml.recovered" ]]
+    run cat "$repo/install/docker-compose.yml.recovered"
+    [[ "$output" == "ORIGINAL PRE-SPLIT CONTENT" ]]
+    # And it must be genuinely distinct from .dist - proving recovery found
+    # what was actually running, not just re-copied the current template.
+    [[ "$output" != "DIST CONTENT (current HEAD, NOT what was running)" ]]
+}
+
+@test "init.sh does not warn about the compose migration on a genuinely fresh install" {
+    load_init_functions
+    mock_ip_route "192.168.1.100"
+    mock_command_script "mkcert" '
+while [[ $# -gt 0 ]]; do
+    case "$1" in
+        -cert-file) echo "stub-cert" > "$2"; shift 2 ;;
+        -key-file) echo "stub-key" > "$2"; shift 2 ;;
+        -CAROOT) echo "/stub/caroot"; exit 0 ;;
+        -check) exit 0 ;;
+        -install) exit 0 ;;
+        *) shift ;;
+    esac
+done
+exit 0'
+    # No pre-existing .env - a real fresh install.
+
+    run main --yes
+
+    [[ "$status" -eq 0 ]]
+    [[ -f "$TEST_TEMP_DIR/docker-compose.yml" ]]
+    [[ "$output" != *"docker-compose.yml is missing but .env already existed"* ]]
 }
 
 # =============================================================================

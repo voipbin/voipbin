@@ -1,24 +1,33 @@
 #!/bin/bash
 # VoIPBin Install - versions.lock -> docker-compose.yml image sync
-# Rewrites every `image: voipbin/<name>@sha256:...` line in docker-compose.yml to
-# the digest versions.lock pins for that image.
+# Rewrites every `image: voipbin/<name>@sha256:...` line in the target compose
+# file to the digest versions.lock pins for that image.
 #
 # Usage:
 #   ./scripts/sync-compose-images.sh
 #
 # Environment:
-#   LOCK_FILE     path to versions.lock       (default: <project>/versions.lock)
-#   COMPOSE_FILE  path to docker-compose.yml  (default: <project>/docker-compose.yml)
+#   LOCK_FILE     path to versions.lock            (default: <project>/versions.lock)
+#   COMPOSE_FILE  path to the compose file to sync  (default: <project>/docker-compose.yml.dist)
+#
+# Defaults to docker-compose.yml.dist (the committed file new installs copy
+# from — see docker-compose.yml.dist's header comment) rather than the live
+# docker-compose.yml, which is untracked and operator-owned after first
+# install. Point COMPOSE_FILE at your live docker-compose.yml to selectively
+# pull in just the image digest updates without adopting other .dist changes.
 #
 # Why this exists:
-#   docker-compose.yml hardcodes image digests independently of versions.lock and
+#   The compose file hardcodes image digests independently of versions.lock and
 #   nothing used to reconcile them, so regenerating the lock had ZERO effect on
-#   what actually runs. Both files stay committed and standalone-runnable; this
-#   script is the explicit reconciliation step, so `git diff` remains meaningful
-#   for image bumps. (The rejected alternative was templating compose image
-#   references from the lock via ${VAR} interpolation, which makes the committed
-#   compose file non-runnable and defers the failure to first boot on a customer
-#   machine.)
+#   what actually runs. docker-compose.yml.dist stays committed and
+#   standalone-runnable (the live docker-compose.yml, generated from it on
+#   first install, is untracked - see docker-compose.yml.dist's header
+#   comment); this script is the explicit reconciliation step against
+#   whichever compose file COMPOSE_FILE points at, so `git diff` remains
+#   meaningful for image bumps against .dist. (The rejected alternative was
+#   templating compose image references from the lock via ${VAR}
+#   interpolation, which makes the committed compose file non-runnable and
+#   defers the failure to first boot on a customer machine.)
 #
 # Scope:
 #   - Only `image:` lines whose repository matches a `voipbin/*` name tracked in
@@ -47,7 +56,7 @@ PROJECT_DIR="$(dirname "$SCRIPT_DIR")"
 source "$SCRIPT_DIR/common.sh"
 
 LOCK_FILE="${LOCK_FILE:-$PROJECT_DIR/versions.lock}"
-COMPOSE_FILE="${COMPOSE_FILE:-$PROJECT_DIR/docker-compose.yml}"
+COMPOSE_FILE="${COMPOSE_FILE:-$PROJECT_DIR/docker-compose.yml.dist}"
 
 usage() {
     sed -n '2,40p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'

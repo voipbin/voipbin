@@ -77,9 +77,13 @@ PROTECTED_PATHS = [
 ]
 
 # Files/directories that are tracked for script updates
+# NOTE: docker-compose.yml (no suffix) is the untracked, locally-generated
+# live compose file (see docker-compose.yml.dist's header comment) - it is
+# gitignored and would never show a diff anyway. docker-compose.yml.dist is
+# the committed file that actually changes upstream.
 TRACKED_PATHS = [
     "scripts/",
-    "docker-compose.yml",
+    "docker-compose.yml.dist",
     ".env.template",
     "config/",
     "tests/",
@@ -5185,8 +5189,11 @@ Type 'registrar <subcommand> help' for more details.
         if check_only:
             print(f"\n{yellow('Dry-run:')} pinned repo detected (versions.lock). 'update all' would run:")
             print("  1. backup                  - full data backup into backups/<ts>/ (skip with --skip-backup)")
-            print("  2. update scripts          - git pull (new docker-compose.yml + versions.lock + scripts)")
-            print("     (the CLI then re-execs itself so steps 3-6 run the NEW code)")
+            print("  2. update scripts          - git pull (new docker-compose.yml.dist + versions.lock + scripts)")
+            print("     (the CLI then re-execs itself so steps 2b-6 run the NEW code)")
+            print("  2b. sync compose digests   - scripts/sync-compose-images.sh reconciles the LIVE")
+            print("     docker-compose.yml's image: lines against the new versions.lock (the live file")
+            print("     is untracked - git pull alone never touches it, see docker-compose.yml.dist header)")
             print("  3. docker compose pull     - fetch the new pinned digests")
             print("  4. scripts/migrate.sh      - alembic migrations at the new dbscheme pin (abort on failure)")
             print("  5. docker compose up -d    - recreate only containers whose digest changed")
@@ -5222,6 +5229,31 @@ Type 'registrar <subcommand> help' for more details.
             print(f"  Pre-upgrade backup: backups/{backup_ts}/")
 
         restore_hint = f"voipbin restore {backup_ts} --force" if backup_ts else "voipbin restore <ts> --force"
+
+        # ---- Step 2b: reconcile the LIVE docker-compose.yml's image digests ----
+        # docker-compose.yml is untracked (install/.gitignore) after the
+        # docker-compose.yml.dist split, so step 2's `git pull` updated
+        # docker-compose.yml.dist and versions.lock but never touched the
+        # live docker-compose.yml `docker compose pull`/`up -d` below
+        # actually read. Without this step the pinned upgrade would silently
+        # no-op: same digests pulled/recreated, "Upgrade complete!" printed,
+        # nothing actually upgraded.
+        sync_script = os.path.join(project_dir, "scripts", "sync-compose-images.sh")
+        print(f"\n{blue('==>')} Step 2b/6: syncing docker-compose.yml image digests from versions.lock...")
+        if not os.path.exists(sync_script):
+            print(f"\n{red('Upgrade aborted:')} {sync_script} not found.")
+            print("  The 'update scripts' step may have pulled an incomplete tree -")
+            print("  check 'git status' in the repo, or re-clone and retry 'update all'.")
+            return
+        sync_env = os.environ.copy()
+        sync_env["COMPOSE_FILE"] = os.path.join(project_dir, "docker-compose.yml")
+        rc = subprocess.call(["bash", sync_script], cwd=project_dir, env=sync_env)
+        if rc != 0:
+            print(f"\n{red('Upgrade aborted:')} sync-compose-images.sh failed (exit {rc}).")
+            print("  docker-compose.yml was not modified - the script writes atomically via a")
+            print("  temp file + rename, so a mid-run failure leaves the old file intact.")
+            print("  Old containers are still running the old digests.")
+            return
 
         # ---- Step 3: docker compose pull (fetch the NEW pinned digests) ----
         print(f"\n{blue('==>')} Step 3/6: pulling new pinned images (docker compose pull)...")
@@ -5271,8 +5303,10 @@ Type 'registrar <subcommand> help' for more details.
             print("    - Data rollback:  stop services, then run:")
             print(f"        {restore_hint}")
             print("    - Image rollback: git checkout the previous repo commit")
-            print("      (docker-compose.yml + versions.lock + scripts are git-versioned), then")
-            print("      'docker compose up -d'.")
+            print("      (docker-compose.yml.dist + versions.lock + scripts are git-versioned; the")
+            print("      live docker-compose.yml is not), then re-sync it and recreate:")
+            print(f"        COMPOSE_FILE={os.path.join(project_dir, 'docker-compose.yml')} bash scripts/sync-compose-images.sh")
+            print("        docker compose up -d")
             print(f"  {yellow('Do NOT use')} 'voipbin rollback' here: it replays docker-compose.override.yml")
             print("  snapshots that only exist on UNPINNED repos and would silently unpin this repo.")
 
@@ -6259,8 +6293,10 @@ Type 'registrar <subcommand> help' for more details.
             print("\n  What you probably want instead:")
             print(f"    - Data restore:   {bold('voipbin restore <ts> --force')}  (from backups/)")
             print("    - Image rollback: git checkout the previous repo commit")
-            print("      (docker-compose.yml + versions.lock + scripts are git-versioned),")
-            print("      then 'docker compose up -d'.")
+            print("      (docker-compose.yml.dist + versions.lock + scripts are git-versioned;")
+            print("      the live docker-compose.yml is not), then re-sync it and recreate:")
+            print(f"        COMPOSE_FILE={os.path.join(project_dir, 'docker-compose.yml')} bash scripts/sync-compose-images.sh")
+            print("        docker compose up -d")
             return
 
         # Check if this is a script rollback

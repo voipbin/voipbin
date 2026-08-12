@@ -607,6 +607,13 @@ main() {
 
     parse_args "$@"
 
+    # Captured BEFORE any writes this run makes, for the docker-compose.yml.dist
+    # migration-transition warning below: an existing .env at this point means
+    # this is an install that was already running before this invocation, not
+    # a genuinely fresh clone.
+    local env_preexisted="false"
+    [[ -f "$ENV_FILE" ]] && env_preexisted="true"
+
     echo ""
     echo "=============================================="
     echo "  VoIPBin Install Initialization"
@@ -999,6 +1006,59 @@ EOF
 
     log_info "  Created $ENV_FILE"
     echo ""
+
+    # docker-compose.yml (live copy): copied from docker-compose.yml.dist on
+    # first install only. The live file is intentionally untracked
+    # (install/.gitignore) so a later `git pull` never silently rewrites a
+    # running server's compose config — see docker-compose.yml.dist's header
+    # comment for the full rationale. Idempotent and NOT re-run by
+    # --force-reinit: an existing docker-compose.yml (including one the
+    # operator has customized) is never overwritten.
+    local compose_dist="$PROJECT_DIR/docker-compose.yml.dist"
+    local compose_live="$PROJECT_DIR/docker-compose.yml"
+    if [[ ! -f "$compose_live" ]]; then
+        if [[ ! -f "$compose_dist" ]]; then
+            die 2 "docker-compose.yml.dist not found at $compose_dist"
+        fi
+        if [[ "$env_preexisted" == "true" ]]; then
+            # An .env already existed before this run: this is NOT a fresh
+            # install, so a missing docker-compose.yml here almost certainly
+            # means an install that predates the docker-compose.yml.dist
+            # split just pulled this change and git's rename silently
+            # deleted its tracked docker-compose.yml from the working tree
+            # (git-tracked file -> gitignored is an ordinary delete+add on
+            # pull, no warning, no conflict). Copying today's .dist here
+            # would give this server whatever is CURRENTLY at HEAD instead
+            # of what it was actually running - exactly the "git pull
+            # silently changes a live server's compose config" failure this
+            # split exists to prevent. Make that risk loud instead of silent.
+            log_warn "docker-compose.yml is missing but .env already existed."
+            log_warn "  If this install predates the docker-compose.yml.dist split, your"
+            log_warn "  previous docker-compose.yml may have been deleted by a 'git pull'"
+            log_warn "  (a tracked file becoming gitignored is an ordinary delete on pull)."
+            log_warn "  Recover the version you were actually running before trusting this"
+            log_warn "  (run these from this install/ directory):"
+            log_warn "    git log --all --oneline --diff-filter=D -- docker-compose.yml"
+            log_warn "    # ^ finds the commit that DELETED it (the split commit, e.g. THIS pull)."
+            log_warn "    # The file lived in that commit's PARENT - use <that commit>^, not the"
+            log_warn "    # commit itself (\`git show <commit>:docker-compose.yml\` fails with"
+            log_warn "    # \"exists on disk, but not in '<commit>'\" - it was already gone there)."
+            log_warn "    # The leading ./ matters too: \`git show <rev>:<path>\` resolves <path>"
+            log_warn "    # from the REPO ROOT, not the cwd (unlike git log/diff's pathspecs) -"
+            log_warn "    # without it, this fails from inside install/ with \"exists, but not"
+            log_warn "    # '<bare-name>'\"."
+            log_warn "    git show <that commit>^:./docker-compose.yml > docker-compose.yml.recovered"
+            log_warn "    diff docker-compose.yml.recovered docker-compose.yml.dist"
+            log_warn "  Proceeding to copy docker-compose.yml.dist as a placeholder so the"
+            log_warn "  install isn't left completely non-functional; verify it before running"
+            log_warn "  'docker compose up -d'."
+            echo ""
+        fi
+        log_step "Creating docker-compose.yml..."
+        cp "$compose_dist" "$compose_live"
+        log_info "  Created $compose_live (from docker-compose.yml.dist)"
+        echo ""
+    fi
 
     # Step 7.5 (external mode only, §2.6): full BYO certificate install now
     # that .env exists — layout under certs/ plus the .env base64 rewrite.

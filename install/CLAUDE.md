@@ -23,10 +23,48 @@ The `start.sh` script handles everything:
 ### Step-by-Step Alternative
 
 ```bash
-./scripts/init.sh              # 1. Generate .env and certificates
+./scripts/init.sh              # 1. Generate .env, certificates, docker-compose.yml
 nano .env                      # 2. Add your API keys (GCP, OpenAI, etc.)
 ./scripts/start.sh             # 3. Start all services (test data seeding is opt-in)
 ```
+
+### docker-compose.yml.dist vs docker-compose.yml
+
+`docker-compose.yml` is copied once from the committed `docker-compose.yml.dist`
+on first `init.sh` run and is then untracked (`install/.gitignore`) — a later
+`git pull` updates `docker-compose.yml.dist` but never rewrites the live
+`docker-compose.yml`, so a repo update never silently changes a running
+install's compose config. `init.sh` never overwrites an existing
+`docker-compose.yml`, not even on `--force-reinit`; `clean.sh --purge`
+removes it so the next `init.sh` re-copies a fresh one from `.dist`. To
+adopt upstream changes (new services, image digest bumps), diff the two
+files and merge deliberately, or run `scripts/sync-compose-images.sh` with
+`COMPOSE_FILE=docker-compose.yml` to pull in just the image digest updates
+from `versions.lock`. See `docker-compose.yml.dist`'s own header comment
+for the full rationale.
+
+**Upgrading an install that predates this split (IMPORTANT, one-time):**
+before this change `docker-compose.yml` was git-tracked. The first
+`git pull` that introduces `docker-compose.yml.dist` deletes the tracked
+`docker-compose.yml` from the working tree as an ordinary rename — no
+warning, no conflict — and `docker compose` then fails ("no configuration
+file provided") until it's recovered. Re-running `init.sh` is NOT the fix:
+it copies whatever `docker-compose.yml.dist` is at the CURRENT commit,
+which may differ from what was actually running. Recover the real
+pre-pull file instead (run these from this `install/` directory):
+`git log --all --oneline --diff-filter=D -- docker-compose.yml` finds the
+commit that DELETED it (the split commit) - the file lived in that
+commit's PARENT, so use `git show <commit>^:./docker-compose.yml >
+docker-compose.yml`. Both the `^` and the leading `./` matter: `git show
+<commit>:docker-compose.yml` without the `^` fails with "exists on disk,
+but not in '<commit>'" (already gone there), and without the `./`, `git
+show <rev>:<path>` resolves `<path>` from the repo ROOT rather than the
+cwd (unlike `git log`/`git diff`'s pathspecs), so it fails from inside
+`install/` with "exists, but not '<bare-name>'".
+`init.sh` also detects this itself (existing `.env` + missing `docker-compose.yml`)
+and prints this same guidance instead of silently copying `.dist`, but
+doing it proactively is safer than relying on that reminder firing at the
+right time.
 
 ### Other Useful Commands
 
@@ -224,9 +262,12 @@ shape, so parsers must handle all three status values.
 The base domain is baked into database state (extension SIP realms are
 `{customer_id}.registrar.<domain>`), so `init.sh` refuses a mode or domain
 switch on an existing `.env`. Escape hatches: full reset
-(`./scripts/clean.sh --volumes --purge`, always the combined form) or
-`init.sh --force-reinit` (rewrites `.env`/certs/Corefile, never the
-database, and prints the live-state follow-up: recreate extensions via the
+(`./scripts/clean.sh --volumes --purge`, always the combined form — this also
+removes the live `docker-compose.yml`, re-copied fresh from
+`docker-compose.yml.dist` on the next `init.sh` run) or `init.sh --force-reinit`
+(rewrites `.env`/certs/Corefile, never the database and never
+`docker-compose.yml` — see "docker-compose.yml.dist vs docker-compose.yml"
+above — and prints the live-state follow-up: recreate extensions via the
 API and recreate `registrar-manager`, `api-manager`, `hook-manager`,
 `customer-manager`, `square-*`). `--force-reinit` without an explicit
 `--mode` is refused when it would silently target a different mode or

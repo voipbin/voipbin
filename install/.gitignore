@@ -1,4 +1,9 @@
 .env
+# Live compose file, generated from docker-compose.yml.dist on first init
+# (never overwritten afterward — see the docker-compose.yml.dist copy step
+# in init.sh's main(), just after .env is written). Keeping this untracked
+# means `git pull` never silently rewrites a running server's compose config.
+docker-compose.yml
 .backup/
 tmp/
 __pycache__/
