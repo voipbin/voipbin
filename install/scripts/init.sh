@@ -275,8 +275,9 @@ parse_args() {
     # admin/meet/talk on 443, publishing their plaintext-HTTP :3003-3005
     # ports to 0.0.0.0 too would leave the exact cleartext-credential
     # exposure the proxy exists to close. Bind those three to loopback
-    # only; Caddy's own published 0.0.0.0:80/443 (docker-compose.yml) is
-    # still the sole externally-reachable path to them.
+    # only; Caddy's own published ${HOST_EXTERNAL_IP:-0.0.0.0}:80/443
+    # (docker-compose.yml) is still the sole externally-reachable path to
+    # them.
     INIT_SQUARE_BIND_ADDR="0.0.0.0"
     [[ "$INIT_WEB_REVERSE_PROXY" == "true" ]] && INIT_SQUARE_BIND_ADDR="127.0.0.1"
 

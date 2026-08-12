@@ -90,9 +90,15 @@ teardown() {
     assert_file_contains "$PROJECT_ROOT/docker-compose.yml" 'profiles: ["web-proxy"]'
 }
 
-@test "docker-compose.yml publishes web-proxy on host 80 and 443" {
-    assert_file_contains "$PROJECT_ROOT/docker-compose.yml" '"0.0.0.0:80:80"'
-    assert_file_contains "$PROJECT_ROOT/docker-compose.yml" '"0.0.0.0:443:443"'
+@test "docker-compose.yml publishes web-proxy on HOST_EXTERNAL_IP's 80 and 443, not a 0.0.0.0 wildcard" {
+    # Kamailio binds host ports 80/443 on its own dedicated
+    # KAMAILIO_EXTERNAL_IP (network_mode: host, e.g. for WSS) — a wildcard
+    # 0.0.0.0 publish for Caddy collides with that at the kernel bind layer
+    # even though the IPs differ (confirmed live on bm-nyc-01: "address
+    # already in use" starting web-proxy). HOST_EXTERNAL_IP is also the
+    # address every admin/meet/talk/api DNS record targets.
+    assert_file_contains "$PROJECT_ROOT/docker-compose.yml" '"${HOST_EXTERNAL_IP:-0.0.0.0}:80:80"'
+    assert_file_contains "$PROJECT_ROOT/docker-compose.yml" '"${HOST_EXTERNAL_IP:-0.0.0.0}:443:443"'
 }
 
 @test "docker-compose.yml mounts the generated Caddyfile and certs into web-proxy" {

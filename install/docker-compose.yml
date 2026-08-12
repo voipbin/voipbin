@@ -201,8 +201,18 @@ services:
     networks:
       - default
     ports:
-      - "0.0.0.0:80:80"
-      - "0.0.0.0:443:443"
+      # Bound to HOST_EXTERNAL_IP specifically, not 0.0.0.0: external mode
+      # gives Kamailio its own dedicated external IP (KAMAILIO_EXTERNAL_IP),
+      # which independently binds host ports 80/443 on itself (network_mode:
+      # host, e.g. for WSS). A wildcard 0.0.0.0 publish for Caddy collides
+      # with that at the kernel bind layer even though the two IPs are
+      # different (a wildcard bind conflicts with any existing bind on the
+      # same port, specific-address or not) — confirmed live on bm-nyc-01.
+      # HOST_EXTERNAL_IP is also the address every admin/meet/talk/api DNS
+      # record already targets, so this is the semantically correct bind
+      # regardless of the conflict.
+      - "${HOST_EXTERNAL_IP:-0.0.0.0}:80:80"
+      - "${HOST_EXTERNAL_IP:-0.0.0.0}:443:443"
     volumes:
       - ./config/caddy/Caddyfile:/etc/caddy/Caddyfile:ro
       - ./certs:/certs:ro

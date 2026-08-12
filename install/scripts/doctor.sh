@@ -207,9 +207,19 @@ check_tools() {
 # deploys no coredns so 53 is not ours to claim. 5060/5061/5066: wildcard or
 # the addresses kamailio needs. 8443/3003-3005: the published 0.0.0.0 bind
 # only. 80/443: only claimed when WEB_REVERSE_PROXY=true (Caddy, VOIP-1325) -
-# otherwise unowned and not our business. Ports held by our own running
-# services pass; anything else on a needed address fails (best-effort
-# process name via ss -tulnp).
+# otherwise unowned and not our business - and, like coredns's 53 case,
+# matched on HOST_EXTERNAL_IP as well as wildcard: web-proxy binds
+# ${HOST_EXTERNAL_IP:-0.0.0.0}:80/443 (docker-compose.yml), not a hardcoded
+# wildcard, specifically because a wildcard bind collides at the kernel
+# level with Kamailio's own host-networked bind on its dedicated
+# KAMAILIO_EXTERNAL_IP:80/443 (used for WSS) even though the addresses
+# differ (confirmed live, review round 1 of NOJIRA-Fix-web-proxy-port-bind-conflict).
+# Matching wildcard-only here would make this exact scan blind to a foreign
+# listener sitting on HOST_EXTERNAL_IP itself, the single most likely real
+# conflict post-fix. KAMAILIO_EXTERNAL_IP is correctly NOT matched: a
+# listener there is no longer a conflict with web-proxy after this fix.
+# Ports held by our own running services pass; anything else on a needed
+# address fails (best-effort process name via ss -tulnp).
 check_ports() {
     if [[ "$DOCTOR_OS" == "macos" ]]; then doctor_result ports skip "unsupported on macos"; return; fi
     if ! command -v ss &> /dev/null; then doctor_result ports skip "ss not available"; return; fi
@@ -245,8 +255,13 @@ check_ports() {
                 # VOIP-1325: only claimed when the Caddy web-proxy is active
                 # (external mode + --web-reverse-proxy) — otherwise these are
                 # ordinary unclaimed ports and any listener there is none of
-                # our business.
-                [[ "${DOCTOR_WEB_REVERSE_PROXY,,}" == "true" && "$wildcard" == "true" ]] && { relevant="true"; owner="web-proxy"; }
+                # our business. Matches wildcard OR HOST_EXTERNAL_IP (web-proxy's
+                # actual bind address, see header comment above) — mirrors the
+                # port-53/coredns branch.
+                if [[ "${DOCTOR_WEB_REVERSE_PROXY,,}" == "true" ]] \
+                    && { [[ "$wildcard" == "true" ]] || [[ -n "$host_ip" && "$addr" == "$host_ip" ]]; }; then
+                    relevant="true"; owner="web-proxy"
+                fi
                 ;;
             *) continue ;;
         esac
