@@ -1060,6 +1060,52 @@ EOF
         echo ""
     fi
 
+    # versions.lock (live copy): same dist/live split as docker-compose.yml
+    # above, same rationale (see versions.lock.dist's own "_comment" field
+    # for the JSON-native version of that header) - copied from
+    # versions.lock.dist on first install only, never overwritten
+    # afterward (not even by --force-reinit). The live versions.lock is
+    # meant to be operator-owned from here on, updated independently of
+    # any automated deploy path.
+    local lock_dist="$PROJECT_DIR/versions.lock.dist"
+    local lock_live="$PROJECT_DIR/versions.lock"
+    if [[ ! -f "$lock_live" ]]; then
+        if [[ ! -f "$lock_dist" ]]; then
+            die 2 "versions.lock.dist not found at $lock_dist"
+        fi
+        if [[ "$env_preexisted" == "true" ]]; then
+            # Same migration-transition risk as docker-compose.yml: versions.lock
+            # was a git-tracked file before this split, so an existing install's
+            # first `git pull` after this change silently deletes it from the
+            # working tree (tracked -> gitignored is an ordinary delete on pull).
+            log_warn "versions.lock is missing but .env already existed."
+            log_warn "  If this install predates the versions.lock.dist split, your"
+            log_warn "  previous versions.lock may have been deleted by a 'git pull'"
+            log_warn "  (a tracked file becoming gitignored is an ordinary delete on pull)."
+            log_warn "  Recover the version you were actually running before trusting this"
+            log_warn "  (run these from this install/ directory):"
+            log_warn "    git log --all --oneline --diff-filter=D -- versions.lock"
+            log_warn "    # ^ finds the commit that DELETED it (the split commit, e.g. THIS pull)."
+            log_warn "    # The file lived in that commit's PARENT - use <that commit>^, not the"
+            log_warn "    # commit itself (\`git show <commit>:versions.lock\` fails with"
+            log_warn "    # \"exists on disk, but not in '<commit>'\" - it was already gone there)."
+            log_warn "    # The leading ./ matters too: \`git show <rev>:<path>\` resolves <path>"
+            log_warn "    # from the REPO ROOT, not the cwd (unlike git log/diff's pathspecs) -"
+            log_warn "    # without it, this fails from inside install/ with \"exists, but not"
+            log_warn "    # '<bare-name>'\"."
+            log_warn "    git show <that commit>^:./versions.lock > versions.lock.recovered"
+            log_warn "    diff versions.lock.recovered versions.lock.dist"
+            log_warn "  Proceeding to copy versions.lock.dist as a placeholder so the"
+            log_warn "  install isn't left completely non-functional; verify it before trusting"
+            log_warn "  it reflects what was actually running."
+            echo ""
+        fi
+        log_step "Creating versions.lock..."
+        cp "$lock_dist" "$lock_live"
+        log_info "  Created $lock_live (from versions.lock.dist)"
+        echo ""
+    fi
+
     # Step 7.5 (external mode only, §2.6): full BYO certificate install now
     # that .env exists — layout under certs/ plus the .env base64 rewrite.
     if [[ "$INIT_MODE" == "external" ]]; then

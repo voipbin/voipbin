@@ -1,7 +1,7 @@
 #!/bin/bash
 # VoIPBin Install - versions.lock Generator
-# Regenerates versions.lock by pinning every tracked voipbin/* image to the
-# nearest registry tag at-or-before a target monorepo commit.
+# Regenerates versions.lock.dist by pinning every tracked voipbin/* image to
+# the nearest registry tag at-or-before a target monorepo commit.
 #
 # Usage:
 #   ./scripts/generate-versions-lock.sh [<monorepo-git-ref>]
@@ -12,7 +12,16 @@
 # Environment:
 #   MONOREPO_PATH  path to the monorepo checkout (default: ~/gitvoipbin/monorepo)
 #   MAX_LOOKBACK   max commits to walk back per service (default: 200)
-#   OUTPUT_FILE    where to write the result (default: <project>/versions.lock)
+#   LOCK_FILE      lock file to read as the CURRENT pin baseline
+#                  (default: <project>/versions.lock.dist)
+#   OUTPUT_FILE    where to write the result (default: same as LOCK_FILE)
+#
+# Defaults to versions.lock.dist (the committed template new installs copy
+# from — see versions.lock.dist's own "_comment" field) rather than the
+# live versions.lock, which is untracked and operator-owned after first
+# install (see docker-compose.yml.dist's header comment for the identical
+# split applied to that file). Point LOCK_FILE/OUTPUT_FILE at your live
+# versions.lock if you want to regenerate that copy directly instead.
 #
 # How the resolution works:
 #   CircleCI (.circleci/config_work.yml) tags every service image as
@@ -62,7 +71,7 @@ PROJECT_DIR="$(dirname "$SCRIPT_DIR")"
 # Source common functions (log_info / log_warn / log_error / log_step)
 source "$SCRIPT_DIR/common.sh"
 
-LOCK_FILE="$PROJECT_DIR/versions.lock"
+LOCK_FILE="${LOCK_FILE:-$PROJECT_DIR/versions.lock.dist}"
 MONOREPO_PATH="${MONOREPO_PATH:-$HOME/gitvoipbin/monorepo}"
 MAX_LOOKBACK="${MAX_LOOKBACK:-200}"
 OUTPUT_FILE="${OUTPUT_FILE:-$LOCK_FILE}"

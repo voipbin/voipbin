@@ -1,5 +1,5 @@
 {
-  "_comment": "Single-commit ancestry pin. All bin-* services share one monorepo lineage.",
+  "_comment": "Single-commit ancestry pin. All bin-* services share one monorepo lineage. This is the DISTRIBUTION copy, committed to the repo. init.sh copies it to versions.lock (untracked, install/.gitignore) on first install only, and never overwrites an existing versions.lock afterward. That is deliberate: the live versions.lock is meant to be operator-owned after install (updated independently, on its own schedule, decoupled from any automated deploy path) - see docker-compose.yml.dist's header comment for the identical rationale applied to that file.",
   "pin_strategy": "ancestry-based single commit",
   "target_commit": "9010e457e7082b0f028a4e96f3b467dc0c34d5fb",
   "target_commit_desc": "VOIP-1305-Fix-confbridge-recording-ids-uuid-encoding (2026-08-10)",

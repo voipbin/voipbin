@@ -399,13 +399,58 @@ def test_upgrade_pinned_syncs_live_compose_before_pull(cli_module, tmp_dir, log_
 
 
 def test_tracked_paths_uses_compose_dist_not_live_file(cli_module):
-    """docker-compose.yml (no suffix) is gitignored post-split and would
-    never show a diff; docker-compose.yml.dist is the committed file that
-    actually changes upstream and must be the one 'update scripts --check'
-    reports on."""
+    """docker-compose.yml/versions.lock (no suffix) are gitignored post-split
+    and would never show a diff; the .dist files are the committed copies
+    that actually change upstream and must be the ones 'update scripts
+    --check' reports on."""
     assert "docker-compose.yml.dist" in cli_module.TRACKED_PATHS
     assert "docker-compose.yml" not in cli_module.TRACKED_PATHS
+    assert "versions.lock.dist" in cli_module.TRACKED_PATHS
+    assert "versions.lock" not in cli_module.TRACKED_PATHS
     print("ok test_tracked_paths_uses_compose_dist_not_live_file")
+
+
+def test_cmd_update_resume_from_pull_detects_unpin_via_dist_file(cli_module, tmp_dir, log_path):
+    """versions.lock.dist split regression: cmd_update's "did the just-pulled
+    release unpin this repo" check must read versions.lock.dist (the file
+    git pull actually changes), not the live versions.lock (untracked,
+    operator-owned, never touched by a pull either way - checking it here
+    would never fire post-split)."""
+    cli, project_dir = make_cli(tmp_dir, INTERNAL_ENV, cli_module)
+
+    # Live versions.lock present throughout (pinned repo, both cases below):
+    # only versions.lock.dist's presence should decide this branch's outcome.
+    with open(os.path.join(project_dir, "versions.lock"), "w") as f:
+        f.write("{}")
+
+    calls = []
+    orig_upgrade_pinned = cli._upgrade_pinned
+    cli._upgrade_pinned = lambda *a, **kw: calls.append(("_upgrade_pinned", a, kw))
+    try:
+        # Case 1: versions.lock.dist still present in the pulled commit ->
+        # falls through to the normal pinned dispatch (reaches
+        # _upgrade_pinned with resume_from="pull", does NOT print the
+        # unpin warning).
+        with open(os.path.join(project_dir, "versions.lock.dist"), "w") as f:
+            f.write("{}")
+        out = capture(cli.cmd_update, ["all", "--resume-from=pull"])
+        assert "is GONE in the new" not in out, out
+        assert len(calls) == 1, calls
+        assert calls[0][0] == "_upgrade_pinned"
+        assert calls[0][2].get("resume_from") == "pull", calls[0]  # resume_from kwarg
+        calls.clear()
+
+        # Case 2: versions.lock.dist removed by the pulled commit (release
+        # unpinned this repo) -> prints the warning and returns WITHOUT
+        # calling _upgrade_pinned.
+        os.remove(os.path.join(project_dir, "versions.lock.dist"))
+        out = capture(cli.cmd_update, ["all", "--resume-from=pull"])
+        assert "versions.lock.dist is GONE in the new" in out, out
+        assert "run 'update all' again to use the standard path" in out, out
+        assert calls == [], calls
+    finally:
+        cli._upgrade_pinned = orig_upgrade_pinned
+    print("ok test_cmd_update_resume_from_pull_detects_unpin_via_dist_file")
 
 
 def test_upgrade_pinned_rollback_guidance_uses_scoped_checkout(cli_module, tmp_dir, log_path):
@@ -455,7 +500,7 @@ def test_upgrade_pinned_rollback_guidance_uses_scoped_checkout(cli_module, tmp_d
 
     assert "Upgrade verification FAILED" in out, out
     assert "git checkout the previous repo commit" not in out, out
-    assert "git checkout <previous commit> -- docker-compose.yml.dist versions.lock scripts/" in out, out
+    assert "git checkout <previous commit> -- docker-compose.yml.dist versions.lock.dist scripts/" in out, out
     assert "pathspec-scoped on purpose" in out, out
     assert "detached HEAD" in out, out
     print("ok test_upgrade_pinned_rollback_guidance_uses_scoped_checkout")
@@ -484,7 +529,7 @@ def test_upgrade_pinned_migration_failure_guidance_uses_scoped_checkout(cli_modu
 
     assert "migration failed" in out, out
     assert "git checkout <previous commit>   (reverts" not in out, out
-    assert "git checkout <previous commit> -- docker-compose.yml.dist versions.lock scripts/" in out, out
+    assert "git checkout <previous commit> -- docker-compose.yml.dist versions.lock.dist scripts/" in out, out
     assert "pathspec-scoped" in out, out
     print("ok test_upgrade_pinned_migration_failure_guidance_uses_scoped_checkout")
 
@@ -517,7 +562,7 @@ def test_upgrade_pinned_compose_up_failure_guidance_uses_scoped_checkout(cli_mod
 
     assert "docker compose up -d failed" in out, out
     assert "and git checkout the previous commit" not in out, out
-    assert "git checkout <previous commit> -- docker-compose.yml.dist versions.lock scripts/" in out, out
+    assert "git checkout <previous commit> -- docker-compose.yml.dist versions.lock.dist scripts/" in out, out
     assert "pathspec-scoped" in out, out
     print("ok test_upgrade_pinned_compose_up_failure_guidance_uses_scoped_checkout")
 
@@ -538,7 +583,7 @@ def test_rollback_pinned_guard_uses_scoped_checkout(cli_module, tmp_dir):
 
     assert "rollback is disabled on a pinned repo" in out, out
     assert "git checkout the previous repo commit" not in out, out
-    assert "git checkout <previous commit> -- docker-compose.yml.dist versions.lock scripts/" in out, out
+    assert "git checkout <previous commit> -- docker-compose.yml.dist versions.lock.dist scripts/" in out, out
     assert "pathspec-scoped on purpose" in out, out
     assert "detached HEAD" in out, out
     print("ok test_rollback_pinned_guard_uses_scoped_checkout")
@@ -567,6 +612,7 @@ def main():
         test_doctor_noninteractive_dispatch_propagates_exit_code(cli_module, tmp_dir, log_path)
         test_upgrade_pinned_syncs_live_compose_before_pull(cli_module, tmp_dir, log_path)
         test_tracked_paths_uses_compose_dist_not_live_file(cli_module)
+        test_cmd_update_resume_from_pull_detects_unpin_via_dist_file(cli_module, tmp_dir, log_path)
         test_upgrade_pinned_rollback_guidance_uses_scoped_checkout(cli_module, tmp_dir, log_path)
         test_upgrade_pinned_migration_failure_guidance_uses_scoped_checkout(cli_module, tmp_dir, log_path)
         test_upgrade_pinned_compose_up_failure_guidance_uses_scoped_checkout(cli_module, tmp_dir, log_path)

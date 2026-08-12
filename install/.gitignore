@@ -4,6 +4,11 @@
 # in init.sh's main(), just after .env is written). Keeping this untracked
 # means `git pull` never silently rewrites a running server's compose config.
 docker-compose.yml
+# Live lock file, generated from versions.lock.dist on first init (same
+# copy-once/never-overwrite treatment as docker-compose.yml above, for the
+# same reason - it's meant to be operator-owned and updated independently
+# after install, decoupled from any automated deploy path).
+versions.lock
 .backup/
 tmp/
 __pycache__/

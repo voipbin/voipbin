@@ -7,14 +7,16 @@
 #   ./scripts/sync-compose-images.sh
 #
 # Environment:
-#   LOCK_FILE     path to versions.lock            (default: <project>/versions.lock)
+#   LOCK_FILE     path to the lock file to read     (default: <project>/versions.lock.dist)
 #   COMPOSE_FILE  path to the compose file to sync  (default: <project>/docker-compose.yml.dist)
 #
-# Defaults to docker-compose.yml.dist (the committed file new installs copy
-# from — see docker-compose.yml.dist's header comment) rather than the live
-# docker-compose.yml, which is untracked and operator-owned after first
-# install. Point COMPOSE_FILE at your live docker-compose.yml to selectively
-# pull in just the image digest updates without adopting other .dist changes.
+# Defaults to versions.lock.dist / docker-compose.yml.dist (the committed
+# files new installs copy from — see each file's own header comment/
+# "_comment" field) rather than the live versions.lock/docker-compose.yml,
+# which are untracked and operator-owned after first install. Point
+# LOCK_FILE/COMPOSE_FILE at your live files (e.g. both, or just COMPOSE_FILE
+# to selectively pull in digest updates from the dist lock without adopting
+# other .dist compose changes) as needed.
 #
 # Why this exists:
 #   The compose file hardcodes image digests independently of versions.lock and
@@ -55,7 +57,7 @@ PROJECT_DIR="$(dirname "$SCRIPT_DIR")"
 # Source common functions (log_info / log_warn / log_error / log_step)
 source "$SCRIPT_DIR/common.sh"
 
-LOCK_FILE="${LOCK_FILE:-$PROJECT_DIR/versions.lock}"
+LOCK_FILE="${LOCK_FILE:-$PROJECT_DIR/versions.lock.dist}"
 COMPOSE_FILE="${COMPOSE_FILE:-$PROJECT_DIR/docker-compose.yml.dist}"
 
 usage() {

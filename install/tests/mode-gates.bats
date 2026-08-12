@@ -93,9 +93,11 @@ teardown() {
     mock_command "docker" ""
     create_env_file "DOMAIN_MODE=internal" "COMPOSE_PROFILES=internal-dns"
     touch "$PROJECT_DIR/.test_data_initialized"
-    # Live docker-compose.yml (generated from docker-compose.yml.dist by
-    # init.sh) must also be purged, so the next init.sh re-copies a fresh one.
+    # Live docker-compose.yml/versions.lock (each generated from its .dist
+    # by init.sh) must also be purged, so the next init.sh re-copies fresh
+    # ones.
     echo "MARKER: live compose file" > "$PROJECT_DIR/docker-compose.yml"
+    echo "MARKER: live lock file" > "$PROJECT_DIR/versions.lock"
 
     run bash "$SCRIPTS_DIR/clean.sh" --purge
 
@@ -104,6 +106,7 @@ teardown() {
     [[ -f "$PROJECT_DIR/.test_data_initialized" ]]
     [[ ! -f "$PROJECT_DIR/.env" ]]
     [[ ! -f "$PROJECT_DIR/docker-compose.yml" ]]
+    [[ ! -f "$PROJECT_DIR/versions.lock" ]]
 }
 
 @test "clean.sh --dns is a no-op with message in external mode" {

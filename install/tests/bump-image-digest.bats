@@ -6,15 +6,16 @@ load 'test_helper'
 # Builds a minimal, self-contained install/ tree under $PROJECT_DIR: real
 # scripts/ (so bump-image-digest.sh finds common.sh/sync-compose-images.sh
 # via its own SCRIPT_DIR resolution) plus a small, fully fabricated
-# versions.lock + docker-compose.yml.dist pair (never the real repo files -
-# this script mutates them in place).
+# versions.lock.dist + docker-compose.yml.dist pair (never the real repo
+# files - this script mutates them in place, and its default LOCK_FILE
+# target is versions.lock.dist, matching the fixture).
 setup_fixture() {
     mkdir -p "$PROJECT_DIR/scripts"
     cp "$SCRIPTS_DIR/common.sh" "$PROJECT_DIR/scripts/"
     cp "$SCRIPTS_DIR/sync-compose-images.sh" "$PROJECT_DIR/scripts/"
     cp "$SCRIPTS_DIR/bump-image-digest.sh" "$PROJECT_DIR/scripts/"
 
-    cat > "$PROJECT_DIR/versions.lock" <<'EOF'
+    cat > "$PROJECT_DIR/versions.lock.dist" <<'EOF'
 {
   "_comment": "test fixture",
   "pin_strategy": "ancestry-based single commit",
@@ -62,7 +63,7 @@ teardown() {
 
     run python3 -c "
 import json
-d = json.load(open('$PROJECT_DIR/versions.lock'))
+d = json.load(open('$PROJECT_DIR/versions.lock.dist'))
 print(d['images']['voipbin/bin-agent-manager'])
 print(d['image_source_tags']['voipbin/bin-agent-manager'])
 print(d['images']['voipbin/bin-call-manager'])
@@ -104,7 +105,7 @@ print(d['images']['voipbin/bin-call-manager'])
     [[ "$status" -ne 0 ]]
     [[ "$output" == *"no established entry"* ]]
     # untouched
-    run python3 -c "import json; print(json.load(open('$PROJECT_DIR/versions.lock'))['images']['voipbin/bin-agent-manager'])"
+    run python3 -c "import json; print(json.load(open('$PROJECT_DIR/versions.lock.dist'))['images']['voipbin/bin-agent-manager'])"
     [[ "$output" == "sha256:1111111111111111111111111111111111111111111111111111111111aa" ]]
 }
 
@@ -138,8 +139,8 @@ print(d['images']['voipbin/bin-call-manager'])
     [[ "$output" == *"must start with 'voipbin/'"* ]]
 }
 
-@test "bump-image-digest.sh dies cleanly when versions.lock is missing" {
-    rm -f "$PROJECT_DIR/versions.lock"
+@test "bump-image-digest.sh dies cleanly when versions.lock.dist is missing" {
+    rm -f "$PROJECT_DIR/versions.lock.dist"
     run bash "$PROJECT_DIR/scripts/bump-image-digest.sh" \
         "voipbin/bin-agent-manager" "sha256:$(printf 'a%.0s' {1..64})" "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
 
@@ -154,7 +155,7 @@ print(d['images']['voipbin/bin-call-manager'])
     [[ "$status" -eq 0 ]]
     run python3 -c "
 import json
-d = json.load(open('$PROJECT_DIR/versions.lock'))
+d = json.load(open('$PROJECT_DIR/versions.lock.dist'))
 print(d['target_commit'])
 print(d['target_commit_desc'])
 print(d['dbscheme_monorepo_commit'])
