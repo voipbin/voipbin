@@ -35,6 +35,7 @@
 - [External Mode (Real Domain)](#external-mode-real-domain)
   - [Hosting-provider routed IPs](#hosting-provider-routed-ips)
 - [Web Applications](#web-applications)
+- [Monitoring (Prometheus/Grafana)](#monitoring-prometheusgrafana-voip-1336)
 - [Technical Architecture](#technical-architecture)
 - [Prerequisites](#prerequisites)
 - [Networking & DNS](#networking--dns)
@@ -680,6 +681,50 @@ Meet provides simple voice conferencing:
 - Dial-in via SIP supported
 
 **Default Credentials:** `admin@localhost` / `admin@localhost` (requires opt-in test-account seeding via `VOIPBIN_SANDBOX_DEV_SEED=true`)
+
+---
+
+## Monitoring (Prometheus/Grafana, VOIP-1336)
+
+The stack runs a Prometheus + Grafana observability pair alongside the
+service mesh, plus three exporters that give it something meaningful to
+scrape from the moment it starts:
+
+| Service | Purpose | Scrapes/exposes metrics for |
+|---------|---------|------------------------------|
+| `prometheus` | Metrics collection & storage (15d retention) | - |
+| `grafana` | Dashboards, auto-provisioned on startup | - |
+| `node-exporter` | Host CPU/memory/disk/network | the Docker host itself |
+| `cadvisor` | Per-container CPU/memory/network/disk | every running container |
+| `redis-exporter` | Redis INFO stats | the `redis` service |
+| `mysqld-exporter` | MySQL server stats | the `db` service |
+| `rabbitmq` (built-in plugin) | Queue depth, message rates, connections | the `rabbitmq` service itself, via its bundled `rabbitmq_prometheus` plugin |
+| (no extra sidecar) | Application metrics | all 32 `bin-*-manager` services' native `:2112/metrics` endpoint (`voipbin-managers` scrape job) |
+
+Four dashboards ship pre-provisioned (no manual UI setup): **Docker &
+System Overview**, **RabbitMQ Overview**, **Redis Overview**, and
+**VoIPBin Manager Services** — see `config/grafana/dashboards/`.
+
+**Not exposed publicly.** Like RabbitMQ's management UI and the other
+infrastructure ports, `prometheus` (9090) and `grafana` (3000) are bound to
+`127.0.0.1` only — never `0.0.0.0` — and production hosts additionally drop
+external new connections to these ports at the nftables layer (same pattern
+as 3306/5672/6379/15672). Access them via an SSH local port-forward:
+
+```bash
+ssh -L 3000:127.0.0.1:3000 -L 9090:127.0.0.1:9090 root@<host>
+# then open http://localhost:3000 (Grafana) / http://localhost:9090 (Prometheus)
+```
+
+Grafana's admin password is `GRAFANA_ADMIN_PASSWORD` in `.env` (username
+`admin`) — `init.sh` generates it automatically on new installs, same as
+`MYSQL_ROOT_PASSWORD`/`POSTGRES_PASSWORD`.
+
+**Deferred / follow-ups:** Alertmanager, a dedicated least-privilege MySQL
+monitoring user (mysqld-exporter currently authenticates as
+root/`MYSQL_ROOT_PASSWORD`), and Asterisk `res_prometheus` scraping (not
+currently enabled/exposed in the `voip-asterisk-*` images this stack pulls)
+— see `docs/follow-ups.md`.
 
 ---
 

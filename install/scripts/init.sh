@@ -780,6 +780,9 @@ main() {
     POSTGRES_PASSWORD=$(generate_random_key)
     log_info "  Generated POSTGRES_PASSWORD"
 
+    GRAFANA_ADMIN_PASSWORD=$(generate_random_key)
+    log_info "  Generated GRAFANA_ADMIN_PASSWORD"
+
     # VOIP-1328: asterisk-registrar's realtime MySQL client previously reused
     # the root account (DATABASE_ASTERISK_USERNAME=root in docker-compose.yml).
     # A dedicated least-privilege user is better practice regardless.
@@ -982,6 +985,7 @@ EMAIL_VERIFY_BASE_URL=$DERIVED_EMAIL_VERIFY_BASE_URL
 # ==============================================================================
 CLICKHOUSE_ADDRESS=clickhouse:9000
 CLICKHOUSE_DATABASE=default
+GRAFANA_ADMIN_PASSWORD=$GRAFANA_ADMIN_PASSWORD
 HOMER_URI=
 HOMER_API_ADDRESS=
 HOMER_AUTH_TOKEN=

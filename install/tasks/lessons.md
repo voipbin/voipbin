@@ -44,3 +44,30 @@ failure mode, the detection signal, and a prevention rule.
   adding any new code that rewrites `.env`, `certs/`, or
   `config/coredns/`, it must check `get_domain_mode` / `TLS_MODE` first
   and a bats test must cover the external-mode no-op.
+
+## 2026-08-13 CMD-SHELL healthcheck against a scratch-based image never passes (VOIP-1336)
+
+- **Failure mode:** `oliver006/redis_exporter:v1.66.0` (the bare, non-`-alpine`
+  tag) is a scratch-based image with no `/bin/sh`. A `healthcheck.test:
+  ["CMD-SHELL", "wget ..."]` entry against it can never execute
+  (`CMD-SHELL` requires a shell inside the container), so the container
+  reports permanently `unhealthy` even though the process itself is
+  working fine and serving `/metrics` correctly.
+- **Detection signal:** caught in code review, not by the (static, grep-based)
+  bats suite — `tests/config.bats` only asserts a `healthcheck:` block
+  exists, it never actually runs the image. Reproduced by `docker run
+  --rm --entrypoint sh <image> -c "which wget"` failing with "exec: sh:
+  executable file not found in $PATH". `scripts/check-install.sh` and
+  `scripts/doctor.sh` both generically fail the whole install if any
+  container is unhealthy, so this would have broken every fresh install
+  the moment this service was added.
+- **Prevention rule:** before pinning any new third-party image that will
+  get a `CMD`/`CMD-SHELL` healthcheck, verify the tag actually ships a
+  shell and the healthcheck's binary (`docker run --rm --entrypoint sh
+  <image>@<digest> -c "which <binary>"`) — many exporter/utility images
+  publish both a scratch/distroless tag (smallest, no shell) and an
+  `-alpine`/`-debian` tag (has a shell) under the same version; prefer the
+  latter whenever a shell-based healthcheck is used. When in doubt, do a
+  throwaway `docker run` smoke test of the exact pinned digest before
+  adding it to `docker-compose.yml.dist`, not just a `docker compose
+  config` syntax check (which cannot catch this class of bug).
