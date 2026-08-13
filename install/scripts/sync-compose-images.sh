@@ -7,8 +7,11 @@
 #   ./scripts/sync-compose-images.sh
 #
 # Environment:
-#   LOCK_FILE     path to the lock file to read     (default: <project>/versions.lock.dist)
-#   COMPOSE_FILE  path to the compose file to sync  (default: <project>/docker-compose.yml.dist)
+#   LOCK_FILE            path to the lock file to read (default: <project>/versions.lock.dist)
+#   COMPOSE_FILE         path to the compose file to sync (default: <project>/docker-compose.yml.dist)
+#   LOCK_TIMEOUT_SECONDS how long to wait for a concurrent sync of the SAME
+#                        COMPOSE_FILE to finish before giving up (default:
+#                        30) - see acquire_file_lock() in common.sh
 #
 # Defaults to versions.lock.dist / docker-compose.yml.dist (the committed
 # files new installs copy from — see each file's own header comment/
@@ -61,7 +64,7 @@ LOCK_FILE="${LOCK_FILE:-$PROJECT_DIR/versions.lock.dist}"
 COMPOSE_FILE="${COMPOSE_FILE:-$PROJECT_DIR/docker-compose.yml.dist}"
 
 usage() {
-    sed -n '2,40p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'
+    sed -n '2,53p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'
 }
 
 if [[ "${1:-}" == "-h" || "${1:-}" == "--help" ]]; then
@@ -106,6 +109,17 @@ main() {
     log_info "  Lock:    $LOCK_FILE"
     log_info "  Compose: $COMPOSE_FILE"
     echo ""
+
+    # Locked (VOIP-1334): two concurrent syncs of the SAME compose file (e.g.
+    # two services' CI deploys landing on bm-nyc-01 close together, each
+    # calling bump-image-digest.sh -> this script) must not race - see
+    # acquire_file_lock()'s header comment in common.sh for the full
+    # rationale. Scoped to COMPOSE_FILE, the only file this script writes
+    # (reading LOCK_FILE needs no lock of its own: bump-image-digest.sh's
+    # atomic rename means a reader here always sees either the fully-old or
+    # fully-new versions.lock, never a partial one).
+    (
+    acquire_file_lock "$COMPOSE_FILE" "${LOCK_TIMEOUT_SECONDS:-30}" || exit $?
 
     python3 - "$LOCK_FILE" "$COMPOSE_FILE" "${LOCK_ONLY_IMAGES[@]}" <<'PYEOF'
 import json
@@ -208,6 +222,7 @@ print(
     f"{len(lock_only & set(locked))} lock-only image(s) allowlisted"
 )
 PYEOF
+    ) 9>"$COMPOSE_FILE.flock"
 
     echo ""
     log_info "docker-compose.yml is in sync with versions.lock"

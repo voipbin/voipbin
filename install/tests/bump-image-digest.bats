@@ -163,3 +163,77 @@ print(d['dbscheme_monorepo_commit'])
     [[ "$output" == *"0000000000000000000000000000000000000000"* ]]
     [[ "$output" == *"fixture"* ]]
 }
+
+# =============================================================================
+# VOIP-1334: concurrent-write protection. bump-image-digest.sh's read-JSON ->
+# mutate -> atomic-rename write has no locking on its own - two concurrent
+# bumps of the SAME versions.lock (now realistic since many bin-*-manager
+# services can each independently deploy to bm-nyc-01) can silently lose one
+# writer's update. These tests exercise the real acquire_file_lock()
+# primitive against an external holder of the SAME lock file
+# bump-image-digest.sh itself uses - this is a faithful proof that the
+# mechanism serializes correctly, without relying on racing two real script
+# invocations against each other's unpredictable internal timing.
+# =============================================================================
+
+@test "bump-image-digest.sh waits for a concurrent holder to release the lock, then succeeds" {
+    # Hold the exact lock file bump-image-digest.sh itself locks, for a
+    # fixed 2s, using the same flock-on-fd-9 mechanism (not the script -
+    # this simulates a second bump-image-digest.sh invocation currently
+    # inside its own critical section).
+    (
+        exec 9>"$PROJECT_DIR/versions.lock.dist.flock"
+        flock -x 9
+        sleep 2
+    ) &
+    local holder_pid=$!
+    sleep 0.3  # give the background holder a moment to actually acquire
+
+    local start_ts elapsed
+    start_ts=$(date +%s)
+    LOCK_TIMEOUT_SECONDS=10 run bash "$PROJECT_DIR/scripts/bump-image-digest.sh" \
+        "voipbin/bin-agent-manager" "sha256:$(printf 'a%.0s' {1..64})" "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+    elapsed=$(( $(date +%s) - start_ts ))
+
+    wait "$holder_pid" 2>/dev/null || true
+
+    [[ "$status" -eq 0 ]]
+    # Waited for the holder rather than proceeding unlocked - if it hadn't
+    # blocked, this would complete in well under 1s.
+    [[ "$elapsed" -ge 1 ]]
+    run python3 -c "import json; print(json.load(open('$PROJECT_DIR/versions.lock.dist'))['images']['voipbin/bin-agent-manager'])"
+    [[ "$output" == "sha256:$(printf 'a%.0s' {1..64})" ]]
+}
+
+@test "bump-image-digest.sh fails clearly (and leaves versions.lock.dist untouched) when the lock is held longer than LOCK_TIMEOUT_SECONDS" {
+    (
+        exec 9>"$PROJECT_DIR/versions.lock.dist.flock"
+        flock -x 9
+        sleep 5
+    ) &
+    local holder_pid=$!
+    sleep 0.3
+
+    local before_hash
+    before_hash=$(md5sum "$PROJECT_DIR/versions.lock.dist" | cut -d' ' -f1)
+
+    LOCK_TIMEOUT_SECONDS=1 run bash "$PROJECT_DIR/scripts/bump-image-digest.sh" \
+        "voipbin/bin-agent-manager" "sha256:$(printf 'a%.0s' {1..64})" "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+
+    [[ "$status" -ne 0 ]]
+    [[ "$output" == *"Timed out after 1s waiting for a lock"* ]]
+    local after_hash
+    after_hash=$(md5sum "$PROJECT_DIR/versions.lock.dist" | cut -d' ' -f1)
+    [[ "$before_hash" == "$after_hash" ]]
+
+    kill "$holder_pid" 2>/dev/null || true
+    wait "$holder_pid" 2>/dev/null || true
+}
+
+@test "bump-image-digest.sh locks a SEPARATE .flock file, never versions.lock.dist itself" {
+    run bash "$PROJECT_DIR/scripts/bump-image-digest.sh" \
+        "voipbin/bin-agent-manager" "sha256:$(printf 'a%.0s' {1..64})" "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+
+    [[ "$status" -eq 0 ]]
+    [[ -f "$PROJECT_DIR/versions.lock.dist.flock" ]]
+}

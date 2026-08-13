@@ -10,11 +10,14 @@
 #                       (default: main)
 #
 # Environment:
-#   MONOREPO_PATH  path to the monorepo checkout (default: ~/gitvoipbin/monorepo)
-#   MAX_LOOKBACK   max commits to walk back per service (default: 200)
-#   LOCK_FILE      lock file to read as the CURRENT pin baseline
-#                  (default: <project>/versions.lock.dist)
-#   OUTPUT_FILE    where to write the result (default: same as LOCK_FILE)
+#   MONOREPO_PATH        path to the monorepo checkout (default: ~/gitvoipbin/monorepo)
+#   MAX_LOOKBACK         max commits to walk back per service (default: 200)
+#   LOCK_FILE            lock file to read as the CURRENT pin baseline
+#                        (default: <project>/versions.lock.dist)
+#   OUTPUT_FILE          where to write the result (default: same as LOCK_FILE)
+#   LOCK_TIMEOUT_SECONDS how long to wait for a concurrent writer of the SAME
+#                        OUTPUT_FILE to finish before giving up (default: 30)
+#                        - see acquire_file_lock() in common.sh
 #
 # Defaults to versions.lock.dist (the committed template new installs copy
 # from — see versions.lock.dist's own "_comment" field) rather than the
@@ -82,7 +85,7 @@ TARGET_REF="${1:-main}"
 SEEDED_DIGEST_MARKER="NEW"
 
 usage() {
-    sed -n '2,30p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'
+    sed -n '2,33p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'
 }
 
 if [[ "$TARGET_REF" == "-h" || "$TARGET_REF" == "--help" ]]; then
@@ -347,6 +350,14 @@ for name, digest in sorted(lock.get('images', {}).items()):
     echo ""
     log_step "Writing $OUTPUT_FILE"
 
+    # Locked (VOIP-1334): OUTPUT_FILE defaults to LOCK_FILE, so a full
+    # regeneration run here writes the same file bump-image-digest.sh's
+    # CI-triggered single-image bumps can be concurrently updating - same
+    # unlocked-read-modify-write race, same acquire_file_lock() fix. See
+    # that function's header comment in common.sh for the full rationale.
+    (
+    acquire_file_lock "$OUTPUT_FILE" "${LOCK_TIMEOUT_SECONDS:-30}" || exit $?
+
     python3 - "$LOCK_FILE" "$OUTPUT_FILE" "$resolved_file" "$target_commit" "$target_desc" <<'PYEOF'
 import json
 import os
@@ -416,6 +427,7 @@ with open(tmp_path, "w") as f:
     f.write("\n")
 os.replace(tmp_path, out_path)
 PYEOF
+    ) 9>"$OUTPUT_FILE.flock"
 
     echo ""
     log_info "Done: $resolved/$total images repinned, $fallback kept at their current pin"

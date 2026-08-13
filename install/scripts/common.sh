@@ -947,3 +947,58 @@ if not digest.startswith("sha256:"):
 print(digest)
 '
 }
+
+# Acquires an exclusive flock on fd 9 (which the CALLER must already have
+# open, via a subshell's closing-paren redirect - see usage below), so two
+# concurrent invocations touching the SAME target file serialize instead of
+# racing. Blocks up to <timeout> seconds; returns 0 once acquired.
+#
+# Why this exists (VOIP-1334): bump-image-digest.sh/sync-compose-images.sh
+# each do read-JSON -> mutate in memory -> write to a FIXED-name temp file
+# -> os.replace(), with no locking. That's safe against a killed/interrupted
+# writer (the atomic rename), but NOT against two writers running at once:
+# the second process can read stale data (before the first's write lands),
+# then overwrite the first's change when it writes back its own full
+# snapshot - a silent lost update, not a crash. This became a real risk
+# once CircleCI started allowing many bin-*-manager services to each
+# independently SSH-deploy (and thus bump-image-digest.sh) to the same
+# bm-nyc-01 host, where a monorepo commit touching several services'
+# directories can trigger several approvals/deploys close together.
+#
+# fd-based (not a "run this command under lock" wrapper) so the critical
+# section can stay written exactly as it already is - a `python3 - ... <<
+# 'PYEOF'` heredoc - rather than being extracted into a separate script
+# file just to be exec'd under `flock command args...`; a heredoc's target
+# command is fixed at parse time, so it can't be forwarded through a
+# generic wrapper's "$@" the way a plain argv could.
+#
+# Locks a SEPARATE "<target-path>.flock" file, never the target itself -
+# a lock file that failed to unlock (crash mid-hold) must never look like
+# a stale/corrupt target to some future reader, and creating the lock file
+# must not require the target to already exist.
+#
+# Usage (the subshell scopes a failure's `exit` to itself, not the whole
+# script, and its own exit status still propagates out to trip the outer
+# script's `set -e` on failure, same as any other failing command):
+#   (
+#       acquire_file_lock "$LOCK_FILE" 30 || exit $?
+#       python3 - "$LOCK_FILE" ... <<'PYEOF'
+#       ...
+#       PYEOF
+#   ) 9>"$LOCK_FILE.flock"
+acquire_file_lock() {
+    local target="$1"
+    local timeout="$2"
+
+    if ! command -v flock &> /dev/null; then
+        log_warn "flock not found - proceeding WITHOUT concurrency protection for $target"
+        return 0
+    fi
+
+    if ! flock -w "$timeout" 9; then
+        log_error "Timed out after ${timeout}s waiting for a lock on $target"
+        log_error "(held by a concurrent run against the same file - it should release on"
+        log_error "its own; retry once it finishes, or investigate if this persists)"
+        return 1
+    fi
+}
