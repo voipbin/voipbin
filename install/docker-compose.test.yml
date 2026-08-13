@@ -18,10 +18,27 @@ services:
     container_name: !reset null
   clickhouse:
     container_name: !reset null
+  prometheus:
+    container_name: !reset null
+    ports: !reset []
+  node-exporter:
+    container_name: !reset null
+  cadvisor:
+    container_name: !reset null
+  redis-exporter:
+    container_name: !reset null
+  mysqld-exporter:
+    container_name: !reset null
+  grafana:
+    container_name: !reset null
+    ports: !reset []
   coredns:
     container_name: !reset null
     ports: !reset []
     profiles: !override ["host-mutating"]
+  web-proxy:
+    container_name: !reset null
+    ports: !reset []
   rtpengine:
     container_name: !reset null
     profiles: !override ["host-mutating"]
@@ -109,6 +126,8 @@ services:
   registrar-manager:
     container_name: !reset null
   route-manager:
+    container_name: !reset null
+  schedule-manager:
     container_name: !reset null
   storage-manager:
     container_name: !reset null

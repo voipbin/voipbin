@@ -780,6 +780,9 @@ main() {
     POSTGRES_PASSWORD=$(generate_random_key)
     log_info "  Generated POSTGRES_PASSWORD"
 
+    GRAFANA_ADMIN_PASSWORD=$(generate_random_key)
+    log_info "  Generated GRAFANA_ADMIN_PASSWORD"
+
     # VOIP-1328: asterisk-registrar's realtime MySQL client previously reused
     # the root account (DATABASE_ASTERISK_USERNAME=root in docker-compose.yml).
     # A dedicated least-privilege user is better practice regardless.
@@ -881,6 +884,13 @@ WEB_REVERSE_PROXY=$INIT_WEB_REVERSE_PROXY
 # 127.0.0.1 when WEB_REVERSE_PROXY=true (Caddy is the only external path to
 # these plaintext-HTTP ports); 0.0.0.0 otherwise. See docker-compose.yml.
 SQUARE_BIND_ADDR=$INIT_SQUARE_BIND_ADDR
+# DB_BIND_ADDRESS/REDIS_BIND_ADDRESS/RABBITMQ_BIND_ADDRESS (VOIP-1336):
+# 127.0.0.1 by default on every fresh install - see docker-compose.yml.dist's
+# comment on the db service for the full rationale. Edit these three by hand
+# in .env afterward if you need LAN/multi-host access to one of them.
+DB_BIND_ADDRESS=127.0.0.1
+REDIS_BIND_ADDRESS=127.0.0.1
+RABBITMQ_BIND_ADDRESS=127.0.0.1
 
 # ==============================================================================
 # SIP/VoIP Network Configuration
@@ -982,6 +992,7 @@ EMAIL_VERIFY_BASE_URL=$DERIVED_EMAIL_VERIFY_BASE_URL
 # ==============================================================================
 CLICKHOUSE_ADDRESS=clickhouse:9000
 CLICKHOUSE_DATABASE=default
+GRAFANA_ADMIN_PASSWORD=$GRAFANA_ADMIN_PASSWORD
 HOMER_URI=
 HOMER_API_ADDRESS=
 HOMER_AUTH_TOKEN=
