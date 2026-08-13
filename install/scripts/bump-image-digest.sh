@@ -21,9 +21,13 @@
 #                     in image_source_tags for traceability.
 #
 # Environment:
-#   LOCK_FILE     path to the lock file to bump  (default: <project>/versions.lock.dist)
-#   COMPOSE_FILE  passed through to sync-compose-images.sh unchanged (its own
-#                 default is docker-compose.yml.dist - see that script's header)
+#   LOCK_FILE            path to the lock file to bump (default: <project>/versions.lock.dist)
+#   COMPOSE_FILE         passed through to sync-compose-images.sh unchanged
+#                        (its own default is docker-compose.yml.dist - see
+#                        that script's header)
+#   LOCK_TIMEOUT_SECONDS how long to wait for a concurrent bump of the SAME
+#                        LOCK_FILE to finish before giving up (default: 30)
+#                        - see acquire_file_lock() in common.sh
 #
 # Defaults to versions.lock.dist (the committed template new installs copy
 # from) rather than the live versions.lock, which is untracked and
@@ -67,7 +71,7 @@ source "$SCRIPT_DIR/common.sh"
 export LOCK_FILE="${LOCK_FILE:-$PROJECT_DIR/versions.lock.dist}"
 
 usage() {
-    sed -n '2,56p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'
+    sed -n '2,60p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'
 }
 
 if [[ "${1:-}" == "-h" || "${1:-}" == "--help" ]]; then
@@ -136,7 +140,15 @@ log_info "  $IMAGE_REPO -> $DIGEST (source commit $SOURCE_COMMIT)"
 
 GENERATED_AT="$(date -u +%Y-%m-%dT%H:%M:%S.%6NZ)"
 
-python3 - "$LOCK_FILE" "$IMAGE_REPO" "$DIGEST" "$SOURCE_COMMIT" "$GENERATED_AT" <<'PYEOF'
+# Locked (VOIP-1334): two concurrent bumps of the SAME versions.lock (e.g.
+# two services' CI deploys landing on bm-nyc-01 close together) must not
+# race - see acquire_file_lock()'s header comment in common.sh for the
+# full rationale and why this is fd-based rather than a generic
+# run-under-lock wrapper.
+(
+    acquire_file_lock "$LOCK_FILE" "${LOCK_TIMEOUT_SECONDS:-30}" || exit $?
+
+    python3 - "$LOCK_FILE" "$IMAGE_REPO" "$DIGEST" "$SOURCE_COMMIT" "$GENERATED_AT" <<'PYEOF'
 import json
 import os
 import sys
@@ -159,7 +171,10 @@ lock["generated_by"] = f"scripts/bump-image-digest.sh ({image_repo}, CI single-i
 
 # Atomic write: temp file + rename, so a killed/failed run never leaves
 # versions.lock truncated or partially written (matches
-# generate-versions-lock.sh's own write path).
+# generate-versions-lock.sh's own write path). The surrounding flock
+# (VOIP-1334) is what protects against a CONCURRENT writer stomping this
+# update - the atomic rename alone only protects against a killed/failed
+# writer corrupting the file for itself.
 tmp_path = lock_file + ".tmp"
 with open(tmp_path, "w") as f:
     json.dump(lock, f, indent=2)
@@ -168,6 +183,7 @@ os.replace(tmp_path, lock_file)
 
 print(f"OLD_DIGEST={old_digest}")
 PYEOF
+) 9>"$LOCK_FILE.flock"
 
 log_info "  Updated $LOCK_FILE"
 

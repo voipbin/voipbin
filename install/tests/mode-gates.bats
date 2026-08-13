@@ -98,6 +98,14 @@ teardown() {
     # ones.
     echo "MARKER: live compose file" > "$PROJECT_DIR/docker-compose.yml"
     echo "MARKER: live lock file" > "$PROJECT_DIR/versions.lock"
+    # Their VOIP-1334 concurrency lock files (acquire_file_lock() in
+    # common.sh) must be purged too - leftover generated artifacts, even
+    # though they're harmless to reuse across runs. Both the live-file
+    # and .dist-file variants: bump-image-digest.sh/sync-compose-images.sh/
+    # generate-versions-lock.sh default to the .dist targets, so a plain
+    # local/dev invocation creates the .dist.flock form, not the live one.
+    touch "$PROJECT_DIR/docker-compose.yml.flock" "$PROJECT_DIR/versions.lock.flock" \
+        "$PROJECT_DIR/docker-compose.yml.dist.flock" "$PROJECT_DIR/versions.lock.dist.flock"
 
     run bash "$SCRIPTS_DIR/clean.sh" --purge
 
@@ -107,6 +115,10 @@ teardown() {
     [[ ! -f "$PROJECT_DIR/.env" ]]
     [[ ! -f "$PROJECT_DIR/docker-compose.yml" ]]
     [[ ! -f "$PROJECT_DIR/versions.lock" ]]
+    [[ ! -f "$PROJECT_DIR/docker-compose.yml.flock" ]]
+    [[ ! -f "$PROJECT_DIR/versions.lock.flock" ]]
+    [[ ! -f "$PROJECT_DIR/docker-compose.yml.dist.flock" ]]
+    [[ ! -f "$PROJECT_DIR/versions.lock.dist.flock" ]]
 }
 
 @test "clean.sh --dns is a no-op with message in external mode" {

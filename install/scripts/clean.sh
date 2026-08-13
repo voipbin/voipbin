@@ -211,18 +211,31 @@ main() {
         fi
 
         # Remove live docker-compose.yml (generated from docker-compose.yml.dist
-        # by init.sh; re-copied fresh on the next init.sh run)
+        # by init.sh; re-copied fresh on the next init.sh run), plus any
+        # concurrency lock file (VOIP-1334, acquire_file_lock() in
+        # common.sh) left next to it OR docker-compose.yml.dist -
+        # bump-image-digest.sh/sync-compose-images.sh/generate-versions-lock.sh
+        # default to the .dist targets, so a plain local/dev invocation (no
+        # LOCK_FILE/COMPOSE_FILE/OUTPUT_FILE override) creates
+        # docker-compose.yml.dist.flock, not docker-compose.yml.flock. purge
+        # is meant to leave no generated artifact behind, and a leftover
+        # zero-byte .flock is still a generated artifact even though it's
+        # harmless to reuse across runs.
         if [ -f "$PROJECT_DIR/docker-compose.yml" ]; then
             log_info "Removing docker-compose.yml..."
             rm -f "$PROJECT_DIR/docker-compose.yml"
         fi
+        rm -f "$PROJECT_DIR/docker-compose.yml.flock" "$PROJECT_DIR/docker-compose.yml.dist.flock"
 
         # Remove live versions.lock (generated from versions.lock.dist by
-        # init.sh; re-copied fresh on the next init.sh run)
+        # init.sh; re-copied fresh on the next init.sh run), plus any
+        # concurrency lock file (VOIP-1334) left next to it OR
+        # versions.lock.dist - same defaults-to-.dist reasoning as above.
         if [ -f "$PROJECT_DIR/versions.lock" ]; then
             log_info "Removing versions.lock..."
             rm -f "$PROJECT_DIR/versions.lock"
         fi
+        rm -f "$PROJECT_DIR/versions.lock.flock" "$PROJECT_DIR/versions.lock.dist.flock"
 
         # Remove generated CoreDNS config
         if [ -d "$PROJECT_DIR/config/coredns" ]; then

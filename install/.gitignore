@@ -29,3 +29,12 @@ backups/
 .voipbin-op.lock
 # RabbitMQ delayed-message plugin (downloaded on first start)
 config/rabbitmq/plugins/*.ez
+# Concurrency lock files (VOIP-1334): acquire_file_lock() in common.sh
+# creates "<target>.flock" next to any file it protects (versions.lock,
+# versions.lock.dist, docker-compose.yml, docker-compose.yml.dist) - a
+# zero-byte file reused across runs, never meant to be committed. Without
+# this, bump-image-digest.sh/sync-compose-images.sh running against the
+# tracked .dist files (the CI default) leaves an untracked *.flock file
+# behind, which trips .circleci/scripts/open-versions-lock-pr.sh's
+# narrow-scope dirty-file guard and silently breaks that automation.
+*.flock
