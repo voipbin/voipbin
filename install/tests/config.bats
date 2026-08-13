@@ -631,3 +631,66 @@ PYEOF
 @test "init.sh writes GRAFANA_ADMIN_PASSWORD into the generated .env" {
     assert_file_contains "$SCRIPTS_DIR/init.sh" "GRAFANA_ADMIN_PASSWORD=\$GRAFANA_ADMIN_PASSWORD"
 }
+
+# =============================================================================
+# docker-compose.yml.dist - db/redis/rabbitmq loopback-only binding (VOIP-1336)
+# =============================================================================
+
+@test "docker-compose.yml.dist binds db to 127.0.0.1 by default via DB_BIND_ADDRESS" {
+    assert_file_contains "$PROJECT_ROOT/docker-compose.yml.dist" '"${DB_BIND_ADDRESS:-127.0.0.1}:3306:3306"'
+}
+
+@test "docker-compose.yml.dist binds redis to 127.0.0.1 by default via REDIS_BIND_ADDRESS" {
+    assert_file_contains "$PROJECT_ROOT/docker-compose.yml.dist" '"${REDIS_BIND_ADDRESS:-127.0.0.1}:6379:6379"'
+}
+
+@test "docker-compose.yml.dist binds both rabbitmq ports to 127.0.0.1 by default via RABBITMQ_BIND_ADDRESS" {
+    assert_file_contains "$PROJECT_ROOT/docker-compose.yml.dist" '"${RABBITMQ_BIND_ADDRESS:-127.0.0.1}:5672:5672"'
+    assert_file_contains "$PROJECT_ROOT/docker-compose.yml.dist" '"${RABBITMQ_BIND_ADDRESS:-127.0.0.1}:15672:15672"'
+}
+
+@test "docker compose config renders db/redis/rabbitmq bound to 127.0.0.1 with no env overrides" {
+    if ! command -v docker &>/dev/null; then
+        skip "docker not available"
+    fi
+    run docker compose -f "$PROJECT_ROOT/docker-compose.yml.dist" config
+    [[ "$status" -eq 0 ]]
+    local db_block redis_block rabbitmq_block
+    db_block=$(echo "$output" | sed -n '/^  db:/,/^  [a-z]/p')
+    redis_block=$(echo "$output" | sed -n '/^  redis:/,/^  [a-z]/p')
+    rabbitmq_block=$(echo "$output" | sed -n '/^  rabbitmq:/,/^  [a-z]/p')
+    [[ "$db_block" == *"host_ip: 127.0.0.1"* ]]
+    [[ "$redis_block" == *"host_ip: 127.0.0.1"* ]]
+    [[ "$rabbitmq_block" == *"host_ip: 127.0.0.1"* ]]
+}
+
+@test "docker compose config honors DB_BIND_ADDRESS/REDIS_BIND_ADDRESS/RABBITMQ_BIND_ADDRESS overrides" {
+    if ! command -v docker &>/dev/null; then
+        skip "docker not available"
+    fi
+    # An explicit override must NOT be silently ignored - 127.0.0.1 must not
+    # appear as db's bind address once DB_BIND_ADDRESS is overridden.
+    run bash -c "DB_BIND_ADDRESS=0.0.0.0 REDIS_BIND_ADDRESS=0.0.0.0 RABBITMQ_BIND_ADDRESS=0.0.0.0 docker compose -f '$PROJECT_ROOT/docker-compose.yml.dist' config"
+    [[ "$status" -eq 0 ]]
+    local db_block
+    db_block=$(echo "$output" | sed -n '/^  db:/,/^  [a-z]/p')
+    [[ "$db_block" != *"127.0.0.1"* ]]
+    [[ "$db_block" == *"host_ip: 0.0.0.0"* ]] || [[ "$db_block" != *"host_ip:"* ]]
+}
+
+@test ".env.template documents DB_BIND_ADDRESS/REDIS_BIND_ADDRESS/RABBITMQ_BIND_ADDRESS defaulting to 127.0.0.1" {
+    assert_file_contains "$PROJECT_ROOT/.env.template" "DB_BIND_ADDRESS=127.0.0.1"
+    assert_file_contains "$PROJECT_ROOT/.env.template" "REDIS_BIND_ADDRESS=127.0.0.1"
+    assert_file_contains "$PROJECT_ROOT/.env.template" "RABBITMQ_BIND_ADDRESS=127.0.0.1"
+}
+
+@test "init.sh writes DB_BIND_ADDRESS/REDIS_BIND_ADDRESS/RABBITMQ_BIND_ADDRESS into the generated .env" {
+    assert_file_contains "$SCRIPTS_DIR/init.sh" "DB_BIND_ADDRESS=127.0.0.1"
+    assert_file_contains "$SCRIPTS_DIR/init.sh" "REDIS_BIND_ADDRESS=127.0.0.1"
+    assert_file_contains "$SCRIPTS_DIR/init.sh" "RABBITMQ_BIND_ADDRESS=127.0.0.1"
+}
+
+@test "docs/follow-ups.md notes already-live servers keep 0.0.0.0 until deliberately merged" {
+    assert_file_contains "$PROJECT_ROOT/docs/follow-ups.md" "bm-nyc-01"
+    assert_file_contains "$PROJECT_ROOT/docs/follow-ups.md" "does not retroactively apply"
+}

@@ -37,8 +37,16 @@ services:
     container_name: voipbin-db
     restart: always
     logging: *default-logging
+    # DB_BIND_ADDRESS (VOIP-1336): 127.0.0.1 by default, same posture as
+    # prometheus/grafana above - operators reach this via an SSH local
+    # port-forward, not directly over the internet. Override to 0.0.0.0 in
+    # .env only if you genuinely need LAN/multi-host access (e.g. a
+    # split-host Kamailio reaching this over the network instead of via
+    # KAMAILIO_DB_HOST=127.0.0.1's host-published-port path) - see README
+    # "Monitoring (Prometheus/Grafana)" for the access pattern this mirrors,
+    # and re-review your host firewall if you do.
     ports:
-      - "3306:3306"
+      - "${DB_BIND_ADDRESS:-127.0.0.1}:3306:3306"
     environment:
       - MYSQL_ROOT_PASSWORD=${MYSQL_ROOT_PASSWORD}
     volumes:
@@ -56,8 +64,10 @@ services:
     restart: always
     logging: *default-logging
     command: ["redis-server", "--appendonly", "yes"]
+    # REDIS_BIND_ADDRESS (VOIP-1336): 127.0.0.1 by default - see the
+    # matching comment on the db service above for the full rationale.
     ports:
-      - "6379:6379"
+      - "${REDIS_BIND_ADDRESS:-127.0.0.1}:6379:6379"
     volumes:
       - redis_data:/data
     healthcheck:
@@ -74,9 +84,12 @@ services:
     hostname: voipbin-rabbitmq
     restart: always
     logging: *default-logging
+    # RABBITMQ_BIND_ADDRESS (VOIP-1336): 127.0.0.1 by default - see the
+    # matching comment on the db service above for the full rationale.
+    # Covers both the AMQP port (5672) and the management UI (15672).
     ports:
-      - "5672:5672"
-      - "15672:15672"
+      - "${RABBITMQ_BIND_ADDRESS:-127.0.0.1}:5672:5672"
+      - "${RABBITMQ_BIND_ADDRESS:-127.0.0.1}:15672:15672"
     # Delayed-message plugin lives in a host bind dir (config/rabbitmq/plugins)
     # mounted at a SEPARATE path and added via RABBITMQ_PLUGINS_DIR, so:
     # - container recreate does NOT re-download (offline-safe)
