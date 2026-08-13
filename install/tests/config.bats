@@ -694,3 +694,207 @@ PYEOF
     assert_file_contains "$PROJECT_ROOT/docs/follow-ups.md" "bm-nyc-01"
     assert_file_contains "$PROJECT_ROOT/docs/follow-ups.md" "does not retroactively apply"
 }
+
+# =============================================================================
+# kamailio-exporter / RTPEngine scrape / Alertmanager (VOIP-1338)
+# =============================================================================
+
+@test "docker-compose.yml.dist defines kamailio-exporter service" {
+    assert_file_contains "$PROJECT_ROOT/docker-compose.yml.dist" "  kamailio-exporter:"
+}
+
+@test "docker-compose.yml.dist defines alertmanager service" {
+    assert_file_contains "$PROJECT_ROOT/docker-compose.yml.dist" "  alertmanager:"
+}
+
+@test "docker-compose.yml.dist kamailio-exporter and rtpengine do not share a port (9105 vs 9101)" {
+    # Both run network_mode: host, so a port collision would mean two
+    # processes trying to bind the same host port - the second one to start
+    # would fail outright. See the kamailio-exporter service's own comment
+    # block for the full explanation.
+    local rtpengine_block kamailio_exporter_block
+    rtpengine_block=$(sed -n '/^  rtpengine:/,/^  [a-z-]\+:$/p' "$PROJECT_ROOT/docker-compose.yml.dist")
+    kamailio_exporter_block=$(sed -n '/^  kamailio-exporter:/,/^  [a-z-]\+:$/p' "$PROJECT_ROOT/docker-compose.yml.dist")
+
+    [[ "$rtpengine_block" == *"RTPENGINE_LISTEN_HTTP:-9101"* ]]
+    [[ "$kamailio_exporter_block" == *"0.0.0.0:9105"* ]]
+    [[ "$kamailio_exporter_block" != *":9101"* ]]
+}
+
+@test "docker-compose.yml.dist kamailio and kamailio-exporter share the kamailio-run volume" {
+    local kamailio_block kamailio_exporter_block
+    kamailio_block=$(sed -n '/^  kamailio:/,/^  [a-z-]\+:$/p' "$PROJECT_ROOT/docker-compose.yml.dist")
+    kamailio_exporter_block=$(sed -n '/^  kamailio-exporter:/,/^  [a-z-]\+:$/p' "$PROJECT_ROOT/docker-compose.yml.dist")
+
+    [[ "$kamailio_block" == *"kamailio-run:/run/kamailio"* ]]
+    [[ "$kamailio_exporter_block" == *"kamailio-run:/run/kamailio"* ]]
+}
+
+@test "docker-compose.yml.dist kamailio-exporter scrape-uri matches the shared volume mount path" {
+    assert_file_contains "$PROJECT_ROOT/docker-compose.yml.dist" "unix:///run/kamailio/kamailio_ctl"
+}
+
+@test "docker-compose.yml.dist pins kamailio-exporter and alertmanager images by digest" {
+    for svc in kamailio-exporter alertmanager; do
+        local block
+        block=$(sed -n "/^  ${svc}:/,/^  [a-z-]\+:$/p" "$PROJECT_ROOT/docker-compose.yml.dist")
+        [[ "$block" == *"@sha256:"* ]]
+    done
+}
+
+@test "docker-compose.yml.dist defines kamailio-run and alertmanager_data volumes" {
+    assert_file_contains "$PROJECT_ROOT/docker-compose.yml.dist" "  kamailio-run:"
+    assert_file_contains "$PROJECT_ROOT/docker-compose.yml.dist" "  alertmanager_data:"
+}
+
+@test "docker-compose.yml.dist binds alertmanager's published host port to 127.0.0.1 only, not 0.0.0.0" {
+    # Same posture as prometheus/grafana: the container's own internal
+    # --web.listen-address is legitimately 0.0.0.0 (binds every interface
+    # INSIDE the container namespace), but the ports: host-publish mapping
+    # must be loopback-only. Match the existing prometheus/grafana test
+    # style (assert the published-port string), not a "block excludes
+    # 0.0.0.0" check, which would also (incorrectly) flag the internal
+    # listen-address.
+    assert_file_contains "$PROJECT_ROOT/docker-compose.yml.dist" '"127.0.0.1:9093:9093"'
+}
+
+@test "docker-compose.yml.dist prometheus has host.docker.internal extra_hosts for rtpengine/kamailio-exporter scraping" {
+    local block
+    block=$(sed -n '/^  prometheus:/,/^  [a-z-]\+:$/p' "$PROJECT_ROOT/docker-compose.yml.dist")
+    [[ "$block" == *"host.docker.internal:host-gateway"* ]]
+}
+
+@test "docker-compose.yml.dist mounts alert-rules.yml and alertmanager.yml" {
+    assert_file_contains "$PROJECT_ROOT/docker-compose.yml.dist" "./config/prometheus/alert-rules.yml:/etc/prometheus/alert-rules.yml:ro"
+    assert_file_contains "$PROJECT_ROOT/docker-compose.yml.dist" "./config/alertmanager/alertmanager.yml:/etc/alertmanager/alertmanager.yml:ro"
+}
+
+@test "config/prometheus/prometheus.yml is still valid YAML after VOIP-1338 edits" {
+    if command -v python3 &>/dev/null && python3 -c "import yaml" 2>/dev/null; then
+        run python3 -c "import yaml; yaml.safe_load(open('$PROJECT_ROOT/config/prometheus/prometheus.yml'))"
+        [[ "$status" -eq 0 ]]
+    else
+        skip "python3+pyyaml not available"
+    fi
+}
+
+@test "config/prometheus/prometheus.yml scrapes rtpengine and kamailio via host.docker.internal" {
+    assert_file_contains "$PROJECT_ROOT/config/prometheus/prometheus.yml" "host.docker.internal:9101"
+    assert_file_contains "$PROJECT_ROOT/config/prometheus/prometheus.yml" "host.docker.internal:9105"
+}
+
+@test "config/prometheus/prometheus.yml wires alertmanager and rule_files" {
+    assert_file_contains "$PROJECT_ROOT/config/prometheus/prometheus.yml" "alertmanager:9093"
+    assert_file_contains "$PROJECT_ROOT/config/prometheus/prometheus.yml" "/etc/prometheus/alert-rules.yml"
+}
+
+@test "config/prometheus/alert-rules.yml exists and is valid YAML" {
+    [[ -f "$PROJECT_ROOT/config/prometheus/alert-rules.yml" ]]
+    if command -v python3 &>/dev/null && python3 -c "import yaml" 2>/dev/null; then
+        run python3 -c "import yaml; yaml.safe_load(open('$PROJECT_ROOT/config/prometheus/alert-rules.yml'))"
+        [[ "$status" -eq 0 ]]
+    else
+        skip "python3+pyyaml not available"
+    fi
+}
+
+@test "config/prometheus/alert-rules.yml defines the expected alert groups" {
+    for grp in instance-health node-resources rtpengine rabbitmq redis; do
+        assert_file_contains "$PROJECT_ROOT/config/prometheus/alert-rules.yml" "name: $grp"
+    done
+}
+
+@test "config/prometheus/alert-rules.yml does not port Kubernetes-only pod-health rules" {
+    # Only check the actual `groups:` rule definitions, not this file's own
+    # header comment - which deliberately documents (in prose) that the
+    # pod-health group and its kube_pod_*/kube_deployment_* metrics were
+    # NOT ported, and would otherwise self-trip this exact assertion.
+    run bash -c "sed -n '/^groups:/,\$p' '$PROJECT_ROOT/config/prometheus/alert-rules.yml' | grep -c 'kube_pod\|kube_deployment'"
+    [[ "$output" == "0" ]]
+}
+
+@test "config/prometheus/alert-rules.yml RabbitMQ alarm rules use the built-in rabbitmq_prometheus plugin's actual metric names" {
+    # rabbitmq_node_mem_alarm/rabbitmq_node_disk_free_alarm belong to the
+    # community rabbitmq_exporter, not the built-in plugin this stack
+    # enables - see this file's own header comment for the empirical check.
+    assert_file_contains "$PROJECT_ROOT/config/prometheus/alert-rules.yml" "rabbitmq_alarms_memory_used_watermark"
+    assert_file_contains "$PROJECT_ROOT/config/prometheus/alert-rules.yml" "rabbitmq_alarms_free_disk_space_watermark"
+    # Same reasoning as the pod-health test above: only check the `groups:`
+    # rule definitions, not the header comment's prose explanation (which
+    # quotes the old, wrong metric names on purpose).
+    run bash -c "sed -n '/^groups:/,\$p' '$PROJECT_ROOT/config/prometheus/alert-rules.yml' | grep -c 'rabbitmq_node_mem_alarm\|rabbitmq_node_disk_free_alarm'"
+    [[ "$output" == "0" ]]
+}
+
+@test "config/prometheus/alert-rules.yml RedisHighMemory guards against a zero maxmemory divide-by-zero" {
+    assert_file_contains "$PROJECT_ROOT/config/prometheus/alert-rules.yml" "redis_memory_max_bytes > 0"
+}
+
+@test "config/alertmanager/alertmanager.yml exists and is valid YAML" {
+    [[ -f "$PROJECT_ROOT/config/alertmanager/alertmanager.yml" ]]
+    if command -v python3 &>/dev/null && python3 -c "import yaml" 2>/dev/null; then
+        run python3 -c "import yaml; yaml.safe_load(open('$PROJECT_ROOT/config/alertmanager/alertmanager.yml'))"
+        [[ "$status" -eq 0 ]]
+    else
+        skip "python3+pyyaml not available"
+    fi
+}
+
+@test "config/grafana/dashboards ships kamailio and rtpengine dashboards (VOIP-1338)" {
+    [[ -f "$PROJECT_ROOT/config/grafana/dashboards/kamailio-overview.json" ]]
+    [[ -f "$PROJECT_ROOT/config/grafana/dashboards/rtpengine-overview.json" ]]
+}
+
+@test "config/grafana/dashboards kamailio/rtpengine JSON files are valid and reference the Prometheus datasource" {
+    for f in "$PROJECT_ROOT/config/grafana/dashboards/kamailio-overview.json" "$PROJECT_ROOT/config/grafana/dashboards/rtpengine-overview.json"; do
+        if command -v python3 &>/dev/null && python3 -c "import json" 2>/dev/null; then
+            run python3 -c "import json; json.load(open('$f'))"
+            [[ "$status" -eq 0 ]]
+        fi
+        assert_file_contains "$f" '"type": "prometheus"'
+    done
+}
+
+@test "docker compose config renders successfully with the VOIP-1338 monitoring additions" {
+    if ! command -v docker &>/dev/null; then
+        skip "docker not available"
+    fi
+    run docker compose -f "$PROJECT_ROOT/docker-compose.yml.dist" --env-file "$PROJECT_ROOT/.env.template" config --quiet
+    [[ "$status" -eq 0 ]]
+}
+
+@test "asterisk-overview dashboard was deliberately NOT ported (no exporter exists, VOIP-1338)" {
+    [[ ! -f "$PROJECT_ROOT/config/grafana/dashboards/asterisk-overview.json" ]]
+}
+
+@test "docs/follow-ups.md documents the deferred alertmanager notification channel (VOIP-1338)" {
+    assert_file_contains "$PROJECT_ROOT/docs/follow-ups.md" "VOIP-1338"
+}
+
+@test "config/grafana/dashboards/rtpengine-overview.json only references verified rtpengine_* Prometheus metric names" {
+    # Regression guard for a real bug caught in review: an earlier draft of
+    # this dashboard referenced rtpengine_calls/_packet_loss/_jitter/_mos,
+    # none of which sipwise/rtpengine's daemon/statistics.c PROM() macro
+    # ever emits - the dashboard would have shown "No data" on 4 of 9
+    # panels forever. This allowlist was built by extracting every
+    # PROM("name", ...) call from rtpengine's actual source.
+    local allowed="sessions|sessions_total|closed_sessions_total|transcoded_media|mediastreams|uptime_seconds|bytes_total|packets_total|packets_lost|ports|ports_free|ports_used|one_way_sessions_total|zero_packet_streams_total|mos_total|mos2_total|mos_samples_total|jitter_total|jitter2_total|jitter_samples_total|packetloss_total|packetloss2_total|packetloss_samples_total|rtt_e2e_total|rtt_dsct_total|call_duration_total|call_duration2_total|call_duration_avg|requests_total|request_seconds_total|errors_total|rtp_duplicates|rtp_reordered|rtp_seq_resets|rtp_skips|transcode_bytes_total|transcode_packets_total|transcode_samples_total|transcoders|packet_errors_total"
+
+    run python3 - "$PROJECT_ROOT/config/grafana/dashboards/rtpengine-overview.json" "$allowed" <<'PYEOF'
+import json, re, sys
+path, allowed = sys.argv[1], sys.argv[2].split("|")
+d = json.load(open(path))
+found = set()
+for p in d.get("panels", []):
+    for t in p.get("targets", []):
+        expr = t.get("expr", "")
+        for m in re.finditer(r"rtpengine_([a-zA-Z0-9_]+)", expr):
+            found.add(m.group(1))
+unknown = sorted(n for n in found if n not in allowed)
+if unknown:
+    print("Unknown/unverified rtpengine_* metric names:", unknown)
+    sys.exit(1)
+print("all", len(found), "referenced metric names are in the verified allowlist")
+PYEOF
+    [[ "$status" -eq 0 ]]
+}

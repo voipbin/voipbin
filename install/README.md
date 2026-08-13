@@ -704,37 +704,67 @@ scrape from the moment it starts:
 |---------|---------|------------------------------|
 | `prometheus` | Metrics collection & storage (15d retention) | - |
 | `grafana` | Dashboards, auto-provisioned on startup | - |
+| `alertmanager` | Alert routing (VOIP-1338, no notification channel wired up yet) | - |
 | `node-exporter` | Host CPU/memory/disk/network | the Docker host itself |
 | `cadvisor` | Per-container CPU/memory/network/disk | every running container |
 | `redis-exporter` | Redis INFO stats | the `redis` service |
 | `mysqld-exporter` | MySQL server stats | the `db` service |
 | `rabbitmq` (built-in plugin) | Queue depth, message rates, connections | the `rabbitmq` service itself, via its bundled `rabbitmq_prometheus` plugin |
+| `kamailio-exporter` (VOIP-1338) | SIP transaction stats, shared memory, dispatcher/TLS state | the `kamailio` service, via its `ctl` module BINRPC socket |
+| (no extra sidecar, VOIP-1338) | Active calls/sessions, media throughput, packet loss/jitter/MOS (sampled averages) | the `rtpengine` service's own built-in HTTP metrics endpoint |
 | (no extra sidecar) | Application metrics | all 32 `bin-*-manager` services' native `:2112/metrics` endpoint (`voipbin-managers` scrape job) |
 
-Four dashboards ship pre-provisioned (no manual UI setup): **Docker &
-System Overview**, **RabbitMQ Overview**, **Redis Overview**, and
-**VoIPBin Manager Services** — see `config/grafana/dashboards/`.
+Six dashboards ship pre-provisioned (no manual UI setup): **Docker &
+System Overview**, **RabbitMQ Overview**, **Redis Overview**,
+**VoIPBin Manager Services**, **Kamailio Overview**, and **RTPEngine
+Overview** (the last two added in VOIP-1338) — see
+`config/grafana/dashboards/`.
+
+**Alerting (VOIP-1338).** `config/prometheus/alert-rules.yml` ships rules
+for instance/service down detection (including Kamailio/RabbitMQ/Redis),
+host resource exhaustion (CPU/memory/disk, including a 4-hour disk-fill
+prediction), RTPEngine media-path health (port exhaustion, zero-packet and
+one-way RTP sessions), and RabbitMQ resource alarms/backlog/no-consumers.
+Alertmanager receives them at `http://localhost:9093` (same SSH-tunnel
+access pattern as below) but ships with a no-op default receiver — see
+`config/alertmanager/alertmanager.yml`'s header comment for how to wire up
+a real notification channel.
 
 **Not exposed publicly.** Like RabbitMQ's management UI and the other
-infrastructure ports, `prometheus` (9090) and `grafana` (3000) are bound to
-`127.0.0.1` only — never `0.0.0.0` — and production hosts additionally drop
-external new connections to these ports at the nftables layer (same pattern
-as 3306/5672/6379/15672). Access them via an SSH local port-forward:
+infrastructure ports, `prometheus` (9090), `grafana` (3000), and
+`alertmanager` (9093) are bound to `127.0.0.1` only — never `0.0.0.0` — and
+production hosts additionally drop external new connections to these ports
+at the nftables layer (same pattern as 3306/5672/6379/15672). Access them
+via an SSH local port-forward:
+
+**Exception: `rtpengine` (9101) and `kamailio-exporter` (9105, VOIP-1338)
+bind `0.0.0.0`, by design, and are NOT covered by the loopback-only
+posture above.** Both run `network_mode: host` and are scraped by
+`prometheus` (on the default bridge network) via `host.docker.internal` -
+binding either to `127.0.0.1` would make it unreachable from the
+`prometheus` container, since that loopback belongs to the host's own
+network namespace, not a namespace `prometheus` shares. This mirrors
+RTPEngine's pre-existing SIP/RTP media-plane exposure (it must already be
+reachable from the public internet for calls to work) and extends the
+same posture to `kamailio-exporter`'s metrics port. Both MUST be covered
+by the host's own firewall/nftables rules, the same way 3306/5672/6379 are
+- verify with `sudo nft list ruleset` (or equivalent) on any production
+host before relying on this stack's own port bindings as the only control.
 
 ```bash
-ssh -L 3000:127.0.0.1:3000 -L 9090:127.0.0.1:9090 root@<host>
-# then open http://localhost:3000 (Grafana) / http://localhost:9090 (Prometheus)
+ssh -L 3000:127.0.0.1:3000 -L 9090:127.0.0.1:9090 -L 9093:127.0.0.1:9093 root@<host>
+# then open http://localhost:3000 (Grafana) / http://localhost:9090 (Prometheus) / http://localhost:9093 (Alertmanager)
 ```
 
 Grafana's admin password is `GRAFANA_ADMIN_PASSWORD` in `.env` (username
 `admin`) — `init.sh` generates it automatically on new installs, same as
 `MYSQL_ROOT_PASSWORD`/`POSTGRES_PASSWORD`.
 
-**Deferred / follow-ups:** Alertmanager, a dedicated least-privilege MySQL
-monitoring user (mysqld-exporter currently authenticates as
-root/`MYSQL_ROOT_PASSWORD`), and Asterisk `res_prometheus` scraping (not
-currently enabled/exposed in the `voip-asterisk-*` images this stack pulls)
-— see `docs/follow-ups.md`.
+**Deferred / follow-ups:** a real Alertmanager notification channel, a
+dedicated least-privilege MySQL monitoring user (mysqld-exporter currently
+authenticates as root/`MYSQL_ROOT_PASSWORD`), and Asterisk `res_prometheus`
+scraping (not currently enabled/exposed in the `voip-asterisk-*` images
+this stack pulls) — see `docs/follow-ups.md`.
 
 ---
 

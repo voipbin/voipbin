@@ -1,0 +1,165 @@
+{
+  "uid": "voipbin-kamailio",
+  "title": "VoIPBin - Kamailio Overview",
+  "description": "SIP transaction throughput, shared memory, dispatcher, and TLS state via florentchauveau/kamailio_exporter v2.0.0 (--kamailio.methods=tm.stats,sl.stats,core.shmmem,core.uptime,dispatcher.list,tls.info), VOIP-1338.",
+  "tags": ["voipbin", "kamailio", "voip", "sip"],
+  "timezone": "browser",
+  "schemaVersion": 39,
+  "version": 1,
+  "editable": true,
+  "refresh": "30s",
+  "time": { "from": "now-6h", "to": "now" },
+  "panels": [
+    {
+      "id": 1,
+      "title": "Up",
+      "type": "stat",
+      "gridPos": { "h": 4, "w": 6, "x": 0, "y": 0 },
+      "datasource": { "type": "prometheus", "uid": "Prometheus" },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "mappings": [
+            { "type": "value", "options": { "0": { "text": "DOWN", "color": "red" }, "1": { "text": "UP", "color": "green" } } }
+          ]
+        },
+        "overrides": []
+      },
+      "targets": [
+        { "expr": "kamailio_up", "legendFormat": "status", "refId": "A" }
+      ]
+    },
+    {
+      "id": 2,
+      "title": "Uptime (Hours)",
+      "type": "stat",
+      "gridPos": { "h": 4, "w": 6, "x": 6, "y": 0 },
+      "datasource": { "type": "prometheus", "uid": "Prometheus" },
+      "fieldConfig": { "defaults": { "unit": "short" }, "overrides": [] },
+      "targets": [
+        { "expr": "kamailio_core_uptime_uptime_total / 3600", "legendFormat": "hours", "refId": "A" }
+      ]
+    },
+    {
+      "id": 3,
+      "title": "Current Transactions",
+      "type": "stat",
+      "gridPos": { "h": 4, "w": 6, "x": 12, "y": 0 },
+      "datasource": { "type": "prometheus", "uid": "Prometheus" },
+      "fieldConfig": { "defaults": { "unit": "short" }, "overrides": [] },
+      "targets": [
+        { "expr": "kamailio_tm_stats_current", "legendFormat": "current", "refId": "A" }
+      ]
+    },
+    {
+      "id": 4,
+      "title": "Waiting Transactions",
+      "type": "stat",
+      "gridPos": { "h": 4, "w": 6, "x": 18, "y": 0 },
+      "datasource": { "type": "prometheus", "uid": "Prometheus" },
+      "fieldConfig": { "defaults": { "unit": "short" }, "overrides": [] },
+      "targets": [
+        { "expr": "kamailio_tm_stats_waiting", "legendFormat": "waiting", "refId": "A" }
+      ]
+    },
+    {
+      "id": 5,
+      "title": "Transaction Created / Freed Rate",
+      "type": "timeseries",
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 4 },
+      "datasource": { "type": "prometheus", "uid": "Prometheus" },
+      "fieldConfig": { "defaults": { "unit": "ops" }, "overrides": [] },
+      "targets": [
+        { "expr": "rate(kamailio_tm_stats_created_total[5m])", "legendFormat": "created/s", "refId": "A" },
+        { "expr": "rate(kamailio_tm_stats_freed_total[5m])", "legendFormat": "freed/s", "refId": "B" },
+        { "expr": "rate(kamailio_tm_stats_delayed_free_total[5m])", "legendFormat": "delayed free/s", "refId": "C" }
+      ]
+    },
+    {
+      "id": 6,
+      "title": "Reply Totals Rate",
+      "type": "timeseries",
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 4 },
+      "datasource": { "type": "prometheus", "uid": "Prometheus" },
+      "fieldConfig": { "defaults": { "unit": "ops" }, "overrides": [] },
+      "targets": [
+        { "expr": "rate(kamailio_tm_stats_rpl_received_total[5m])", "legendFormat": "replies received/s", "refId": "A" },
+        { "expr": "rate(kamailio_tm_stats_rpl_generated_total[5m])", "legendFormat": "replies generated/s", "refId": "B" },
+        { "expr": "rate(kamailio_tm_stats_rpl_sent_total[5m])", "legendFormat": "replies sent/s", "refId": "C" }
+      ]
+    },
+    {
+      "id": 7,
+      "title": "Total / Local Transactions Rate",
+      "type": "timeseries",
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 12 },
+      "datasource": { "type": "prometheus", "uid": "Prometheus" },
+      "fieldConfig": { "defaults": { "unit": "ops" }, "overrides": [] },
+      "targets": [
+        { "expr": "rate(kamailio_tm_stats_total_total[5m])", "legendFormat": "total/s", "refId": "A" },
+        { "expr": "rate(kamailio_tm_stats_total_local_total[5m])", "legendFormat": "local/s", "refId": "B" }
+      ]
+    },
+    {
+      "id": 8,
+      "title": "Reply Codes Rate (tm + sl)",
+      "type": "timeseries",
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 12 },
+      "datasource": { "type": "prometheus", "uid": "Prometheus" },
+      "fieldConfig": { "defaults": { "unit": "ops" }, "overrides": [] },
+      "targets": [
+        { "expr": "sum(rate(kamailio_tm_stats_codes_total[5m]))", "legendFormat": "tm codes/s", "refId": "A" },
+        { "expr": "sum(rate(kamailio_sl_stats_codes_total[5m]))", "legendFormat": "sl codes/s", "refId": "B" }
+      ]
+    },
+    {
+      "id": 9,
+      "title": "Shared Memory Used / Total",
+      "type": "timeseries",
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 20 },
+      "datasource": { "type": "prometheus", "uid": "Prometheus" },
+      "fieldConfig": { "defaults": { "unit": "bytes" }, "overrides": [] },
+      "targets": [
+        { "expr": "kamailio_core_shmmem_used", "legendFormat": "used", "refId": "A" },
+        { "expr": "kamailio_core_shmmem_real_used", "legendFormat": "real used", "refId": "B" },
+        { "expr": "kamailio_core_shmmem_total", "legendFormat": "total", "refId": "C" }
+      ]
+    },
+    {
+      "id": 10,
+      "title": "Shared Memory Free / Fragments",
+      "type": "timeseries",
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 20 },
+      "datasource": { "type": "prometheus", "uid": "Prometheus" },
+      "fieldConfig": { "defaults": { "unit": "bytes" }, "overrides": [] },
+      "targets": [
+        { "expr": "kamailio_core_shmmem_free", "legendFormat": "free", "refId": "A" },
+        { "expr": "kamailio_core_shmmem_max_used", "legendFormat": "max used", "refId": "B" },
+        { "expr": "kamailio_core_shmmem_fragments", "legendFormat": "fragments", "refId": "C" }
+      ]
+    },
+    {
+      "id": 11,
+      "title": "Dispatcher Target Status",
+      "type": "timeseries",
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 28 },
+      "datasource": { "type": "prometheus", "uid": "Prometheus" },
+      "fieldConfig": { "defaults": { "unit": "short" }, "overrides": [] },
+      "targets": [
+        { "expr": "kamailio_dispatcher_list_target", "legendFormat": "target", "refId": "A" }
+      ]
+    },
+    {
+      "id": 12,
+      "title": "TLS Connections",
+      "type": "timeseries",
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 28 },
+      "datasource": { "type": "prometheus", "uid": "Prometheus" },
+      "fieldConfig": { "defaults": { "unit": "short" }, "overrides": [] },
+      "targets": [
+        { "expr": "kamailio_tls_info_opened_connections", "legendFormat": "opened", "refId": "A" },
+        { "expr": "kamailio_tls_info_max_connections", "legendFormat": "max", "refId": "B" }
+      ]
+    }
+  ]
+}

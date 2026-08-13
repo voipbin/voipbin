@@ -1,0 +1,126 @@
+{
+  "uid": "voipbin-rtpengine",
+  "title": "VoIPBin - RTPEngine Overview",
+  "description": "Active calls/sessions, media throughput, and quality metrics via RTPEngine's native HTTP metrics endpoint (VOIP-1338, VOIP-1336 install style). Panel queries verified directly against sipwise/rtpengine's daemon/statistics.c PROM() metric names (rtpengine_sessions, rtpengine_{mos,jitter,packetloss}_total/_samples_total), not copied from the GKE source dashboard, which uses a different, non-existent metric set (rtpengine_calls/_packet_loss/_jitter/_mos).",
+  "tags": ["voipbin", "rtpengine", "voip"],
+  "timezone": "browser",
+  "schemaVersion": 39,
+  "version": 1,
+  "editable": true,
+  "refresh": "30s",
+  "time": { "from": "now-6h", "to": "now" },
+  "panels": [
+    {
+      "id": 1,
+      "title": "Active Calls (own)",
+      "type": "stat",
+      "gridPos": { "h": 4, "w": 6, "x": 0, "y": 0 },
+      "datasource": { "type": "prometheus", "uid": "Prometheus" },
+      "fieldConfig": { "defaults": { "unit": "short" }, "overrides": [] },
+      "targets": [
+        { "expr": "sum(rtpengine_sessions{type=\"own\"})", "legendFormat": "calls", "refId": "A" }
+      ]
+    },
+    {
+      "id": 2,
+      "title": "Active Sessions (own + foreign)",
+      "type": "stat",
+      "gridPos": { "h": 4, "w": 6, "x": 6, "y": 0 },
+      "datasource": { "type": "prometheus", "uid": "Prometheus" },
+      "fieldConfig": { "defaults": { "unit": "short" }, "overrides": [] },
+      "targets": [
+        { "expr": "sum(rtpengine_sessions)", "legendFormat": "sessions", "refId": "A" }
+      ]
+    },
+    {
+      "id": 3,
+      "title": "Ports Used",
+      "type": "stat",
+      "gridPos": { "h": 4, "w": 6, "x": 12, "y": 0 },
+      "datasource": { "type": "prometheus", "uid": "Prometheus" },
+      "fieldConfig": { "defaults": { "unit": "short" }, "overrides": [] },
+      "targets": [
+        { "expr": "sum(rtpengine_ports_used)", "legendFormat": "used", "refId": "A" },
+        { "expr": "sum(rtpengine_ports)", "legendFormat": "total", "refId": "B" }
+      ]
+    },
+    {
+      "id": 4,
+      "title": "Uptime (Hours)",
+      "type": "stat",
+      "gridPos": { "h": 4, "w": 6, "x": 18, "y": 0 },
+      "datasource": { "type": "prometheus", "uid": "Prometheus" },
+      "fieldConfig": { "defaults": { "unit": "short" }, "overrides": [] },
+      "targets": [
+        { "expr": "rtpengine_uptime_seconds / 3600", "legendFormat": "hours", "refId": "A" }
+      ]
+    },
+    {
+      "id": 5,
+      "title": "Packet Rate (by direction)",
+      "type": "timeseries",
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 4 },
+      "datasource": { "type": "prometheus", "uid": "Prometheus" },
+      "fieldConfig": { "defaults": { "unit": "pps" }, "overrides": [] },
+      "targets": [
+        { "expr": "rate(rtpengine_packets_total[5m])", "legendFormat": "{{type}} packets/s", "refId": "A" }
+      ]
+    },
+    {
+      "id": 6,
+      "title": "Bandwidth (by direction)",
+      "type": "timeseries",
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 4 },
+      "datasource": { "type": "prometheus", "uid": "Prometheus" },
+      "fieldConfig": { "defaults": { "unit": "bps" }, "overrides": [] },
+      "targets": [
+        { "expr": "rate(rtpengine_bytes_total[5m]) * 8", "legendFormat": "{{type}} bits/s", "refId": "A" }
+      ]
+    },
+    {
+      "id": 7,
+      "title": "Packet Loss (reported, sampled avg)",
+      "type": "timeseries",
+      "gridPos": { "h": 8, "w": 8, "x": 0, "y": 12 },
+      "datasource": { "type": "prometheus", "uid": "Prometheus" },
+      "fieldConfig": { "defaults": { "unit": "short" }, "overrides": [] },
+      "targets": [
+        {
+          "expr": "rate(rtpengine_packetloss_total[5m]) / rate(rtpengine_packetloss_samples_total[5m])",
+          "legendFormat": "packet loss",
+          "refId": "A"
+        }
+      ]
+    },
+    {
+      "id": 8,
+      "title": "Jitter (reported, sampled avg)",
+      "type": "timeseries",
+      "gridPos": { "h": 8, "w": 8, "x": 8, "y": 12 },
+      "datasource": { "type": "prometheus", "uid": "Prometheus" },
+      "fieldConfig": { "defaults": { "unit": "ms" }, "overrides": [] },
+      "targets": [
+        {
+          "expr": "rate(rtpengine_jitter_total[5m]) / rate(rtpengine_jitter_samples_total[5m])",
+          "legendFormat": "jitter",
+          "refId": "A"
+        }
+      ]
+    },
+    {
+      "id": 9,
+      "title": "MOS (Call Quality, sampled avg)",
+      "type": "timeseries",
+      "gridPos": { "h": 8, "w": 8, "x": 16, "y": 12 },
+      "datasource": { "type": "prometheus", "uid": "Prometheus" },
+      "fieldConfig": { "defaults": { "unit": "short", "min": 0, "max": 5 }, "overrides": [] },
+      "targets": [
+        {
+          "expr": "rate(rtpengine_mos_total[5m]) / rate(rtpengine_mos_samples_total[5m])",
+          "legendFormat": "MOS",
+          "refId": "A"
+        }
+      ]
+    }
+  ]
+}

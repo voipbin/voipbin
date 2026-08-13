@@ -1,0 +1,46 @@
+# Alertmanager configuration for the VoIPBin sandbox/production stack
+# (VOIP-1338). Mounted read-only into the alertmanager container at
+# /etc/alertmanager/alertmanager.yml (see docker-compose.yml.dist).
+#
+# DEFAULT RECEIVER IS A NO-OP ("null"): this stack does not have an
+# established outbound notification channel (Slack/Discord/PagerDuty/email)
+# to wire up by default, so alerts fire and are visible in the Alertmanager
+# UI (http://localhost:9093 via the same SSH-tunnel pattern as prometheus/
+# grafana - see README.md "Monitoring") and in Grafana's alert list, but no
+# one gets paged automatically. Wiring a real receiver is tracked as a
+# follow-up - see docs/follow-ups.md "Monitoring stack (VOIP-1338)".
+#
+# To add real notifications today: edit this file directly (it is a
+# git-tracked, bind-mounted config, not templated from .env - keep any
+# webhook URL/credentials you add here OUT of git if this file stops being
+# a generic default, e.g. by moving them to a separate untracked
+# config/alertmanager/alertmanager.local.yml and referencing it, or by
+# switching the receiver to read a URL from an environment variable via a
+# small entrypoint wrapper). A minimal Discord example (Discord's native
+# webhook payload isn't compatible with Alertmanager's `webhook_configs`
+# without a translator, so a Slack-compatible receiver is the simplest
+# built-in option if using a service that accepts Alertmanager's own
+# webhook JSON):
+#
+#   receivers:
+#     - name: default
+#       webhook_configs:
+#         - url: "https://your-notification-relay.example.com/alertmanager"
+#
+# then `docker compose up -d --force-recreate alertmanager`.
+
+global:
+  resolve_timeout: 5m
+
+route:
+  receiver: default
+  group_by: ["alertname", "job"]
+  group_wait: 30s
+  group_interval: 5m
+  repeat_interval: 4h
+
+receivers:
+  - name: default
+    # No integrations configured - alerts are visible in the Alertmanager
+    # UI/API and in Grafana, but nothing is paged externally. See the
+    # header comment above for how to add a real receiver.

@@ -1,0 +1,248 @@
+# Prometheus alert rules for the VoIPBin sandbox/production stack
+# (VOIP-1338). Mounted read-only into the prometheus container at
+# /etc/prometheus/alert-rules.yml and loaded via `rule_files` in
+# prometheus.yml. Evaluated results are sent to the alertmanager service
+# (config/alertmanager/alertmanager.yml) - see docker-compose.yml.dist.
+#
+# PORTED FROM (adapted, not copy-pasted): monorepo-etc/infra-prometheus's
+# k8s_prometheus/alert-rules-config-map.yml, which runs against VoIPBin's
+# GCP/GKE production monitoring stack. Differences from that source, and why:
+#
+# - `{{ $labels.hostname }}` is dropped throughout. The GKE source sets a
+#   `hostname` label via GCE service-discovery relabeling that this
+#   bare-metal, single-host compose stack has no equivalent for; every
+#   annotation below uses `{{ $labels.instance }}` / `{{ $labels.job }}`
+#   instead, which prometheus always sets.
+# - `dashboard`/`runbook` annotation URLs pointing at the GCP-only Grafana
+#   host (10.164.0.16) and kubectl/gcloud commands are replaced with
+#   generic guidance or this stack's own SSH-tunnel access pattern (see
+#   README.md "Monitoring") - a hardcoded internal IP that isn't reachable
+#   or even meaningful outside VoIPBin's GCP project has no value here.
+# - `RabbitMQDown`'s source expression (`rabbitmq_up == 0`) does not port:
+#   that metric belongs to the community `rabbitmq_exporter` (kbudde), not
+#   the built-in `rabbitmq_prometheus` plugin this stack enables (see the
+#   `rabbitmq` service's entrypoint in docker-compose.yml.dist) - the
+#   built-in plugin exposes no such metric (empirically confirmed against a
+#   live rabbitmq:3-management-alpine container with the plugin enabled).
+#   Prometheus's own per-job `up` metric is the correct, always-available
+#   substitute and is what's used below.
+# - `RabbitMQMemoryAlarm`/`RabbitMQDiskAlarm` source metric names
+#   (`rabbitmq_node_mem_alarm`/`rabbitmq_node_disk_free_alarm`) are the same
+#   community-exporter naming mismatch - the built-in plugin's actual
+#   metric names (`rabbitmq_alarms_memory_used_watermark`/
+#   `rabbitmq_alarms_free_disk_space_watermark`) are used below, likewise
+#   empirically confirmed.
+# - `RedisHighMemory`'s ratio guards against `redis_memory_max_bytes == 0`
+#   (this stack's `redis` service runs without a configured `maxmemory`, so
+#   that gauge is 0 by default): Prometheus divides floats as IEEE 754, so
+#   `x / 0` evaluates to `+Inf`, which is always `> 0.9` - an unguarded port
+#   of this rule would fire permanently on a stock install. Confirmed against
+#   a live redis_exporter instance.
+# - The GKE source's `pod-health` group (`PodCrashLooping`, `PodOOMKilled`,
+#   `PodNotReady`, `PodDown`) is Kubernetes-only (kube-state-metrics
+#   `kube_pod_*`/`kube_deployment_*` series) and has no equivalent in this
+#   Docker Compose deployment - not ported.
+# - `asterisk-overview.json`-style Asterisk alerting is NOT included here:
+#   see docs/follow-ups.md, no res_prometheus exporter exists yet for the
+#   images this stack pulls.
+
+groups:
+  - name: instance-health
+    rules:
+      - alert: InstanceDown
+        expr: up == 0
+        for: 5m
+        labels:
+          severity: critical
+        annotations:
+          summary: "{{ $labels.job }} on {{ $labels.instance }} is down"
+          description: "{{ $labels.job }} ({{ $labels.instance }}) has been unreachable for more than 5 minutes."
+          runbook: "SSH into the host. Check the container: docker compose ps {{ $labels.job }}. Logs: docker compose logs --tail 100 {{ $labels.job }}."
+
+      - alert: KamailioDown
+        expr: kamailio_up == 0
+        for: 5m
+        labels:
+          severity: critical
+        annotations:
+          summary: "KamailioDown on {{ $labels.instance }}"
+          description: "Kamailio is not responding to kamailio-exporter's metrics scrape (kamailio_up == 0)."
+          runbook: "SSH into the host. Check: docker compose ps kamailio kamailio-exporter. Logs: docker logs voipbin-kamailio --tail 100."
+
+      - alert: RabbitMQDown
+        expr: up{job="rabbitmq"} == 0
+        for: 5m
+        labels:
+          severity: critical
+        annotations:
+          summary: "RabbitMQDown on {{ $labels.instance }}"
+          description: "RabbitMQ's rabbitmq_prometheus plugin endpoint is not responding."
+          runbook: "SSH into the host. Check: docker compose ps rabbitmq. Logs: docker compose logs --tail 100 rabbitmq."
+
+      - alert: RedisDown
+        expr: redis_up == 0
+        for: 5m
+        labels:
+          severity: critical
+        annotations:
+          summary: "RedisDown on {{ $labels.instance }}"
+          description: "redis-exporter cannot reach the redis service (redis_up == 0)."
+          runbook: "SSH into the host. Check: docker compose ps redis. Test: docker exec voipbin-redis redis-cli ping."
+
+  - name: node-resources
+    rules:
+      - alert: HighCpuUsage
+        expr: (1 - avg by (instance) (rate(node_cpu_seconds_total{mode="idle"}[5m]))) > 0.9
+        for: 10m
+        labels:
+          severity: critical
+        annotations:
+          summary: "HighCpuUsage on {{ $labels.instance }}"
+          description: "CPU on {{ $labels.instance }} at {{ $value | humanizePercentage }}. Threshold: 90%."
+          runbook: "SSH into the host. Check top processes: top -b -n1 | head -20. Look for a runaway container."
+
+      - alert: HighMemoryUsage
+        expr: (1 - node_memory_MemAvailable_bytes / node_memory_MemTotal_bytes) > 0.85
+        for: 10m
+        labels:
+          severity: critical
+        annotations:
+          summary: "HighMemoryUsage on {{ $labels.instance }}"
+          description: "Memory on {{ $labels.instance }} at {{ $value | humanizePercentage }}. Threshold: 85%."
+          runbook: "SSH into the host. Check memory consumers: docker stats --no-stream. Consider restarting heavy services."
+
+      - alert: DiskSpaceLow
+        expr: (node_filesystem_avail_bytes{fstype!="tmpfs"} / node_filesystem_size_bytes{fstype!="tmpfs"}) < 0.1
+        for: 5m
+        labels:
+          severity: critical
+        annotations:
+          summary: "DiskSpaceLow on {{ $labels.instance }} ({{ $labels.mountpoint }})"
+          description: "Disk on {{ $labels.instance }} ({{ $labels.mountpoint }}) at {{ $value | humanizePercentage }} remaining. Threshold: 10%."
+          runbook: "SSH into the host. Check large files: du -sh /* | sort -rh. Clean up unused Docker images (docker system prune), old logs, temp files."
+
+      - alert: DiskWillFillIn4Hours
+        expr: predict_linear(node_filesystem_avail_bytes{fstype!="tmpfs"}[1h], 4*3600) < 0
+        for: 30m
+        labels:
+          severity: critical
+        annotations:
+          summary: "DiskWillFillIn4Hours on {{ $labels.instance }} ({{ $labels.mountpoint }})"
+          description: "Disk on {{ $labels.instance }} ({{ $labels.mountpoint }}) is predicted to fill within 4 hours at the current growth rate."
+          runbook: "SSH into the host. Check what's growing: du -sh /* | sort -rh. Check container log rotation (json-file max-size/max-file, already set for every service in docker-compose.yml.dist)."
+
+  - name: rtpengine
+    rules:
+      - alert: RTPEngineDown
+        expr: up{job="rtpengine"} == 0
+        for: 2m
+        labels:
+          severity: critical
+        annotations:
+          summary: "RTPEngineDown on {{ $labels.instance }}"
+          description: "RTPEngine has been unreachable for more than 2 minutes. Media proxy is down - active calls will lose audio."
+          runbook: "SSH into the host. Check: docker compose ps rtpengine. Logs: docker logs voipbin-rtpengine --tail 100. Check for martian packets: dmesg | grep martian."
+
+      - alert: RTPEngineRestarted
+        expr: rtpengine_uptime_seconds < 300 and rtpengine_uptime_seconds > 0
+        for: 1m
+        labels:
+          severity: warning
+        annotations:
+          summary: "RTPEngineRestarted on {{ $labels.instance }}"
+          description: "RTPEngine was recently restarted (uptime: {{ $value | humanizeDuration }}). Active calls may have been dropped."
+          runbook: "Check container logs for restart reason: docker logs voipbin-rtpengine --tail 200."
+
+      - alert: RTPEngineHighPortUsage
+        expr: rtpengine_ports_used / rtpengine_ports > 0.9
+        for: 5m
+        labels:
+          severity: critical
+        annotations:
+          summary: "RTPEngineHighPortUsage on {{ $labels.instance }}"
+          description: "RTPEngine is using {{ $value | humanizePercentage }} of its configured RTP port range. Threshold: 90%."
+          runbook: "Check active sessions for stuck/leaked ports. Consider widening RTPENGINE_PORT_MIN/RTPENGINE_PORT_MAX in .env."
+
+      - alert: RTPEngineZeroPacketStreams
+        expr: rate(rtpengine_zero_packet_streams_total[5m]) > 1
+        for: 10m
+        labels:
+          severity: critical
+        annotations:
+          summary: "RTPEngineZeroPacketStreams on {{ $labels.instance }}"
+          description: "{{ printf \"%.1f\" $value }}/s zero-packet RTP streams. Threshold: 1/s."
+          runbook: "Check network path between RTPEngine and endpoints. Verify firewall allows RTP (RTPENGINE_PORT_MIN..RTPENGINE_PORT_MAX/udp). Check NAT traversal."
+
+      - alert: RTPEngineHighOneWaySessions
+        expr: rate(rtpengine_one_way_sessions_total[5m]) > 0.5
+        for: 10m
+        labels:
+          severity: critical
+        annotations:
+          summary: "RTPEngineHighOneWaySessions on {{ $labels.instance }}"
+          description: "{{ printf \"%.1f\" $value }}/s one-way RTP sessions. Threshold: 0.5/s."
+          runbook: "Check NAT traversal and SDP negotiation. Verify firewall allows bidirectional RTP."
+
+  - name: rabbitmq
+    rules:
+      - alert: RabbitMQMemoryAlarm
+        expr: rabbitmq_alarms_memory_used_watermark == 1
+        for: 1m
+        labels:
+          severity: critical
+        annotations:
+          summary: "RabbitMQMemoryAlarm on {{ $labels.instance }}"
+          description: "RabbitMQ triggered its memory high-watermark alarm. Publishing is blocked cluster-wide."
+          runbook: "docker exec voipbin-rabbitmq rabbitmqctl status | grep -A5 memory. docker exec voipbin-rabbitmq rabbitmqctl list_queues name messages. Purge or drain stale queues."
+
+      - alert: RabbitMQDiskAlarm
+        expr: rabbitmq_alarms_free_disk_space_watermark == 1
+        for: 1m
+        labels:
+          severity: critical
+        annotations:
+          summary: "RabbitMQDiskAlarm on {{ $labels.instance }}"
+          description: "RabbitMQ triggered its disk free-space alarm. Publishing is blocked cluster-wide."
+          runbook: "Check volume usage: docker system df -v | grep rabbitmq_data. Purge stale queues if needed; consider growing the host disk."
+
+      - alert: RabbitMQMessagesBacklog
+        expr: rabbitmq_queue_messages > 10000
+        for: 10m
+        labels:
+          severity: critical
+        annotations:
+          summary: "RabbitMQMessagesBacklog: {{ $labels.queue }} on {{ $labels.instance }}"
+          description: "Queue {{ $labels.queue }} has {{ $value | humanize }} messages. Threshold: 10,000."
+          runbook: "Check consumer health for the affected bin-*-manager service (see queue name). Verify it's running and connected: docker compose ps."
+
+      - alert: RabbitMQNoConsumers
+        expr: rabbitmq_queue_messages_ready > 0 and rabbitmq_queue_consumers == 0
+        for: 5m
+        labels:
+          severity: critical
+        annotations:
+          summary: "RabbitMQNoConsumers: {{ $labels.queue }} on {{ $labels.instance }}"
+          description: "Queue {{ $labels.queue }} has {{ $value | humanize }} ready messages with zero consumers attached."
+          runbook: "Check whether the consuming bin-*-manager service is running: docker compose ps. Restart it: docker compose restart <service>."
+
+  - name: redis
+    rules:
+      - alert: RedisHighMemory
+        expr: (redis_memory_used_bytes / redis_memory_max_bytes) > 0.9 and redis_memory_max_bytes > 0
+        for: 5m
+        labels:
+          severity: critical
+        annotations:
+          summary: "RedisHighMemory on {{ $labels.instance }}"
+          description: "Redis is using {{ $value | humanizePercentage }} of its configured maxmemory. Threshold: 90%."
+          runbook: "docker exec voipbin-redis redis-cli INFO memory. Identify large keys: redis-cli --bigkeys. Increase maxmemory or evict stale data."
+
+      - alert: RedisRejectedConnections
+        expr: rate(redis_rejected_connections_total[5m]) > 0
+        for: 5m
+        labels:
+          severity: critical
+        annotations:
+          summary: "RedisRejectedConnections on {{ $labels.instance }}"
+          description: "Redis is rejecting {{ printf \"%.1f\" $value }}/s connections."
+          runbook: "docker exec voipbin-redis redis-cli CONFIG GET maxclients. List clients: redis-cli CLIENT LIST. Fix connection leaks in callers."

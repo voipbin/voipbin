@@ -199,8 +199,9 @@ services:
   # redis/rabbitmq/mysql on production hosts - see this repo's README
   # "Monitoring (Prometheus/Grafana)" section for the SSH-tunnel access
   # pattern operators use instead of exposing these ports publicly.
-  # Alertmanager is deliberately not included in this first pass - see
-  # docs/follow-ups.md.
+  # Alertmanager (VOIP-1338) ships alert rules (config/prometheus/alert-rules.yml)
+  # but no real notification channel is wired up yet - see the alertmanager
+  # service below and docs/follow-ups.md.
 
   # Prometheus - metrics collection and storage (15d local retention, no
   # remote-write configured). Scrape config: config/prometheus/prometheus.yml.
@@ -218,7 +219,18 @@ services:
       - "127.0.0.1:9090:9090"
     volumes:
       - ./config/prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - ./config/prometheus/alert-rules.yml:/etc/prometheus/alert-rules.yml:ro
       - prometheus_data:/prometheus
+    # host.docker.internal (VOIP-1338): prometheus runs on the default
+    # compose bridge network, NOT host network, so it cannot reach
+    # rtpengine/kamailio-exporter at 127.0.0.1:<port> - that loopback
+    # belongs to the HOST's own network namespace (both sidecars are
+    # network_mode: host), not prometheus's container namespace. Same
+    # extra_hosts pattern already used by asterisk-call/-conference/
+    # -registrar below; see config/prometheus/prometheus.yml's rtpengine/
+    # kamailio scrape jobs for the host.docker.internal targets this enables.
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
     healthcheck:
       test: ["CMD-SHELL", "wget -q -O /dev/null http://127.0.0.1:9090/-/healthy"]
       interval: 15s
@@ -372,6 +384,36 @@ services:
       prometheus:
         condition: service_healthy
 
+  # Alertmanager (VOIP-1338) - receives firing alerts from prometheus
+  # (config/prometheus/alert-rules.yml) and routes them to a receiver.
+  # Bound to 127.0.0.1 only, same posture/access pattern as prometheus/
+  # grafana above (SSH tunnel, see README "Monitoring"). Ships with a
+  # null-op default receiver (config/alertmanager/alertmanager.yml) - no
+  # real paging/notification channel (Slack/Discord/PagerDuty/email) is
+  # wired up yet, see docs/follow-ups.md. Operators who want notifications
+  # today should edit config/alertmanager/alertmanager.yml directly (it's
+  # a bind-mounted, git-tracked file, not a template rendered from .env).
+  alertmanager:
+    image: prom/alertmanager:v0.33.1@sha256:9e082985f56f4c8c9f724e18f2288c6708f472e56a5286b8863d080434ea065d
+    container_name: voipbin-alertmanager
+    restart: always
+    logging: *default-logging
+    command:
+      - "--config.file=/etc/alertmanager/alertmanager.yml"
+      - "--storage.path=/alertmanager"
+      - "--web.listen-address=0.0.0.0:9093"
+    ports:
+      - "127.0.0.1:9093:9093"
+    volumes:
+      - ./config/alertmanager/alertmanager.yml:/etc/alertmanager/alertmanager.yml:ro
+      - alertmanager_data:/alertmanager
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q -O /dev/null http://127.0.0.1:9093/-/healthy"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 15s
+
   # CoreDNS - Wildcard DNS for *.voipbin.test
   # Resolves all voipbin.test domains to the host IP
   # Also forwards other queries to upstream DNS (8.8.8.8)
@@ -496,6 +538,16 @@ services:
     user: root  # Needed to create /config directory
     volumes:
       - kamailio-logs:/var/log/kamailio
+      # kamailio-run (VOIP-1338): shared with the kamailio-exporter sidecar
+      # below so it can read the ctl module's BINRPC socket
+      # (/run/kamailio/kamailio_ctl) - matches the proven pattern in
+      # monorepo-voip's voip-kamailio-ansible roles/kamailio-docker/files/
+      # docker-compose.yml (design doc: monorepo-voip's
+      # docs/plans/2026-02-15-kamailio-exporter-docker-design.md - that file
+      # does not exist in THIS repo, it's cited for provenance only).
+      # Mounted read-write here (kamailio itself creates/recreates the
+      # socket at startup); the exporter's own mount below is read-only.
+      - kamailio-run:/run/kamailio
       - ${CERTS_PATH:-./certs}:/certs:ro
     environment:
       # Domain configuration
@@ -547,6 +599,67 @@ services:
       retries: 3
       start_period: 40s
     logging: *default-logging
+
+  # Kamailio Prometheus exporter sidecar (VOIP-1338). Reads Kamailio's ctl
+  # module BINRPC socket over the kamailio-run named volume shared with the
+  # kamailio service above (mounted at /run/kamailio in both containers) -
+  # this is the exact pattern proven in monorepo-voip's voip-kamailio-ansible
+  # roles/kamailio-docker/files/docker-compose.yml (see
+  # docs/plans/2026-02-15-kamailio-exporter-docker-design.md), not the
+  # unverified GCP k8s ConfigMap version. network_mode: host matches
+  # kamailio's own networking; the exporter itself doesn't need host
+  # networking for the unix socket, but staying on the same network mode as
+  # its data source avoids a second, unnecessary compose-network attachment.
+  #
+  # PORT NOTE: kamailio_exporter's own --web.listen-address flag default is
+  # :9494, and the proven ansible design pins it to 9101 - but THIS stack
+  # cannot reuse 9101: RTPEngine's RTPENGINE_LISTEN_HTTP already binds 9101
+  # on this same host's network namespace (network_mode: host, see the
+  # rtpengine service above), and two processes cannot both bind 0.0.0.0:9101.
+  # That collision does not exist in the GCP/ansible deployment this config is
+  # ported from, where Kamailio and RTPEngine live on SEPARATE VMs and each
+  # gets its own 9101; co-locating them on one bare-metal host is what forces
+  # the change. 9105 is used instead - free at the time of writing (9090
+  # prometheus, 9100 node-exporter, 9101 rtpengine, 9104 mysqld-exporter,
+  # 9121 redis-exporter, 3000 grafana are already taken).
+  #
+  # VERSION NOTE: pinned to 2.0.0 (latest stable) rather than the 1.0.1 the
+  # ansible role defaults to. Upstream's 2.0.0 release notes state the exposed
+  # metrics are unchanged from 1.x and all three flags used below still exist;
+  # the only breaking changes are the removal of the `-l` short flag and a
+  # logfmt/JSON logging switch, neither of which this service uses. The
+  # kamailio-overview.json dashboard was built against 2.0.0's documented
+  # metric names.
+  #
+  # NO HEALTHCHECK: this image is a bare Go static binary with no shell
+  # (`docker run --entrypoint sh ... : exec: "sh": executable file not
+  # found`), so a CMD-SHELL wget probe (the pattern used by every other
+  # exporter in this file) is not possible, and there's no -alpine variant
+  # published to switch to (unlike redis-exporter's documented workaround
+  # above). restart: unless-stopped is the only crash-recovery mechanism
+  # here; prometheus's own `up{job="kamailio"}` scrape-success metric and the
+  # KamailioDown/InstanceDown alert rules (config/prometheus/alert-rules.yml)
+  # are the actual monitoring signal for this sidecar being down.
+  kamailio-exporter:
+    image: florentchauveau/kamailio_exporter:2.0.0@sha256:6d734b21fcada3d393cda7cd81bcad476a725f0d53b2dea2f475468356018e12
+    container_name: voipbin-kamailio-exporter
+    restart: unless-stopped
+    network_mode: host
+    logging: *default-logging
+    volumes:
+      # Read-only: the exporter only needs to connect to the kamailio_ctl
+      # socket, never write into this directory - narrows blast radius if
+      # this sidecar process is ever compromised (kamailio itself still
+      # mounts the same volume read-write above, since it's the one that
+      # creates/recreates the socket).
+      - kamailio-run:/run/kamailio:ro
+    command:
+      - "--web.listen-address=0.0.0.0:9105"
+      - "--kamailio.scrape-uri=unix:///run/kamailio/kamailio_ctl"
+      - "--kamailio.methods=tm.stats,sl.stats,core.shmmem,core.uptime,dispatcher.list,tls.info"
+    depends_on:
+      kamailio:
+        condition: service_healthy
 
   # ===========================================================================
   # Asterisk Media Servers
@@ -1845,10 +1958,12 @@ volumes:
   asterisk-call-recording:
   asterisk-conf-recording:
   kamailio-logs:
+  kamailio-run:
   rtpengine-logs:
   rtpengine-run:
   prometheus_data:
   grafana_data:
+  alertmanager_data:
 
 # Default network for services that don't use host mode
 networks:

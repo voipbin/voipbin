@@ -1,7 +1,7 @@
 {
   "uid": "voipbin-rabbitmq",
   "title": "VoIPBin - RabbitMQ Overview",
-  "description": "Queue depth, message rates, and connections via RabbitMQ's built-in rabbitmq_prometheus plugin (VOIP-1336).",
+  "description": "Queue depth, message rates, connections, resource alarms, and file descriptor/socket headroom via RabbitMQ's built-in rabbitmq_prometheus plugin (VOIP-1336, extended VOIP-1338).",
   "tags": ["voipbin", "rabbitmq"],
   "timezone": "browser",
   "schemaVersion": 39,
@@ -92,6 +92,85 @@
       "fieldConfig": { "defaults": { "unit": "bytes" }, "overrides": [] },
       "targets": [
         { "expr": "rabbitmq_process_resident_memory_bytes", "refId": "A" }
+      ]
+    },
+    {
+      "id": 7,
+      "title": "Memory Used / Limit (VOIP-1338)",
+      "type": "timeseries",
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 16 },
+      "datasource": { "type": "prometheus", "uid": "Prometheus" },
+      "fieldConfig": { "defaults": { "unit": "bytes" }, "overrides": [] },
+      "targets": [
+        { "expr": "rabbitmq_process_resident_memory_bytes", "legendFormat": "used", "refId": "A" },
+        { "expr": "rabbitmq_resident_memory_limit_bytes", "legendFormat": "high watermark limit", "refId": "B" }
+      ]
+    },
+    {
+      "id": 8,
+      "title": "Disk Space Available / Limit (VOIP-1338)",
+      "type": "timeseries",
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 16 },
+      "datasource": { "type": "prometheus", "uid": "Prometheus" },
+      "fieldConfig": { "defaults": { "unit": "bytes" }, "overrides": [] },
+      "targets": [
+        { "expr": "rabbitmq_disk_space_available_bytes", "legendFormat": "available", "refId": "A" },
+        { "expr": "rabbitmq_disk_space_available_limit_bytes", "legendFormat": "low watermark limit", "refId": "B" }
+      ]
+    },
+    {
+      "id": 9,
+      "title": "Resource Alarms (VOIP-1338)",
+      "type": "stat",
+      "gridPos": { "h": 8, "w": 6, "x": 0, "y": 24 },
+      "datasource": { "type": "prometheus", "uid": "Prometheus" },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "mappings": [
+            { "type": "value", "options": { "0": { "text": "OK", "color": "green" }, "1": { "text": "ALARM", "color": "red" } } }
+          ]
+        },
+        "overrides": []
+      },
+      "targets": [
+        { "expr": "rabbitmq_alarms_memory_used_watermark", "legendFormat": "memory", "refId": "A" },
+        { "expr": "rabbitmq_alarms_free_disk_space_watermark", "legendFormat": "disk", "refId": "B" }
+      ]
+    },
+    {
+      "id": 10,
+      "title": "File Descriptors Used / Max (VOIP-1338)",
+      "type": "timeseries",
+      "gridPos": { "h": 8, "w": 9, "x": 6, "y": 24 },
+      "datasource": { "type": "prometheus", "uid": "Prometheus" },
+      "fieldConfig": { "defaults": { "unit": "short" }, "overrides": [] },
+      "targets": [
+        { "expr": "rabbitmq_process_open_fds", "legendFormat": "open", "refId": "A" },
+        { "expr": "rabbitmq_process_max_fds", "legendFormat": "max", "refId": "B" }
+      ]
+    },
+    {
+      "id": 11,
+      "title": "TCP Sockets Used / Max (VOIP-1338)",
+      "type": "timeseries",
+      "gridPos": { "h": 8, "w": 9, "x": 15, "y": 24 },
+      "datasource": { "type": "prometheus", "uid": "Prometheus" },
+      "fieldConfig": { "defaults": { "unit": "short" }, "overrides": [] },
+      "targets": [
+        { "expr": "rabbitmq_process_open_tcp_sockets", "legendFormat": "open", "refId": "A" },
+        { "expr": "rabbitmq_process_max_tcp_sockets", "legendFormat": "max", "refId": "B" }
+      ]
+    },
+    {
+      "id": 12,
+      "title": "Top 10 Queues by Message Count (VOIP-1338)",
+      "type": "timeseries",
+      "gridPos": { "h": 8, "w": 24, "x": 0, "y": 32 },
+      "datasource": { "type": "prometheus", "uid": "Prometheus" },
+      "fieldConfig": { "defaults": { "unit": "short" }, "overrides": [] },
+      "targets": [
+        { "expr": "topk(10, rabbitmq_queue_messages)", "legendFormat": "{{queue}}", "refId": "A" }
       ]
     }
   ]

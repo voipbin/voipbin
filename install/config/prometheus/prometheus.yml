@@ -11,6 +11,19 @@ global:
   scrape_interval: 15s
   evaluation_interval: 15s
 
+# Alertmanager (VOIP-1338) - see the alertmanager service in
+# docker-compose.yml.dist and config/alertmanager/alertmanager.yml.
+alerting:
+  alertmanagers:
+    - static_configs:
+        - targets: ["alertmanager:9093"]
+
+# Alert rule definitions - see config/prometheus/alert-rules.yml for the
+# full set and its header comment for what was/wasn't ported from
+# monorepo-etc/infra-prometheus's GKE alert rules and why.
+rule_files:
+  - /etc/prometheus/alert-rules.yml
+
 scrape_configs:
   # Prometheus's own metrics.
   - job_name: prometheus
@@ -46,6 +59,30 @@ scrape_configs:
   - job_name: mysql
     static_configs:
       - targets: ["mysqld-exporter:9104"]
+
+  # RTPEngine's built-in HTTP metrics endpoint (VOIP-1338). RTPEngine runs
+  # network_mode: host (see docker-compose.yml.dist), so its
+  # RTPENGINE_LISTEN_HTTP port is bound on the HOST's own network namespace,
+  # not reachable at a compose service name. prometheus itself is on the
+  # default bridge network, so it reaches the host via host.docker.internal
+  # (extra_hosts: host-gateway, see the prometheus service in
+  # docker-compose.yml.dist) rather than 127.0.0.1. Port is hardcoded to
+  # 9101 (RTPENGINE_LISTEN_HTTP's default in .env.template/docker-compose.yml.dist) -
+  # this file is a static YAML mount, not docker-compose-interpolated, so
+  # ${VAR} substitution does not work here. If you override
+  # RTPENGINE_LISTEN_HTTP in .env, update this target to match.
+  - job_name: rtpengine
+    static_configs:
+      - targets: ["host.docker.internal:9101"]
+
+  # kamailio_exporter sidecar (VOIP-1338) - see the kamailio-exporter
+  # service in docker-compose.yml.dist for the full port-collision
+  # explanation (9105, not RTPEngine's 9101). Same host.docker.internal
+  # reasoning as the rtpengine job above: network_mode: host, unreachable
+  # by compose service name from prometheus's bridge-network container.
+  - job_name: kamailio
+    static_configs:
+      - targets: ["host.docker.internal:9105"]
 
   # VoIPBin manager services - every bin-*-manager in docker-compose.yml.dist
   # already exposes Prometheus metrics on :2112/metrics natively (see
