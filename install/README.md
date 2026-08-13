@@ -36,6 +36,7 @@
   - [Hosting-provider routed IPs](#hosting-provider-routed-ips)
 - [Web Applications](#web-applications)
 - [Monitoring (Prometheus/Grafana)](#monitoring-prometheusgrafana-voip-1336)
+- [Container Management (Komodo)](#container-management-komodo-voip-1339)
 - [Technical Architecture](#technical-architecture)
 - [Prerequisites](#prerequisites)
 - [Networking & DNS](#networking--dns)
@@ -735,6 +736,33 @@ monitoring user (mysqld-exporter currently authenticates as
 root/`MYSQL_ROOT_PASSWORD`), and Asterisk `res_prometheus` scraping (not
 currently enabled/exposed in the `voip-asterisk-*` images this stack pulls)
 — see `docs/follow-ups.md`.
+
+---
+
+## Container Management (Komodo, VOIP-1339)
+
+`install/komodo/` runs a standalone [Komodo](https://komo.do) deployment
+for restarting/stopping containers, tailing logs, and viewing per-container
+CPU/memory/network/disk usage from a browser — without SSH+CLI. It's a
+separate compose project from the main stack above, purpose-built to
+complement Grafana rather than duplicate it:
+
+- **Grafana** (previous section) — metrics and dashboards.
+- **Komodo** — hands-on actions: restart a container, read its logs, check
+  its resource usage right now.
+
+```bash
+cd install/komodo
+./scripts/komodo.sh init   # generates .env + docker-compose.yml (idempotent)
+./scripts/komodo.sh up
+ssh -L 9120:127.0.0.1:9120 root@<host>
+# then open http://localhost:9120, log in with KOMODO_ADMIN_USERNAME/PASSWORD from install/komodo/.env
+```
+
+Same `127.0.0.1`-only + SSH-tunnel posture as everything else in this
+section. Full setup, secret rotation, and scope notes (it does **not**
+manage deployment — CircleCI→SSH remains the only deploy path for the main
+stack) live in `install/komodo/README.md`.
 
 ---
 

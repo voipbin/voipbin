@@ -59,3 +59,42 @@ outside that host depends on `0.0.0.0` reachability for these ports (e.g.
 no split-host consumer other than Kamailio's already-loopback-routed
 `KAMAILIO_DB_HOST`/`KAMAILIO_REDIS_HOST` path) — is a separate follow-up
 deployment step, not part of this PR.
+
+## Komodo web UI container management (VOIP-1339)
+
+`install/komodo/` adds a standalone Komodo (core/periphery) deployment for
+restarting/stopping containers and reading logs from a browser, separate
+from the main stack's Prometheus/Grafana (VOIP-1336, metrics/dashboards
+only — the two don't overlap). Full design, empirical verification, and
+review history: `docs/plans/2026-08-14-komodo-container-management-design.md`.
+
+**This does not retroactively deploy to `bm-nyc-01` either**, for the same
+reason as the monitoring stack above — merging this PR only updates the
+tracked `install/komodo/docker-compose.yml.dist`. Deploying it means
+running `install/komodo/scripts/komodo.sh init && ./scripts/komodo.sh up`
+on the host as a separate, deliberate operator step.
+
+Left out of this first pass, tracked as follow-ups:
+
+- **CircleCI → Komodo API/webhook deploy trigger.** Out of scope entirely —
+  the main stack's only deploy path stays CircleCI → SSH. If this is ever
+  reconsidered, it needs its own design/review (deploy-path duplication risk
+  was the main reason Komodo was scoped down to "no Stack resource" here).
+- **Komodo managing the main voipbin stack as a "Stack" resource** (i.e.
+  Deploy/Destroy from the Komodo UI). Deliberately not configured — see the
+  design doc's "1차 스코프" rationale. Revisit only with a fresh
+  design/review if the need becomes concrete.
+- **`install/komodo`'s 3 images in the `versions.lock`/`sync-compose-images.sh`
+  digest-tracking pipeline** — tracked as
+  [VOIP-1340](https://voipbin.atlassian.net/browse/VOIP-1340). Digests are
+  pinned today, just not auto-tracked; updates are manual.
+- **A working `komodo-periphery` healthcheck.** Empirically, a
+  `wget --no-check-certificate` probe against its self-signed `:8120`
+  listener reported `unhealthy` even while the container functioned
+  correctly (see the design doc's "empirical verification" section for what
+  was actually run) — removed rather than shipped broken, per this repo's
+  own VOIP-1336 `redis-exporter` lesson. `mongo`/`core`'s healthchecks
+  already gate cold-boot ordering, since nothing depends on periphery's own
+  health status.
+- Komodo OIDC/SSO login, terminal access (`PERIPHERY_DISABLE_TERMINALS`),
+  and backups for the `komodo_mongo_data` volume.

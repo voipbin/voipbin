@@ -694,3 +694,110 @@ PYEOF
     assert_file_contains "$PROJECT_ROOT/docs/follow-ups.md" "bm-nyc-01"
     assert_file_contains "$PROJECT_ROOT/docs/follow-ups.md" "does not retroactively apply"
 }
+
+# =============================================================================
+# install/komodo - Komodo Web UI Container Management (VOIP-1339)
+# =============================================================================
+
+@test "install/komodo/docker-compose.yml.dist exists and pins the project name to komodo" {
+    assert_file_contains "$PROJECT_ROOT/komodo/docker-compose.yml.dist" "name: komodo"
+}
+
+@test "install/komodo/docker-compose.yml.dist defines mongo/core/periphery services, all digest-pinned" {
+    assert_file_contains "$PROJECT_ROOT/komodo/docker-compose.yml.dist" "  mongo:"
+    assert_file_contains "$PROJECT_ROOT/komodo/docker-compose.yml.dist" "  core:"
+    assert_file_contains "$PROJECT_ROOT/komodo/docker-compose.yml.dist" "  periphery:"
+    assert_file_contains "$PROJECT_ROOT/komodo/docker-compose.yml.dist" "mongo:7@sha256:"
+    assert_file_contains "$PROJECT_ROOT/komodo/docker-compose.yml.dist" "komodo-core:2@sha256:"
+    assert_file_contains "$PROJECT_ROOT/komodo/docker-compose.yml.dist" "komodo-periphery:2@sha256:"
+}
+
+@test "install/komodo/docker-compose.yml.dist applies komodo.skip label to all 3 services" {
+    for svc in mongo core periphery; do
+        local block
+        block=$(sed -n "/^  ${svc}:/,/^  [a-z]/p" "$PROJECT_ROOT/komodo/docker-compose.yml.dist")
+        [[ "$block" == *$'\n    labels:'*"komodo.skip:"* ]]
+    done
+}
+
+@test "install/komodo/docker-compose.yml.dist binds core to 127.0.0.1 by default via KOMODO_BIND_ADDRESS" {
+    assert_file_contains "$PROJECT_ROOT/komodo/docker-compose.yml.dist" '"${KOMODO_BIND_ADDRESS:-127.0.0.1}:9120:9120"'
+}
+
+@test "install/komodo/docker-compose.yml.dist does not publish any host port for mongo or periphery" {
+    for svc in mongo periphery; do
+        local block
+        block=$(sed -n "/^  ${svc}:/,/^  [a-z]/p" "$PROJECT_ROOT/komodo/docker-compose.yml.dist")
+        [[ "$block" != *$'\n    ports:'* ]]
+    done
+}
+
+@test "install/komodo/docker-compose.yml.dist has healthchecks for mongo/core but deliberately not periphery" {
+    local mongo_block core_block periphery_block
+    mongo_block=$(sed -n '/^  mongo:/,/^  [a-z]/p' "$PROJECT_ROOT/komodo/docker-compose.yml.dist")
+    core_block=$(sed -n '/^  core:/,/^  [a-z]/p' "$PROJECT_ROOT/komodo/docker-compose.yml.dist")
+    periphery_block=$(sed -n '/^  periphery:/,/^volumes:/p' "$PROJECT_ROOT/komodo/docker-compose.yml.dist")
+    [[ "$mongo_block" == *$'\n    healthcheck:'* ]]
+    [[ "$core_block" == *$'\n    healthcheck:'* ]]
+    [[ "$periphery_block" != *$'\n    healthcheck:'* ]]
+}
+
+@test "install/komodo/docker-compose.yml.dist requires KOMODO_* secrets via :? (fail-fast, no silent unauthenticated boot)" {
+    for var in KOMODO_DATABASE_USERNAME KOMODO_DATABASE_PASSWORD KOMODO_JWT_SECRET KOMODO_WEBHOOK_SECRET KOMODO_ADMIN_PASSWORD; do
+        assert_file_contains "$PROJECT_ROOT/komodo/docker-compose.yml.dist" "\${${var}:?"
+    done
+}
+
+@test "install/komodo/.env.template documents all required KOMODO_* keys" {
+    for var in KOMODO_BIND_ADDRESS KOMODO_HOST KOMODO_TITLE KOMODO_SERVER_NAME KOMODO_ADMIN_USERNAME KOMODO_ADMIN_PASSWORD KOMODO_DATABASE_USERNAME KOMODO_DATABASE_PASSWORD KOMODO_JWT_SECRET KOMODO_WEBHOOK_SECRET; do
+        assert_file_contains "$PROJECT_ROOT/komodo/.env.template" "${var}="
+    done
+}
+
+@test "install/komodo/scripts/init-komodo.sh is idempotent - a second run does not change an existing .env" {
+    local work_dir="$BATS_TEST_TMPDIR/komodo-init-idempotent"
+    rm -rf "$work_dir"
+    mkdir -p "$work_dir/scripts"
+    cp "$PROJECT_ROOT/komodo/.env.template" "$work_dir/.env.template"
+    cp "$PROJECT_ROOT/komodo/docker-compose.yml.dist" "$work_dir/docker-compose.yml.dist"
+    cp "$PROJECT_ROOT/komodo/scripts/init-komodo.sh" "$work_dir/scripts/init-komodo.sh"
+    chmod +x "$work_dir/scripts/init-komodo.sh"
+
+    run "$work_dir/scripts/init-komodo.sh"
+    [[ "$status" -eq 0 ]]
+    local first_env
+    first_env=$(cat "$work_dir/.env")
+
+    run "$work_dir/scripts/init-komodo.sh"
+    [[ "$status" -eq 0 ]]
+    local second_env
+    second_env=$(cat "$work_dir/.env")
+
+    [[ "$first_env" == "$second_env" ]]
+    # docker-compose.yml is also copy-once: it must not be overwritten either.
+    [[ -f "$work_dir/docker-compose.yml" ]]
+}
+
+@test "install/komodo/scripts/komodo.sh forces -p komodo -f docker-compose.yml (positive assertion)" {
+    assert_file_contains "$PROJECT_ROOT/komodo/scripts/komodo.sh" 'docker compose -p komodo -f docker-compose.yml'
+}
+
+@test "install/komodo/README.md and scripts/ never invoke bare docker compose without -p komodo (negative assertion)" {
+    # Guards against the isolation guarantee silently regressing to
+    # documentation-only enforcement - see the design doc's "v4/v5 변경
+    # 요약" for why both a positive and a negative assertion are needed.
+    local hits
+    hits=$(grep -rn "docker compose " "$PROJECT_ROOT/komodo/README.md" "$PROJECT_ROOT/komodo/scripts/" 2>/dev/null | grep -v -- "-p komodo" || true)
+    [[ -z "$hits" ]]
+}
+
+@test "install/komodo/docker-compose.yml.dist is committed but the live docker-compose.yml/.env are gitignored" {
+    # install/.gitignore's unanchored docker-compose.yml/.env patterns apply
+    # recursively to install/komodo/ too - no separate gitignore rule needed.
+    assert_file_contains "$PROJECT_ROOT/.gitignore" "docker-compose.yml"
+    assert_file_contains "$PROJECT_ROOT/.gitignore" ".env"
+    # And the pattern must NOT be anchored to the repo root (no leading /),
+    # or it would not apply inside install/komodo/.
+    run grep -E '^/(docker-compose\.yml|\.env)$' "$PROJECT_ROOT/.gitignore"
+    [[ "$status" -ne 0 ]]
+}

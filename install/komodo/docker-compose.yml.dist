@@ -1,0 +1,163 @@
+# Komodo - web UI container management (VOIP-1339). A standalone compose
+# project, deliberately separate from the main voipbin stack.
+#
+# name: komodo (top-level field) - fixes the default project name. Compose's
+# project-name precedence is `-p` flag > `COMPOSE_PROJECT_NAME` env var >
+# this `name:` field > directory name, so this field alone would NOT win
+# against this repo's main-stack guidance ("export COMPOSE_PROJECT_NAME=sandbox"
+# in your shell profile, see ../README.md). That's why every script in this
+# directory (scripts/komodo.sh) invokes `docker compose -p komodo -f
+# docker-compose.yml` explicitly, regardless of shell environment - see
+# scripts/komodo.sh's own header comment for the full rationale. If this
+# isolation breaks, komodo-periphery's docker.sock (host-root-equivalent)
+# access becomes reachable from the main voipbin network's 30+ containers.
+#
+# Scope (VOIP-1339): container restart/start/stop/logs/resource-view from a
+# browser only. This does NOT own deployment - CircleCI->SSH stays the only
+# deploy path for the main voipbin stack. No Komodo "Stack" resource is
+# created for that stack in this first pass, so the Deploy/Destroy UI and
+# git-sync auto-update simply don't exist here - that is enforced by
+# configuration (PERIPHERY_ROOT_DIRECTORY is left at Komodo's own default,
+# /etc/komodo, which never sees this repo), not by policy prose alone.
+name: komodo
+
+x-logging: &default-logging
+  driver: json-file
+  options:
+    max-size: "10m"
+    max-file: "3"
+
+services:
+  mongo:
+    image: mongo:7@sha256:be3d6353f3ea3fd3d22e016d19da20fcd6937eda0739eb6d2aeed335baa60f90
+    container_name: komodo-mongo
+    restart: always
+    logging: *default-logging
+    # Prevents Komodo's own "Stop All Containers" action from stopping this
+    # container - upstream's official compose file applies the same label to
+    # this same service for the same reason (moghtech/komodo,
+    # compose/mongo.compose.yaml).
+    labels:
+      komodo.skip:
+    command: ["--quiet", "--wiredTigerCacheSizeGB", "0.25"]
+    environment:
+      - MONGO_INITDB_ROOT_USERNAME=${KOMODO_DATABASE_USERNAME:?run scripts/komodo.sh init first}
+      - MONGO_INITDB_ROOT_PASSWORD=${KOMODO_DATABASE_PASSWORD:?run scripts/komodo.sh init first}
+    volumes:
+      - komodo_mongo_data:/data/db
+      - komodo_mongo_config:/data/configdb
+    # Internal-only, no host port published - core reaches it at
+    # mongo:27017 over this project's own compose network.
+    healthcheck:
+      test: ["CMD", "mongosh", "--quiet", "--eval", "db.adminCommand('ping')"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 20s
+
+  core:
+    image: ghcr.io/moghtech/komodo-core:2@sha256:7ae1d1547b16f1fd88902050105d80bbefc41b3023baf1f6dbc2b8df47ecb526
+    container_name: komodo-core
+    init: true
+    restart: always
+    logging: *default-logging
+    labels:
+      komodo.skip:
+    depends_on:
+      mongo:
+        condition: service_healthy
+    # KOMODO_BIND_ADDRESS: 127.0.0.1 by default - same posture as every other
+    # admin surface in the main stack (db/redis/rabbitmq/prometheus/grafana).
+    # Reach it via an SSH local port-forward, see README.md "Access".
+    ports:
+      - "${KOMODO_BIND_ADDRESS:-127.0.0.1}:9120:9120"
+    environment:
+      - KOMODO_DATABASE_ADDRESS=mongo:27017
+      - KOMODO_DATABASE_USERNAME=${KOMODO_DATABASE_USERNAME:?run scripts/komodo.sh init first}
+      - KOMODO_DATABASE_PASSWORD=${KOMODO_DATABASE_PASSWORD:?run scripts/komodo.sh init first}
+      - KOMODO_HOST=${KOMODO_HOST:-http://localhost:9120}
+      - KOMODO_TITLE=${KOMODO_TITLE:-Komodo}
+      # Upstream compose.env variable (moghtech/komodo main branch) - allows
+      # Periphery to connect using the public key it generates itself.
+      - KOMODO_PERIPHERY_PUBLIC_KEY=file:/config/keys/periphery.pub
+      - KOMODO_LOCAL_AUTH=true
+      - KOMODO_INIT_ADMIN_USERNAME=${KOMODO_ADMIN_USERNAME:-admin}
+      - KOMODO_INIT_ADMIN_PASSWORD=${KOMODO_ADMIN_PASSWORD:?run scripts/komodo.sh init first}
+      - KOMODO_FIRST_SERVER_NAME=${KOMODO_SERVER_NAME:-bm-nyc-01}
+      - KOMODO_DISABLE_USER_REGISTRATION=true
+      - KOMODO_DISABLE_NON_ADMIN_CREATE=true
+      - KOMODO_OIDC_ENABLED=false
+      - KOMODO_GITHUB_OAUTH_ENABLED=false
+      - KOMODO_GOOGLE_OAUTH_ENABLED=false
+      - KOMODO_WEBHOOK_SECRET=${KOMODO_WEBHOOK_SECRET:?run scripts/komodo.sh init first}
+      - KOMODO_JWT_SECRET=${KOMODO_JWT_SECRET:?run scripts/komodo.sh init first}
+    volumes:
+      - komodo_keys:/config/keys
+    # /auth/options does NOT exist (SPA catch-all, returns 404+HTML) - verified
+    # empirically. /version is a real API route returning 200 - use that.
+    # The komodo-core image ships curl but NOT wget (verified empirically) -
+    # this repo already hit the "healthcheck binary missing -> permanently
+    # unhealthy" trap once with redis-exporter (VOIP-1336), so this was
+    # checked before writing the healthcheck rather than assumed.
+    healthcheck:
+      test: ["CMD", "curl", "-sf", "-o", "/dev/null", "http://127.0.0.1:9120/version"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 15s
+
+  periphery:
+    image: ghcr.io/moghtech/komodo-periphery:2@sha256:639e019751642518a0fbdc2720e5f39789e76aa495a499852b9585ffacf71149
+    container_name: komodo-periphery
+    init: true
+    restart: always
+    logging: *default-logging
+    labels:
+      komodo.skip:
+    depends_on:
+      core:
+        condition: service_healthy
+    environment:
+      - PERIPHERY_CORE_ADDRESS=ws://core:9120
+      - PERIPHERY_CONNECT_AS=${KOMODO_SERVER_NAME:-bm-nyc-01}
+      # Upstream compose.env variable - verified empirically that core<->
+      # periphery key exchange succeeds with this exact name (no errors in a
+      # from-scratch cold boot with empty volumes).
+      - PERIPHERY_CORE_PUBLIC_KEYS=file:/config/keys/core.pub
+      # This scope (restart/logs/resource-view) needs no interactive
+      # browser-initiated shell. docker.sock already grants host-root-
+      # equivalent access, so the marginal benefit here is limited, but
+      # there is no reason to leave this extra surface open by default.
+      - PERIPHERY_DISABLE_TERMINALS=true
+      - PERIPHERY_DISABLE_CONTAINER_TERMINALS=true
+    volumes:
+      - komodo_keys:/config/keys
+      # Controlling containers (start/stop/restart/logs) from the web UI
+      # needs write access to the Docker API - a read-only mount cannot
+      # substitute. This is effectively host-root-equivalent access; the
+      # access path is restricted to komodo-core's 127.0.0.1 bind + SSH
+      # tunnel + this host's existing nftables drop-external rules + this
+      # project's `-p komodo` network isolation (see scripts/komodo.sh).
+      - /var/run/docker.sock:/var/run/docker.sock
+      - /proc:/proc:ro
+      # PERIPHERY_ROOT_DIRECTORY intentionally left unset (Komodo's own
+      # default, /etc/komodo): this first pass creates no Komodo "Stack"
+      # resource, so this directory is never actually used, and leaving it
+      # unset means the periphery container never needs to see this repo's
+      # checkout (including .env/certs) at all.
+    # No healthcheck: an empirically tested wget-based TLS healthcheck
+    # (periphery serves its own self-signed HTTPS on :8120 by default)
+    # reported `unhealthy` even while the container was functioning
+    # correctly (key exchange with core succeeded, no errors in logs) - see
+    # docs/plans/2026-08-14-komodo-container-management-design.md's
+    # "empirical verification" section for what was actually run. Shipping a
+    # healthcheck known not to work would reproduce the exact
+    # permanently-unhealthy trap this repo already hit with redis-exporter
+    # (VOIP-1336) - the mongo/core healthchecks above are already sufficient
+    # to gate cold-boot ordering, since nothing depends on periphery's own
+    # health. A correct periphery healthcheck is a follow-up.
+
+volumes:
+  komodo_mongo_data:
+  komodo_mongo_config:
+  komodo_keys:
