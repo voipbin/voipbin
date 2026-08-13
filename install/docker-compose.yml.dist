@@ -37,16 +37,8 @@ services:
     container_name: voipbin-db
     restart: always
     logging: *default-logging
-    # DB_BIND_ADDRESS (VOIP-1336): 127.0.0.1 by default, same posture as
-    # prometheus/grafana above - operators reach this via an SSH local
-    # port-forward, not directly over the internet. Override to 0.0.0.0 in
-    # .env only if you genuinely need LAN/multi-host access (e.g. a
-    # split-host Kamailio reaching this over the network instead of via
-    # KAMAILIO_DB_HOST=127.0.0.1's host-published-port path) - see README
-    # "Monitoring (Prometheus/Grafana)" for the access pattern this mirrors,
-    # and re-review your host firewall if you do.
     ports:
-      - "${DB_BIND_ADDRESS:-127.0.0.1}:3306:3306"
+      - "3306:3306"
     environment:
       - MYSQL_ROOT_PASSWORD=${MYSQL_ROOT_PASSWORD}
     volumes:
@@ -64,10 +56,8 @@ services:
     restart: always
     logging: *default-logging
     command: ["redis-server", "--appendonly", "yes"]
-    # REDIS_BIND_ADDRESS (VOIP-1336): 127.0.0.1 by default - see the
-    # matching comment on the db service above for the full rationale.
     ports:
-      - "${REDIS_BIND_ADDRESS:-127.0.0.1}:6379:6379"
+      - "6379:6379"
     volumes:
       - redis_data:/data
     healthcheck:
@@ -84,12 +74,9 @@ services:
     hostname: voipbin-rabbitmq
     restart: always
     logging: *default-logging
-    # RABBITMQ_BIND_ADDRESS (VOIP-1336): 127.0.0.1 by default - see the
-    # matching comment on the db service above for the full rationale.
-    # Covers both the AMQP port (5672) and the management UI (15672).
     ports:
-      - "${RABBITMQ_BIND_ADDRESS:-127.0.0.1}:5672:5672"
-      - "${RABBITMQ_BIND_ADDRESS:-127.0.0.1}:15672:15672"
+      - "5672:5672"
+      - "15672:15672"
     # Delayed-message plugin lives in a host bind dir (config/rabbitmq/plugins)
     # mounted at a SEPARATE path and added via RABBITMQ_PLUGINS_DIR, so:
     # - container recreate does NOT re-download (offline-safe)
@@ -101,18 +88,12 @@ services:
         wget -P /opt/rabbitmq-extra-plugins/ https://github.com/rabbitmq/rabbitmq-delayed-message-exchange/releases/download/v3.13.0/rabbitmq_delayed_message_exchange-3.13.0.ez;
       fi;
       rabbitmq-plugins enable --offline rabbitmq_delayed_message_exchange;
-      rabbitmq-plugins enable --offline rabbitmq_prometheus;
       exec docker-entrypoint.sh rabbitmq-server
       "
     environment:
       - RABBITMQ_DEFAULT_USER=${RABBITMQ_DEFAULT_USER}
       - RABBITMQ_DEFAULT_PASS=${RABBITMQ_DEFAULT_PASS}
       - RABBITMQ_PLUGINS_DIR=/opt/rabbitmq/plugins:/opt/rabbitmq-extra-plugins
-    # rabbitmq_prometheus (enabled above, VOIP-1336) is a CORE plugin shipped
-    # inside the image itself, unlike rabbitmq_delayed_message_exchange -
-    # no download/bind-mount needed. It listens on 15692 (not published to
-    # the host; scraped by the prometheus service over the compose network
-    # at rabbitmq:15692/metrics).
     volumes:
       - rabbitmq_data:/var/lib/rabbitmq
       - ./config/rabbitmq/plugins:/opt/rabbitmq-extra-plugins
@@ -190,187 +171,6 @@ services:
       timeout: 5s
       retries: 10
       start_period: 30s
-
-  # ===========================================================================
-  # Monitoring Services (VOIP-1336)
-  # ===========================================================================
-  # Prometheus + Grafana observability stack. Bound to 127.0.0.1 only (not
-  # 0.0.0.0), matching the nftables-drop-external pattern already applied to
-  # redis/rabbitmq/mysql on production hosts - see this repo's README
-  # "Monitoring (Prometheus/Grafana)" section for the SSH-tunnel access
-  # pattern operators use instead of exposing these ports publicly.
-  # Alertmanager is deliberately not included in this first pass - see
-  # docs/follow-ups.md.
-
-  # Prometheus - metrics collection and storage (15d local retention, no
-  # remote-write configured). Scrape config: config/prometheus/prometheus.yml.
-  prometheus:
-    image: prom/prometheus:v3.0.1@sha256:565ee86501224ebbb98fc10b332fa54440b100469924003359edf49cbce374bd
-    container_name: voipbin-prometheus
-    restart: always
-    logging: *default-logging
-    command:
-      - "--config.file=/etc/prometheus/prometheus.yml"
-      - "--storage.tsdb.path=/prometheus"
-      - "--storage.tsdb.retention.time=15d"
-      - "--web.listen-address=0.0.0.0:9090"
-    ports:
-      - "127.0.0.1:9090:9090"
-    volumes:
-      - ./config/prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
-      - prometheus_data:/prometheus
-    healthcheck:
-      test: ["CMD-SHELL", "wget -q -O /dev/null http://127.0.0.1:9090/-/healthy"]
-      interval: 15s
-      timeout: 5s
-      retries: 5
-      start_period: 15s
-    depends_on:
-      node-exporter:
-        condition: service_healthy
-      cadvisor:
-        condition: service_healthy
-      redis-exporter:
-        condition: service_healthy
-      mysqld-exporter:
-        condition: service_healthy
-
-  # node_exporter - host-level CPU/memory/disk/network metrics. Read-only
-  # bind-mounts of the host's /proc and /sys (standard node_exporter deploy
-  # pattern); no write access, no host PID/network namespace needed.
-  node-exporter:
-    image: prom/node-exporter:v1.8.2@sha256:4032c6d5bfd752342c3e631c2f1de93ba6b86c41db6b167b9a35372c139e7706
-    container_name: voipbin-node-exporter
-    restart: always
-    logging: *default-logging
-    command:
-      - "--path.procfs=/host/proc"
-      - "--path.sysfs=/host/sys"
-      - "--path.rootfs=/host/root"
-      - "--collector.filesystem.mount-points-exclude=^/(sys|proc|dev|host|etc)($$|/)"
-    volumes:
-      - /proc:/host/proc:ro
-      - /sys:/host/sys:ro
-      - /:/host/root:ro
-    # Internal-only: scraped by prometheus over the compose network
-    # (node-exporter:9100), never published to the host.
-    healthcheck:
-      test: ["CMD-SHELL", "wget -q -O /dev/null http://127.0.0.1:9100/metrics"]
-      interval: 15s
-      timeout: 5s
-      retries: 5
-      start_period: 10s
-
-  # cAdvisor - per-container CPU/memory/network/disk metrics. Needs
-  # read-only access to the docker runtime dirs and the docker socket to
-  # enumerate containers; no host PID namespace or privileged mode required
-  # on modern kernels/cgroup v2 hosts.
-  cadvisor:
-    image: gcr.io/cadvisor/cadvisor:v0.49.1@sha256:3cde6faf0791ebf7b41d6f8ae7145466fed712ea6f252c935294d2608b1af388
-    container_name: voipbin-cadvisor
-    restart: always
-    logging: *default-logging
-    volumes:
-      - /:/rootfs:ro
-      - /var/run:/var/run:ro
-      - /sys:/sys:ro
-      - /var/lib/docker:/var/lib/docker:ro
-      - /dev/disk:/dev/disk:ro
-    devices:
-      - /dev/kmsg
-    # Internal-only, scraped by prometheus at cadvisor:8080.
-    healthcheck:
-      test: ["CMD-SHELL", "wget -q -O /dev/null http://127.0.0.1:8080/healthz"]
-      interval: 15s
-      timeout: 5s
-      retries: 5
-      start_period: 15s
-
-  # redis_exporter - sidecar exporting the `redis` service's INFO stats as
-  # Prometheus metrics. REDIS_PASSWORD is empty in this stack (see
-  # docker-compose.yml's manager service blocks), so no auth is configured.
-  # The -alpine tag (not the bare v1.66.0 scratch-based tag) is required:
-  # the scratch image ships no shell/wget, so a CMD-SHELL healthcheck can
-  # never execute against it and the container reports permanently
-  # unhealthy, which fails scripts/check-install.sh's/doctor.sh's generic
-  # "no unhealthy container" gate for every fresh install.
-  redis-exporter:
-    image: oliver006/redis_exporter:v1.66.0-alpine@sha256:117e28099cf52e284c43073935a3beb8dd7a29aa4972a7c1a062dba421e986fa
-    container_name: voipbin-redis-exporter
-    restart: always
-    logging: *default-logging
-    environment:
-      - REDIS_ADDR=redis://redis:6379
-    depends_on:
-      redis:
-        condition: service_healthy
-    # Internal-only, scraped by prometheus at redis-exporter:9121.
-    healthcheck:
-      test: ["CMD-SHELL", "wget -q -O /dev/null http://127.0.0.1:9121/metrics"]
-      interval: 15s
-      timeout: 5s
-      retries: 5
-      start_period: 10s
-
-  # mysqld_exporter - sidecar exporting MySQL server stats as Prometheus
-  # metrics. Authenticates as root/MYSQL_ROOT_PASSWORD rather than a
-  # dedicated least-privilege monitoring user: this stack's `postgres`/
-  # `clickhouse` services already accept a comparable local-dev credential
-  # posture (see clickhouse's CLICKHOUSE_SKIP_USER_SETUP comment above) and
-  # this container is not published to the host. A dedicated
-  # `exporter`/GRANT PROCESS,REPLICATION CLIENT user (mirroring
-  # DATABASE_ASTERISK_USERNAME's provisioning in scripts/common.sh) is a
-  # reasonable follow-up if this exporter's blast radius needs narrowing -
-  # see docs/follow-ups.md.
-  mysqld-exporter:
-    image: prom/mysqld-exporter:v0.15.1@sha256:7211a617ec657701ca819aa0ba28e1d5750f5bf2c1391b755cc4a48cc360b0fa
-    container_name: voipbin-mysqld-exporter
-    restart: always
-    logging: *default-logging
-    environment:
-      - DATA_SOURCE_NAME=root:${MYSQL_ROOT_PASSWORD}@(db:3306)/
-    depends_on:
-      db:
-        condition: service_healthy
-    # Internal-only, scraped by prometheus at mysqld-exporter:9104.
-    healthcheck:
-      test: ["CMD-SHELL", "wget -q -O /dev/null http://127.0.0.1:9104/metrics"]
-      interval: 15s
-      timeout: 5s
-      retries: 5
-      start_period: 10s
-
-  # Grafana - dashboards, provisioned automatically at startup from
-  # config/grafana/provisioning (datasource + dashboard files under
-  # config/grafana/dashboards). No manual UI setup required.
-  grafana:
-    image: grafana/grafana:11.4.0@sha256:d8ea37798ccc41061a62ab080f2676dda6bf7815558499f901bdb0f533a456fb
-    container_name: voipbin-grafana
-    restart: always
-    logging: *default-logging
-    environment:
-      - GF_SECURITY_ADMIN_USER=admin
-      - GF_SECURITY_ADMIN_PASSWORD=${GRAFANA_ADMIN_PASSWORD}
-      - GF_USERS_ALLOW_SIGN_UP=false
-      # Served only via SSH tunnel (README "Monitoring") - no public TLS
-      # front-door in this first pass, so plain HTTP on the loopback bind is
-      # the accepted posture, same as the RabbitMQ management UI.
-      - GF_SERVER_ROOT_URL=http://localhost:3000/
-    ports:
-      - "127.0.0.1:3000:3000"
-    volumes:
-      - grafana_data:/var/lib/grafana
-      - ./config/grafana/provisioning:/etc/grafana/provisioning:ro
-      - ./config/grafana/dashboards:/var/lib/grafana/dashboards:ro
-    healthcheck:
-      test: ["CMD-SHELL", "wget -q -O /dev/null http://127.0.0.1:3000/api/health"]
-      interval: 15s
-      timeout: 5s
-      retries: 5
-      start_period: 15s
-    depends_on:
-      prometheus:
-        condition: service_healthy
 
   # CoreDNS - Wildcard DNS for *.voipbin.test
   # Resolves all voipbin.test domains to the host IP
@@ -1847,8 +1647,6 @@ volumes:
   kamailio-logs:
   rtpengine-logs:
   rtpengine-run:
-  prometheus_data:
-  grafana_data:
 
 # Default network for services that don't use host mode
 networks:
