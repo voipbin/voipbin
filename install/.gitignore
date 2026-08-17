@@ -34,7 +34,5 @@ config/rabbitmq/plugins/*.ez
 # versions.lock.dist, docker-compose.yml, docker-compose.yml.dist) - a
 # zero-byte file reused across runs, never meant to be committed. Without
 # this, bump-image-digest.sh/sync-compose-images.sh running against the
-# tracked .dist files (the CI default) leaves an untracked *.flock file
-# behind, which trips .circleci/scripts/open-versions-lock-pr.sh's
-# narrow-scope dirty-file guard and silently breaks that automation.
+# tracked .dist files leaves an untracked *.flock file behind.
 *.flock
