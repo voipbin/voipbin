@@ -733,7 +733,7 @@ a single in-stack consumer, so keeping them internal shrinks the surface. Debug
 them with `docker exec` instead:
 
 ```bash
-docker exec -it voipbin-postgres psql -U voipbin -d rag
+docker exec -it voipbin-postgres psql -U voipbin -d bin_manager
 docker exec -it voipbin-clickhouse clickhouse-client
 ```
 
