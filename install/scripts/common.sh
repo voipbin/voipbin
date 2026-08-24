@@ -113,7 +113,7 @@ get_domain_mode() {
 }
 
 # derive_domain_env <base_domain> [web_reverse_proxy]
-# Sets the DERIVED_* shell variables for the 11 domain-dependent .env values
+# Sets the DERIVED_* shell variables for the 12 domain-dependent .env values
 # (design §2.1). This is the ONLY place domain values are composed. For
 # <base_domain> = voipbin.test (and web_reverse_proxy omitted/false) the
 # results are byte-identical to the historic literals (mode-1 no-regression
@@ -140,7 +140,12 @@ derive_domain_env() {
     DERIVED_CONFERENCE_DOMAIN="conference.${d}"
     DERIVED_DOMAIN_NAME_EXTENSION="registrar.${d}"
     DERIVED_DOMAIN_NAME_TRUNK="trunk.${d}"
+    # EMAIL_VERIFY_BASE_URL and API_PUBLIC_BASE_URL are byte-identical
+    # computations by design, not duplication to collapse: they feed two
+    # distinct Go services' own env vars (customer-manager and api-manager
+    # respectively), each with its own compiled-in default. Keep both lines.
     DERIVED_EMAIL_VERIFY_BASE_URL="https://api.${d}${api_port_suffix}"
+    DERIVED_API_PUBLIC_BASE_URL="https://api.${d}${api_port_suffix}"
     DERIVED_BASE_DOMAIN="${d}"
     DERIVED_BASE_HOSTNAME="${d}"
 }

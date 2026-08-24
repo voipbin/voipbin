@@ -2451,20 +2451,22 @@ Type 'help <command>' for detailed usage.
             else:
                 print("No services running")
 
-    # asterisk-*-proxy sidecars run with `network_mode: "service:<owner>"`,
-    # sharing the owner's kernel network namespace so ARI/AMI resolve over
-    # localhost. `docker restart <owner>` gives the owner a NEW namespace but
-    # does NOT restart the sidecar, which stays attached to the old, now-dead
-    # namespace forever (ARI connect: connection refused). See VOIP-1237.
-    # Owner and sidecar MUST always be restarted together.
-    ASTERISK_SIDECAR_PAIRS = {
+    # network_mode: "service:<owner>" sidecars share the owner's kernel
+    # network namespace so their loopback-bound peer resolves over localhost
+    # (ARI/AMI for the asterisk-*-proxy trio; pipecat-script-runner's
+    # uvicorn for pipecat-manager). `docker restart <owner>` gives the owner
+    # a NEW namespace but does NOT restart the sidecar, which stays attached
+    # to the old, now-dead namespace forever (connection refused). See
+    # VOIP-1237. Owner and sidecar MUST always be restarted together.
+    SIDECAR_PAIRS = {
         "asterisk-call": "asterisk-call-proxy",
         "asterisk-conference": "asterisk-conference-proxy",
         "asterisk-registrar": "asterisk-registrar-proxy",
+        "pipecat-manager": "pipecat-script-runner",
     }
 
-    def _restart_asterisk_pair(self, owner, proxy, health_timeout=60):
-        """Restart an Asterisk owner container, wait for it to report
+    def _restart_sidecar_pair(self, owner, proxy, health_timeout=60):
+        """Restart a sidecar-pair owner container, wait for it to report
         healthy, THEN restart its network-namespace-sharing proxy sidecar.
 
         Order matters (VOIP-1237, live-verified): `docker compose restart
@@ -2563,23 +2565,23 @@ Type 'help <command>' for detailed usage.
             print(result)
 
     def cmd_restart(self, args):
-        """Restart services (Asterisk owner containers auto-pull in their
-        network-namespace-sharing proxy sidecar, see VOIP-1237)"""
+        """Restart services (SIDECAR_PAIRS owner containers auto-pull in
+        their network-namespace-sharing sidecar, see VOIP-1237)"""
         service = args[0] if args else ""
 
         if service:
-            # If the requested service is an Asterisk owner container, force
-            # its network-namespace-sharing proxy sidecar to restart AFTER it
-            # comes back healthy, so the sidecar never survives into an
-            # orphaned namespace (VOIP-1237).
-            paired_proxy = self.ASTERISK_SIDECAR_PAIRS.get(service)
+            # If the requested service is a SIDECAR_PAIRS owner, force its
+            # network-namespace-sharing sidecar to restart AFTER it comes
+            # back healthy, so the sidecar never survives into an orphaned
+            # namespace (VOIP-1237).
+            paired_proxy = self.SIDECAR_PAIRS.get(service)
             if paired_proxy:
                 print(
                     f"Restarting {service}, then its sidecar {paired_proxy} "
                     f"once healthy (required: they share a network "
                     f"namespace, see VOIP-1237)..."
                 )
-                self._restart_asterisk_pair(service, paired_proxy)
+                self._restart_sidecar_pair(service, paired_proxy)
             else:
                 print(f"Restarting {service}...")
                 result = run_cmd(f"docker compose restart {service} 2>&1")
@@ -2589,19 +2591,19 @@ Type 'help <command>' for detailed usage.
             print(green("✓ Done"))
         else:
             # Full-stack restart: `docker compose restart` (no args) does not
-            # guarantee any owner-before-sidecar ordering, so an
-            # asterisk-*-proxy can still end up restarted before (or without)
-            # its owner and be left in a dead namespace. Restart every
-            # Asterisk owner+proxy pair in the correct order first, then
-            # restart everything else in one shot.
+            # guarantee any owner-before-sidecar ordering, so a sidecar can
+            # still end up restarted before (or without) its owner and be
+            # left in a dead namespace. Restart every owner+sidecar pair in
+            # the correct order first, then restart everything else in one
+            # shot.
             print("Restarting all services...")
 
             paired_services = set()
-            for owner, proxy in self.ASTERISK_SIDECAR_PAIRS.items():
+            for owner, proxy in self.SIDECAR_PAIRS.items():
                 paired_services.add(owner)
                 paired_services.add(proxy)
                 print(f"  -> {owner}, then {proxy} once healthy (VOIP-1237)")
-                self._restart_asterisk_pair(owner, proxy)
+                self._restart_sidecar_pair(owner, proxy)
 
             all_services = run_cmd("docker compose ps --services 2>/dev/null") or ""
             remaining = [

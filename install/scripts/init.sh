@@ -826,7 +826,7 @@ GCPEOF
     # Step 7: Create .env file
     log_step "Creating .env file..."
 
-    # Single source of truth for the 11 domain-dependent values (§2.1):
+    # Single source of truth for the 12 domain-dependent values (§2.1):
     # for voipbin.test the derived values are byte-identical to the historic
     # literals, which is how internal mode stays unchanged.
     derive_domain_env "$TARGET_DOMAIN" "$INIT_WEB_REVERSE_PROXY"
@@ -926,6 +926,7 @@ CONFERENCE_DOMAIN=$DERIVED_CONFERENCE_DOMAIN
 # Domain names for extension and trunk registration
 DOMAIN_NAME_EXTENSION=$DERIVED_DOMAIN_NAME_EXTENSION
 DOMAIN_NAME_TRUNK=$DERIVED_DOMAIN_NAME_TRUNK
+DOMAIN_SHORT_LABEL_ENABLED=false
 
 # SIP TLS certificates path
 CERTS_PATH=./certs
@@ -956,6 +957,7 @@ CARTESIA_API_KEY=
 ELEVENLABS_API_KEY=
 DEEPGRAM_API_KEY=
 XAI_API_KEY=
+GOOGLE_API_KEY=
 
 # ==============================================================================
 # AWS (OPTIONAL - for transcription)
@@ -976,6 +978,7 @@ AMI_USERNAME=$AMI_USERNAME
 AMI_PASSWORD=$AMI_PASSWORD
 POSTGRES_PASSWORD=$POSTGRES_PASSWORD
 EMAIL_VERIFY_BASE_URL=$DERIVED_EMAIL_VERIFY_BASE_URL
+API_PUBLIC_BASE_URL=$DERIVED_API_PUBLIC_BASE_URL
 
 # ==============================================================================
 # Analytics & Monitoring (OPTIONAL)
