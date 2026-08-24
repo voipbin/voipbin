@@ -784,6 +784,19 @@ Key services:
   CronJob or host crontab. See README.md "Scheduled Jobs (VOIP-1281)" for the
   seeded schedules, `schedule-control` CLI, and the host-side gaps (offsite
   backup copy, host OS maintenance) that stay operator-owned by design.
+  The scheduled DB backup runs via `mariadb-dump` (see `pkg/backuphandler`),
+  hence the healthcheck now uses `curl` rather than `wget`.
+- `pipecat-manager` - now ships with a `pipecat-script-runner` sidecar (the
+  Python Pipecat pipeline process, `network_mode: "service:pipecat-manager"`)
+  — always restarted together, see the VOIP-1237-style orphan-hazard comment
+  on that service in `docker-compose.yml.dist` and `scripts/voipbin-cli.py`'s
+  `SIDECAR_PAIRS`.
+- `tts-manager` - now ships with a `tts-manager-http` sidecar (plain Python
+  `http.server` over the `shared-data` volume) that serves the batch-TTS wav
+  files Asterisk fetches; `tts-manager` also requires
+  `GOOGLE_APPLICATION_CREDENTIALS` at boot the same way `storage-manager` does
+  (dummy credentials let it start; real GCP Cloud TTS needs a real key, with
+  AWS Polly as a working fallback either way).
 
 ### Frontend
 
@@ -1019,6 +1032,7 @@ db, redis, rabbitmq (infrastructure)
 | `postgres_data` | PostgreSQL/pgvector data persistence (rag-manager) |
 | `clickhouse_data` | ClickHouse data persistence (timeline-manager) |
 | `asterisk-call-recording` | Call recordings |
+| `shared-data` | Batch-TTS wav files shared between `tts-manager` and its `tts-manager-http` sidecar |
 
 ## Testing Extension-to-Extension Calls
 

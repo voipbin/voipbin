@@ -582,7 +582,7 @@ services:
   # ===========================================================================
 
   agent-manager:
-    image: voipbin/bin-agent-manager@sha256:c3ef215c7142b86db817b0ce1ebf2da627c16105cc78b36e2b70ea8edb7f424f
+    image: voipbin/bin-agent-manager@sha256:e774735ad4f4fd8ecae9c3f831845ad0826d419b59bfa186a34bdfeda4790c34
     logging: *default-logging
     healthcheck:
       test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://127.0.0.1:2112/metrics"]
@@ -609,7 +609,7 @@ services:
     command: ./agent-manager
 
   ai-manager:
-    image: voipbin/bin-ai-manager@sha256:fec988a16eed8a4cd164dab9e554ebd02290ce3d8277785eef89253514d1945f
+    image: voipbin/bin-ai-manager@sha256:75e611218b53e4f3a546cdd12810fa96ed7abb4a84d7ca21f8440894f59eb4ae
     logging: *default-logging
     healthcheck:
       test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://127.0.0.1:2112/metrics"]
@@ -636,7 +636,7 @@ services:
     command: ./ai-manager
 
   api-manager:
-    image: voipbin/bin-api-manager@sha256:ee4ec701bf7b7a99785c5aaaf3acdc804ba16418bfc1db7962e85816ada2614b
+    image: voipbin/bin-api-manager@sha256:2b57ce782e97a8932d696bd316468251ab3b8ba444718c9bc3cd9a9710949573
     logging: *default-logging
     healthcheck:
       test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://127.0.0.1:2112/metrics"]
@@ -668,6 +668,7 @@ services:
       - GCP_BUCKET_NAME=${GCP_BUCKET_NAME_TMP:-}
       - JWT_KEY=${JWT_KEY:-${STORAGE_JWT_KEY:-}}
       - GOOGLE_APPLICATION_CREDENTIALS=/tmp/google_service_account.json
+      - API_PUBLIC_BASE_URL=${API_PUBLIC_BASE_URL:-https://api.voipbin.test:8443}
     ports:
       - "0.0.0.0:8443:443"
     volumes:
@@ -675,7 +676,7 @@ services:
     command: ./api-manager
 
   billing-manager:
-    image: voipbin/bin-billing-manager@sha256:a69cc7b5f98e894957fccd386eb6c29c8bd83f9487c951b63d80a7fbc6977deb
+    image: voipbin/bin-billing-manager@sha256:3dcf5a9859eca1b418cc59e928c5fe074f7958ab2ddb145de95fc8f1d85cf62c
     logging: *default-logging
     healthcheck:
       test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://127.0.0.1:2112/metrics"]
@@ -702,7 +703,7 @@ services:
     command: ./billing-manager
 
   call-manager:
-    image: voipbin/bin-call-manager@sha256:925e9d620ab71ca82214b01ae57ff57377f8fbb3ec371d45ff190f2184510942
+    image: voipbin/bin-call-manager@sha256:c5e04276ca9a87ae64b591ab510e0cae8b2ef4a296166a81e8863e9e3bb9171e
     logging: *default-logging
     healthcheck:
       test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://127.0.0.1:2112/metrics"]
@@ -737,7 +738,7 @@ services:
     command: ./call-manager
 
   campaign-manager:
-    image: voipbin/bin-campaign-manager@sha256:218e620fa20a37ded40105596e09c694a9a8999d2880d17c45bc552137a6100c
+    image: voipbin/bin-campaign-manager@sha256:b46d845fccf921810ed7695d2730baf5004960b38183d7b4b906ffb0dd2782c0
     logging: *default-logging
     healthcheck:
       test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://127.0.0.1:2112/metrics"]
@@ -764,7 +765,7 @@ services:
     command: ./campaign-manager
 
   contact-manager:
-    image: voipbin/bin-contact-manager@sha256:3584877e61eeab37909fb89cb3640868a13a4d0eb2aaf288ff764c7a4fdf4e30
+    image: voipbin/bin-contact-manager@sha256:6aa087358e2c05615fdf68aeb0182e529cabb55aa71fb1b26568d1aa2f3350f9
     logging: *default-logging
     healthcheck:
       test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://127.0.0.1:2112/metrics"]
@@ -790,7 +791,7 @@ services:
     command: ./contact-manager
 
   conference-manager:
-    image: voipbin/bin-conference-manager@sha256:93cd5ccfecdebb151c44776b3c32b7af5e6cd653ba57fc1adc55bd6af0bc0774
+    image: voipbin/bin-conference-manager@sha256:b8433574339e30cb491ad37066975ed5cbb868c903aeb91bd3bb94eaa095643a
     logging: *default-logging
     healthcheck:
       test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://127.0.0.1:2112/metrics"]
@@ -817,7 +818,7 @@ services:
     command: ./conference-manager
 
   conversation-manager:
-    image: voipbin/bin-conversation-manager@sha256:f2ea516068baa80fb15c28075b8c40a4d68cd8e15d8a558f8a7c21772fd2ee0c
+    image: voipbin/bin-conversation-manager@sha256:2ce3dad33f0b6ac7b2b3c5bd2f1eabe860f1bf797e9d36c5df1ed852b8af62dd
     logging: *default-logging
     healthcheck:
       test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://127.0.0.1:2112/metrics"]
@@ -844,7 +845,7 @@ services:
     command: ./conversation-manager
 
   customer-manager:
-    image: voipbin/bin-customer-manager@sha256:c253b6f9e114000ac19eec0d27ca2bb3df4e8a777479ce367647c8ca2222e001
+    image: voipbin/bin-customer-manager@sha256:5b4869be535a827578a21eb7c7c68267c8f2377a5b3a9e492ea70adb3cf06d4f
     logging: *default-logging
     healthcheck:
       test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://127.0.0.1:2112/metrics"]
@@ -877,7 +878,7 @@ services:
   # container_name is pinned because the image ships a direct-control CLI that
   # ops scripts docker-exec into, same precedent as voipbin-customer-mgr.
   direct-manager:
-    image: voipbin/bin-direct-manager@sha256:05afd0105b652af1b21262b1372f3a6d3bf087860511ef8c337dd2325b0b39e2
+    image: voipbin/bin-direct-manager@sha256:3875c158aed2cdabad7feaf0103f23acbe088cf3dda28c45a84bc32422e28b2e
     logging: *default-logging
     healthcheck:
       test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://127.0.0.1:2112/metrics"]
@@ -904,7 +905,7 @@ services:
     command: ./direct-manager
 
   email-manager:
-    image: voipbin/bin-email-manager@sha256:9869e4e39ad1dc8518a95b343fff29c6e35722bd9bfc09e150dfbcb3e493cdea
+    image: voipbin/bin-email-manager@sha256:b2ab9689e8a65dc91ad274193472cff38c2ce432b45597a2917e8d1ad24263e1
     logging: *default-logging
     healthcheck:
       test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://127.0.0.1:2112/metrics"]
@@ -932,7 +933,7 @@ services:
     command: ./email-manager
 
   flow-manager:
-    image: voipbin/bin-flow-manager@sha256:4a0c77efe72cfb72abfa33c45eaf6142223376b6e09d4aa5ec8c8021165558b3
+    image: voipbin/bin-flow-manager@sha256:c2bb242937c6dde6382da437e6a3491ecc2c90098e6e44a8d8e31949370b4d19
     logging: *default-logging
     healthcheck:
       test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://127.0.0.1:2112/metrics"]
@@ -959,7 +960,7 @@ services:
     command: ./flow-manager
 
   hook-manager:
-    image: voipbin/bin-hook-manager@sha256:bcf989d1b358f54130e231cf777ece1b0a999cbbf10ff1d55fb3e42cfd241462
+    image: voipbin/bin-hook-manager@sha256:d6b813cd41c39ceb2b8ee58ee487978c046b5936814bf2e47aa9544d84ced242
     logging: *default-logging
     healthcheck:
       test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://127.0.0.1:2112/metrics"]
@@ -988,7 +989,7 @@ services:
     command: ./hook-manager
 
   message-manager:
-    image: voipbin/bin-message-manager@sha256:5daa83c77fb69187ba10dc73033194fe7f08dc98720a02d7bc8253568e88a03b
+    image: voipbin/bin-message-manager@sha256:e326bac180a15035fc3028dd623cce713d4fc8eb487b94f9776650ca7cb9f03d
     logging: *default-logging
     healthcheck:
       test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://127.0.0.1:2112/metrics"]
@@ -1016,7 +1017,7 @@ services:
     command: ./message-manager
 
   number-manager:
-    image: voipbin/bin-number-manager@sha256:709822759b93a1560423b2be97267b13d95f4e86ef62eb228bae61a210c28770
+    image: voipbin/bin-number-manager@sha256:df43dc5bafbcf4c4c61be05bbab75d2cb765061d7dc06f2045983c5f10855995
     logging: *default-logging
     healthcheck:
       test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://127.0.0.1:2112/metrics"]
@@ -1048,7 +1049,7 @@ services:
     command: ./number-manager
 
   outdial-manager:
-    image: voipbin/bin-outdial-manager@sha256:817e7d5f50a5d1c98fd8b775b3d5c4b94707a24abc76d98caa10389224fcdd46
+    image: voipbin/bin-outdial-manager@sha256:2bc02dbad5f9bb7a92d4b9d545089fca90430f3c8629fcf8043009a163c81bb2
     logging: *default-logging
     healthcheck:
       test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://127.0.0.1:2112/metrics"]
@@ -1075,7 +1076,7 @@ services:
     command: ./outdial-manager
 
   pipecat-manager:
-    image: voipbin/bin-pipecat-manager@sha256:e886a022d6ea5cba537482faadb0b6b0078daa90d1e25134cd1c73351a8956d0
+    image: voipbin/bin-pipecat-manager@sha256:97aa8c293594523e41fa3ca4b287fb78dd50769dc91924ee2cbfd9b47d4d5774
     logging: *default-logging
     healthcheck:
       # python image (Debian trixie) ships NEITHER wget nor curl - use python3.
@@ -1107,8 +1108,41 @@ services:
       - POD_IP=${POD_IP:-pipecat-manager}
     command: ./pipecat-manager
 
+  # pipecat-script-runner: the Python Pipecat pipeline sidecar (FastAPI/uvicorn
+  # on 0.0.0.0:8000) pipecat-manager drives via http://localhost:8000/run. Same
+  # image as pipecat-manager (all Python deps are baked in already).
+  # IMPORTANT (VOIP-1237-style orphan hazard): shares pipecat-manager's network
+  # namespace via network_mode: "service:". If pipecat-manager is restarted
+  # alone (docker compose restart pipecat-manager / docker restart), Docker
+  # gives it a brand-new namespace but this sidecar stays bound to the OLD, now
+  # -orphaned one - localhost:8000 then resolves to nothing and every ai_talk
+  # action fails with "connection refused" until this sidecar is restarted too.
+  # Always restart together with pipecat-manager (see scripts/voipbin-cli.py's
+  # SIDECAR_PAIRS, which enforces this pairing automatically). Never restart
+  # pipecat-manager in isolation.
+  pipecat-script-runner:
+    image: voipbin/bin-pipecat-manager@sha256:97aa8c293594523e41fa3ca4b287fb78dd50769dc91924ee2cbfd9b47d4d5774
+    logging: *default-logging
+    restart: always
+    network_mode: "service:pipecat-manager"
+    depends_on:
+      pipecat-manager:
+        condition: service_healthy
+    # Same env set the GKE pipecat-script-runner container received - the
+    # Python side calls the STT/LLM/TTS APIs directly. GOOGLE_API_KEY is
+    # intentionally only read here: the Go side (pipecat-manager above) never
+    # consumes it.
+    environment:
+      - CARTESIA_API_KEY=${CARTESIA_API_KEY:-}
+      - ELEVENLABS_API_KEY=${ELEVENLABS_API_KEY:-}
+      - OPENAI_API_KEY=${OPENAI_API_KEY:-}
+      - DEEPGRAM_API_KEY=${DEEPGRAM_API_KEY:-}
+      - XAI_API_KEY=${XAI_API_KEY:-}
+      - GOOGLE_API_KEY=${GOOGLE_API_KEY:-}
+    command: ["python", "/app/scripts/pipecat/main.py"]
+
   queue-manager:
-    image: voipbin/bin-queue-manager@sha256:9c187b484be3689b3be97cc6f5adc1d227321dbd74ce1791ce2e4fa7a35443bd
+    image: voipbin/bin-queue-manager@sha256:0416e7425f5118e5effd23840546d75cef4155cb1bea4a89647e7bbca8a039d3
     logging: *default-logging
     healthcheck:
       test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://127.0.0.1:2112/metrics"]
@@ -1135,7 +1169,7 @@ services:
     command: ./queue-manager
 
   rag-manager:
-    image: voipbin/bin-rag-manager@sha256:753e42d43ed572d77fec2fad32a3ae8b4e8349f819efa91a4fc4295594284eb0
+    image: voipbin/bin-rag-manager@sha256:5eda2765be39f460a8381cf8d4964389e2a96640a032badc4a2b299bdb3cd53f
     logging: *default-logging
     healthcheck:
       test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://127.0.0.1:2112/metrics"]
@@ -1178,7 +1212,7 @@ services:
     command: ./rag-manager
 
   registrar-manager:
-    image: voipbin/bin-registrar-manager@sha256:ce6efa0159ed5812d3a3b5f12adbfdbc9a104c02939c46432926cf5cd0a6b9c3
+    image: voipbin/bin-registrar-manager@sha256:10f5f9eaa0544af53cb905e613c726f3d34bfbc5b6a8ad90524fa11aacfa68cf
     logging: *default-logging
     healthcheck:
       test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://127.0.0.1:2112/metrics"]
@@ -1205,10 +1239,11 @@ services:
       - PROMETHEUS_LISTEN_ADDRESS=:2112
       - DOMAIN_NAME_EXTENSION=${DOMAIN_NAME_EXTENSION:-registrar.voipbin.test}
       - DOMAIN_NAME_TRUNK=${DOMAIN_NAME_TRUNK:-trunk.voipbin.test}
+      - DOMAIN_SHORT_LABEL_ENABLED=${DOMAIN_SHORT_LABEL_ENABLED:-false}
     command: ./registrar-manager
 
   route-manager:
-    image: voipbin/bin-route-manager@sha256:b5ace11ccf5f0d4a1bf20884436c5dfe13e47fde8add76de4449511494c02d8a
+    image: voipbin/bin-route-manager@sha256:ff56726d917b5e1ad2b8184e25f792b761208c0133a6e58bd9ada932b6a1cff9
     logging: *default-logging
     healthcheck:
       test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://127.0.0.1:2112/metrics"]
@@ -1235,10 +1270,10 @@ services:
     command: ./route-manager
 
   schedule-manager:
-    image: voipbin/bin-schedule-manager@sha256:6d4570a38e4813c50b1dc286b0f12039fc78be9bd87ba33521413fe1a9e56f5d
+    image: voipbin/bin-schedule-manager@sha256:2c4674d32dd956bc2ee12f53695784819481c92297622bd197eefd9c6616b96c
     logging: *default-logging
     healthcheck:
-      test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://127.0.0.1:2112/metrics"]
+      test: ["CMD", "curl", "-fsS", "-o", "/dev/null", "http://127.0.0.1:2112/metrics"]
       interval: 30s
       timeout: 5s
       retries: 3
@@ -1259,7 +1294,7 @@ services:
       - REDIS_DATABASE=1
       - PROMETHEUS_ENDPOINT=/metrics
       - PROMETHEUS_LISTEN_ADDRESS=:2112
-      # In-stack scheduled DB backup (VOIP-1281): a narrower, mysqldump-only
+      # In-stack scheduled DB backup (VOIP-1281): a narrower, mariadb-dump-only
       # complement to `voipbin backup`'s full manual snapshot (which also
       # captures recording volumes, config/, and a manifest.json). Deliberately
       # a separate subdirectory under backups/ so the two never collide or get
@@ -1277,7 +1312,7 @@ services:
   # server-production-mode-design.md section 3.6.
 
   storage-manager:
-    image: voipbin/bin-storage-manager@sha256:416a239e581eb3847bde0e1b0eda7935cb5082284cbc8d973c4c562a7ec568ea
+    image: voipbin/bin-storage-manager@sha256:0432a09831630c03c6d8021c7e30eb5308cd7802898edc1093434a9c4605dc2f
     logging: *default-logging
     healthcheck:
       test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://127.0.0.1:2112/metrics"]
@@ -1318,7 +1353,7 @@ services:
     command: ./storage-manager
 
   tag-manager:
-    image: voipbin/bin-tag-manager@sha256:6c8de55ce4ae896d2b6814749cc50f7537e48399c8f4953ed940b8fbfe804743
+    image: voipbin/bin-tag-manager@sha256:1b7cb7cb5dab7afa4161e7593fb5236d2eab3a9f8d135d060bd1f32c1137cfaa
     logging: *default-logging
     healthcheck:
       test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://127.0.0.1:2112/metrics"]
@@ -1345,7 +1380,7 @@ services:
     command: ./tag-manager
 
   talk-manager:
-    image: voipbin/bin-talk-manager@sha256:55237785e4557f0923bb31f4dbfaecb94d6fd56efff920294dd139dc3f19860e
+    image: voipbin/bin-talk-manager@sha256:06d309e002a6c55271c13432f9450672ba88d582010f209bcf0aa39710ed6c67
     logging: *default-logging
     healthcheck:
       test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://127.0.0.1:2112/metrics"]
@@ -1372,7 +1407,7 @@ services:
     command: ./talk-manager
 
   timeline-manager:
-    image: voipbin/bin-timeline-manager@sha256:4a7788ff894b6e5669673cda583666aef530db9db4fd4810bbebfaee5ea95aec
+    image: voipbin/bin-timeline-manager@sha256:3111de692c2f86dcfac34c73636e5cc59fb3fb61ecdbdd4211d501e83bf5accb
     logging: *default-logging
     healthcheck:
       test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://127.0.0.1:2112/metrics"]
@@ -1402,7 +1437,7 @@ services:
     command: ./timeline-manager
 
   transcribe-manager:
-    image: voipbin/bin-transcribe-manager@sha256:9f4c2dea01f64a687c95341d022c202826584d3b93b480ec44cf4bdc4c69938f
+    image: voipbin/bin-transcribe-manager@sha256:00f6505e411448a0b22abd4bc9ca9919beb396fb1c9f80eb892f4769b7642982
     logging: *default-logging
     healthcheck:
       test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://127.0.0.1:2112/metrics"]
@@ -1434,7 +1469,7 @@ services:
       - ${GOOGLE_APPLICATION_CREDENTIALS:-./config/dummy-gcp-credentials.json}:/tmp/google_service_account.json:ro
 
   transfer-manager:
-    image: voipbin/bin-transfer-manager@sha256:ab9a042fbed4713c6db954757e5a06a412aa8d95722c5d38768a57be8a7a0e62
+    image: voipbin/bin-transfer-manager@sha256:5aefc0f3ef8466e743642e67bed4c9a14f54f3f6cad03541478c9bed117641b4
     logging: *default-logging
     healthcheck:
       test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://127.0.0.1:2112/metrics"]
@@ -1461,7 +1496,7 @@ services:
     command: ./transfer-manager
 
   tts-manager:
-    image: voipbin/bin-tts-manager@sha256:f6ac3fed699b89ee9d60e00665ba873879d7fef474b29c1b648faea5dd8942fd
+    image: voipbin/bin-tts-manager@sha256:c5a3368807b24e9f211bfce142d733539c9f36606a4b4336564df05f417a0260
     logging: *default-logging
     healthcheck:
       test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://127.0.0.1:2112/metrics"]
@@ -1488,7 +1523,48 @@ services:
       - AWS_ACCESS_KEY=${AWS_ACCESS_KEY:-}
       - AWS_SECRET_KEY=${AWS_SECRET_KEY:-}
       - ELEVENLABS_API_KEY=${ELEVENLABS_API_KEY:-}
+      # tts-manager makes a missing GOOGLE_APPLICATION_CREDENTIALS fatal at
+      # boot (same google.JWTConfigFromJSON check as storage-manager above),
+      # so the credential env line AND the mount are both required for it to
+      # start here. The dummy key satisfies google.JWTConfigFromJSON (which
+      # only unmarshals and checks type == service_account); it does NOT
+      # satisfy actual signing, so real GCP Cloud TTS calls stay non-functional
+      # (falling back to AWS Polly, if configured) until a real service-account
+      # key is supplied.
+      - GOOGLE_APPLICATION_CREDENTIALS=/tmp/google_service_account.json
+      # Batch-TTS media delivery: the Go service writes generated wav files to
+      # the shared-data volume; the tts-manager-http sidecar below serves them
+      # over plain HTTP for Asterisk to fetch. POD_IP is a literal (not a
+      # ${VAR:-default}) because it must always be the sidecar's compose
+      # service name, never operator-overridable. NOTE: unlike POD_IP on
+      # transcribe-manager (defaults to 127.0.0.1, its own loopback) and
+      # pipecat-manager (defaults to its own compose service name), here it
+      # names a *different* service - the tts-manager-http sidecar, not
+      # tts-manager itself. Same env var name, three different meanings; do
+      # not assume "my own address" when touching this elsewhere in the file.
+      - POD_IP=tts-manager-http
+    volumes:
+      - ${GOOGLE_APPLICATION_CREDENTIALS:-./config/dummy-gcp-credentials.json}:/tmp/google_service_account.json:ro
+      - shared-data:/shared-data
     command: ./tts-manager
+
+  # Media http sidecar: serves the batch-TTS wav files tts-manager writes into
+  # /shared-data. Same image and command as the upstream http-server sidecar.
+  # bin-tts-manager: "Do not serve files directly from the Go service."
+  # Accepted risk (same posture as AMI/ARI on 0.0.0.0 in CLAUDE.md's AMI/ARI
+  # note): python -m http.server has no auth and lists directories by
+  # default. No ports: are published here, so it's reachable only from other
+  # containers on the compose network, not the host's external interface -
+  # consistent with this file's existing internal-only trust boundary for
+  # inter-service traffic (e.g. postgres/clickhouse are equally unauthenticated
+  # and unpublished). Do not add a `ports:` mapping to this service.
+  tts-manager-http:
+    image: python:3.9-bookworm
+    logging: *default-logging
+    restart: always
+    volumes:
+      - shared-data:/shared-data
+    command: ["sh", "-c", "python3 -m http.server 80 -d /shared-data"]
 
   # webchat-manager: pure RabbitMQ-RPC + MySQL + Redis service. The user-facing
   # webchat websocket lives in api-manager, not here, so no port is published and
@@ -1496,7 +1572,7 @@ services:
   # Its widgets carry a direct_hash column, so it depends on direct-manager's
   # schema (supplied by the dbscheme pin) rather than on the container.
   webchat-manager:
-    image: voipbin/bin-webchat-manager@sha256:dccaeb9c424a285c83e438f10c73d6d7be9e807e779cf66f3689ef518fb8dbbe
+    image: voipbin/bin-webchat-manager@sha256:c661ad0fbd6509a793778726f1632b23a142e536d88e6fb4e8f59440eabefe76
     logging: *default-logging
     healthcheck:
       test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://127.0.0.1:2112/metrics"]
@@ -1522,7 +1598,7 @@ services:
     command: ./webchat-manager
 
   webhook-manager:
-    image: voipbin/bin-webhook-manager@sha256:d0a33e192799da3d3a9a2644deaba07c55c7f3c55fd559fd40d0eb93588134f4
+    image: voipbin/bin-webhook-manager@sha256:79842a996976518a89ecb7e11d8225c77809a92db9a1fadf551e4fff0ae8fb58
     logging: *default-logging
     healthcheck:
       test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://127.0.0.1:2112/metrics"]
@@ -1655,6 +1731,7 @@ volumes:
   kamailio-logs:
   rtpengine-logs:
   rtpengine-run:
+  shared-data:
 
 # Default network for services that don't use host mode
 networks:

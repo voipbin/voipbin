@@ -475,6 +475,7 @@ teardown() {
     assert_equal "$DERIVED_DOMAIN_NAME_EXTENSION" "registrar.voipbin.test"
     assert_equal "$DERIVED_DOMAIN_NAME_TRUNK" "trunk.voipbin.test"
     assert_equal "$DERIVED_EMAIL_VERIFY_BASE_URL" "https://api.voipbin.test:8443"
+    assert_equal "$DERIVED_API_PUBLIC_BASE_URL" "https://api.voipbin.test:8443"
     assert_equal "$DERIVED_BASE_DOMAIN" "voipbin.test"
     assert_equal "$DERIVED_BASE_HOSTNAME" "voipbin.test"
 }
@@ -489,6 +490,7 @@ teardown() {
     assert_equal "$DERIVED_REGISTRAR_DOMAIN" "registrar.example.com"
     assert_equal "$DERIVED_DOMAIN_NAME_EXTENSION" "registrar.example.com"
     assert_equal "$DERIVED_EMAIL_VERIFY_BASE_URL" "https://api.example.com:8443"
+    assert_equal "$DERIVED_API_PUBLIC_BASE_URL" "https://api.example.com:8443"
     assert_equal "$DERIVED_BASE_DOMAIN" "example.com"
 }
 
@@ -500,6 +502,7 @@ teardown() {
     assert_equal "$DERIVED_API_URL" "https://api.example.com/"
     assert_equal "$DERIVED_WEBSOCKET_URL" "wss://api.example.com/v1.0/ws"
     assert_equal "$DERIVED_EMAIL_VERIFY_BASE_URL" "https://api.example.com"
+    assert_equal "$DERIVED_API_PUBLIC_BASE_URL" "https://api.example.com"
     # Unaffected: SIP/conference URLs never went through :8443 in the first place
     assert_equal "$DERIVED_REGISTRAR_URL" "wss://sip.example.com:5066"
     assert_equal "$DERIVED_CONFERENCE_URL" "wss://conference.example.com"
@@ -511,6 +514,7 @@ teardown() {
     derive_domain_env "example.com"
 
     assert_equal "$DERIVED_API_URL" "https://api.example.com:8443/"
+    assert_equal "$DERIVED_API_PUBLIC_BASE_URL" "https://api.example.com:8443"
 }
 
 @test "derive_domain_env with web_reverse_proxy=false explicitly keeps :8443" {
@@ -519,6 +523,7 @@ teardown() {
     derive_domain_env "example.com" "false"
 
     assert_equal "$DERIVED_API_URL" "https://api.example.com:8443/"
+    assert_equal "$DERIVED_API_PUBLIC_BASE_URL" "https://api.example.com:8443"
 }
 
 # =============================================================================

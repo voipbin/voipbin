@@ -1113,7 +1113,7 @@ are seeded by the DB migration:
 |----------|---------|----------------------|---------------|
 | `number-renew` | daily | yes | Renews phone numbers via number-manager (`/v1/numbers/renew`) |
 | `execution-retention` | daily | yes | Prunes the scheduler's own execution audit rows older than 90 days |
-| `database-backup` | nightly | **no upstream** — `./scripts/start.sh` enables it | `mysqldump` + gzip of `bin_manager`/`asterisk`, written to `backups/scheduled-db/` on the host (retains the newest 7) |
+| `database-backup` | nightly | **no upstream** — `./scripts/start.sh` enables it | `mariadb-dump-only` + gzip of `bin_manager`/`asterisk`, written to `backups/scheduled-db/` on the host (retains the newest 7) |
 
 `database-backup` ships disabled in the upstream seed migration (production
 uses managed Cloud SQL backups, which have no sandbox equivalent).
@@ -1139,9 +1139,9 @@ docker exec voipbin-schedule-mgr /app/bin/schedule-control schedule disable numb
 do not share retention or layout. `voipbin backup` (above) is a full,
 manually-triggered snapshot — MySQL + call recordings + `.env`/certs/
 `versions.lock` + a `manifest.json` — meant for disaster recovery and upgrades.
-The scheduler's `database-backup` is a narrower, automatic, MySQL-only
-`mysqldump` that runs unattended every night as a safety net between manual
-backups. They land in different subdirectories of `backups/` (`<ts>/` for the
+The scheduler's `database-backup` is a narrower, automatic
+`mariadb-dump-only` backup that runs unattended every night as a safety net
+between manual backups. They land in different subdirectories of `backups/` (`<ts>/` for the
 manual CLI backup, `scheduled-db/` for the scheduler) precisely so neither
 one's retention pruning touches the other.
 
@@ -1594,6 +1594,18 @@ sudo ./voipbin ?
 | `KAMAILIO_EXTERNAL_IP` | Auto-generated | Kamailio's dedicated IP (must differ from host) |
 | `RTPENGINE_EXTERNAL_IP` | Auto-generated | RTPEngine's dedicated IP |
 | `BASE_DOMAIN` | `voipbin.test` | Base domain for SIP routing |
+| `API_PUBLIC_BASE_URL` | derived from `BASE_DOMAIN` | Public base URL of the API, used by api-manager to build absolute URLs handed to external clients |
+| `DOMAIN_SHORT_LABEL_ENABLED` | `false` | Short 4-char customer SIP domain labels instead of the full UUID (VOIP-1385). Recommended `true` for long base domains to avoid UDP-MTU SIP registration failures — see note below |
+
+> **`DOMAIN_SHORT_LABEL_ENABLED`:** a full-UUID customer label
+> (`{customer_id}.registrar.<domain>`) on a long `BASE_DOMAIN` can push SIP
+> REGISTER messages over the UDP MTU and cause registration failures;
+> flipping this to `true` shortens new customers' realm to a 4-character
+> label instead. Left `false` here because install/'s own CLI tooling
+> (`scripts/softphone.py`, `scripts/test_call.py`,
+> `scripts/setup_test_customer.sh`) still assumes the long-form uuid realm —
+> updating them to resolve the real short-label realm is tracked as a
+> follow-up, not implemented in this change.
 
 ### SSL Certificates
 
@@ -1608,6 +1620,7 @@ sudo ./voipbin ?
 | Variable | Service |
 |----------|---------|
 | `OPENAI_API_KEY` | OpenAI (AI features) |
+| `GOOGLE_API_KEY` | Google AI (pipecat-script-runner's Gemini access) |
 | `GOOGLE_APPLICATION_CREDENTIALS` | GCP service account JSON path |
 | `TWILIO_SID`, `TWILIO_API_KEY` | Twilio (phone numbers) |
 | `TELNYX_API_KEY` | Telnyx (telephony) |

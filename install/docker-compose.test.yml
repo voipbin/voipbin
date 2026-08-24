@@ -22,6 +22,9 @@ services:
     container_name: !reset null
     ports: !reset []
     profiles: !override ["host-mutating"]
+  web-proxy:
+    container_name: !reset null
+    ports: !reset []
   rtpengine:
     container_name: !reset null
     profiles: !override ["host-mutating"]
@@ -102,6 +105,8 @@ services:
     container_name: !reset null
   pipecat-manager:
     container_name: !reset null
+  pipecat-script-runner:
+    container_name: !reset null
   queue-manager:
     container_name: !reset null
   rag-manager:
@@ -109,6 +114,8 @@ services:
   registrar-manager:
     container_name: !reset null
   route-manager:
+    container_name: !reset null
+  schedule-manager:
     container_name: !reset null
   storage-manager:
     container_name: !reset null
@@ -123,6 +130,8 @@ services:
   transfer-manager:
     container_name: !reset null
   tts-manager:
+    container_name: !reset null
+  tts-manager-http:
     container_name: !reset null
   webchat-manager:
     container_name: !reset null
