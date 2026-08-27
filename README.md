@@ -28,7 +28,7 @@ A complete, production-grade Communications Platform as a Service: <b>Voice</b>,
   <a href="https://admin.voipbin.net"><img src="https://img.shields.io/badge/Live-admin.voipbin.net-success?logo=statuspage&logoColor=white" alt="Live Demo" /></a>
   <a href="https://github.com/voipbin/voipbin/stargazers"><img src="https://img.shields.io/github/stars/voipbin/voipbin?style=social" alt="GitHub Stars" /></a>
   <a href="https://github.com/voipbin/voipbin/blob/main/LICENSE"><img src="https://img.shields.io/github/license/voipbin/voipbin?color=blue" alt="License" /></a>
-  <a href="https://github.com/voipbin/monorepo"><img src="https://img.shields.io/badge/microservices-34-orange" alt="Microservices" /></a>
+  <a href="https://github.com/voipbin/monorepo"><img src="https://img.shields.io/badge/microservices-33-orange" alt="Microservices" /></a>
   <a href="https://github.com/voipbin/monorepo/commits/main"><img src="https://img.shields.io/github/commit-activity/m/voipbin/monorepo?label=commits%2Fmonth&color=brightgreen" alt="Commit Activity" /></a>
   <a href="https://github.com/voipbin/monorepo/commits/main"><img src="https://img.shields.io/github/last-commit/voipbin/monorepo?label=last+commit&color=brightgreen" alt="Last Commit" /></a>
   <a href="https://github.com/voipbin/voipbin/issues"><img src="https://img.shields.io/badge/PRs-welcome-brightgreen.svg" alt="PRs Welcome" /></a>
@@ -67,7 +67,7 @@ A complete, production-grade Communications Platform as a Service: <b>Voice</b>,
 
 **Most CPaaS platforms come with trade-offs**: vendor lock-in, unpredictable pricing, and zero control over your infrastructure. Most opensource alternatives either stop at SIP or require gluing together a dozen unrelated projects.
 
-**VoIPBin is different.** It's the **only production-grade, self-hostable, all-in-one CPaaS**. Voice, messaging, AI, team collaboration, and audio conferencing in a single coherent platform. 34 Go microservices running on Kubernetes, backed by Asterisk, Kamailio, and RTPEngine, fully released as opensource software under MIT.
+**VoIPBin is different.** It's the **only production-grade, self-hostable, all-in-one CPaaS**. Voice, messaging, AI, team collaboration, and audio conferencing in a single coherent platform. 33 Go microservices, self-hostable via Docker Compose, backed by Asterisk, Kamailio, and RTPEngine, fully released as opensource software under MIT.
 
 > _"Own your communications stack."_ Run your own CPaaS with full API control and zero vendor lock-in.
 
@@ -78,7 +78,7 @@ A complete, production-grade Communications Platform as a Service: <b>Voice</b>,
 - 🧩 **Complete platform, not a toolkit**. Voice, SMS, AI, Queues, Campaigns, Team Messaging, Meetings, all integrated
 - 🤖 **AI-native**. Built-in AI assistants, real-time transcription, post-call summarization, intelligent routing
 - 🏢 **Multi-tenant by design**. Full customer isolation, billing, quotas, and access control out of the box
-- ☸️ **Cloud-native and horizontally scalable**. Kubernetes-first, stateless services, message-queue backbone
+- ⚙️ **Stateless microservices architecture**. Message-queue backbone (RabbitMQ), horizontally scalable by design, self-hostable via Docker Compose on bare-metal or cloud
 - 📞 **Carrier-grade voice**. Asterisk + Kamailio + RTPEngine with SRTP, OPUS, PCMU/PCMA, WebRTC
 - 🛡️ **Data sovereignty**. Deploy on your own infrastructure. No data leaves your cloud.
 
@@ -369,7 +369,7 @@ curl -X POST https://api.voipbin.net/v1.0/ais \
 ```
 
 > 📘 **Full API Reference**: [api.voipbin.net/docs](https://api.voipbin.net/docs/). Explore all endpoints interactively.
-> 🐍 **SDK**: [voipbin/voipbin-go](https://github.com/voipbin/voipbin-go) for typed Go bindings.
+> 🛠️ **SDK**: [voipbin/voipbin-go](https://github.com/voipbin/voipbin-go) for typed Go bindings.
 
 ---
 
@@ -396,7 +396,7 @@ Full docs, including backup/restore, version pinning/rollback, and troubleshooti
 
 ## 🏗️ Architecture
 
-VoIPBin is built as a distributed system of **34 Go microservices**, communicating via message queues and REST APIs, all orchestrated on Kubernetes.
+VoIPBin is built as a distributed system of **33 Go microservices**, communicating via message queues (RabbitMQ) and REST APIs, self-hostable via Docker Compose.
 
 ```
 ┌─────────────────────────────────────────────────────────┐
@@ -427,7 +427,7 @@ VoIPBin is built as a distributed system of **34 Go microservices**, communicati
 │   │ Manager  │ │ Manager  │ │ Manager  │ │ Manager  │   │
 │   └──────────┘ └──────────┘ └──────────┘ └──────────┘   │
 │                                                         │
-│         ... and 22 more microservices                   │
+│         ... and 20 more microservices                   │
 └────────────────────────┬────────────────────────────────┘
                          │
 ┌────────────────────────▼────────────────────────────────┐
@@ -445,18 +445,19 @@ VoIPBin is built as a distributed system of **34 Go microservices**, communicati
 | Repository | Description | Stars |
 |---|---|---|
 | **[voipbin/voipbin](https://github.com/voipbin/voipbin)** | 📍 You are here. project overview and documentation | ![Stars](https://img.shields.io/github/stars/voipbin/voipbin?style=flat-square) |
-| **[voipbin/monorepo](https://github.com/voipbin/monorepo)** | Backend microservices (34 Go services) | ![Stars](https://img.shields.io/github/stars/voipbin/monorepo?style=flat-square) |
+| **[voipbin/monorepo](https://github.com/voipbin/monorepo)** | Backend microservices (33 Go services) | ![Stars](https://img.shields.io/github/stars/voipbin/monorepo?style=flat-square) |
 | **[voipbin/voipbin-go](https://github.com/voipbin/voipbin-go)** | Go SDK for VoIPBin API | ![Stars](https://img.shields.io/github/stars/voipbin/voipbin-go?style=flat-square) |
+| **[voipbin/vn](https://github.com/voipbin/vn)** | `vn` CLI, kubectl-style commands for 50+ VoIPBin resources | ![Stars](https://img.shields.io/github/stars/voipbin/vn?style=flat-square) |
 | **[voipbin/mcp](https://github.com/voipbin/mcp)** | MCP (Model Context Protocol) server | ![Stars](https://img.shields.io/github/stars/voipbin/mcp?style=flat-square) |
-| **[voipbin/install](https://github.com/voipbin/install)** *(deprecated — being archived)* | Legacy GCP/Kubernetes deployment CLI and scripts. Superseded by this repo's [`install/`](install/) Docker Compose installer | ![Stars](https://img.shields.io/github/stars/voipbin/install?style=flat-square) |
-| **[voipbin/sandbox](https://github.com/voipbin/sandbox)** *(deprecated — being archived)* | Legacy standalone location of the Docker Compose installer, now developed as [`install/`](install/) in this repo | ![Stars](https://img.shields.io/github/stars/voipbin/sandbox?style=flat-square) |
+| **[voipbin/install](https://github.com/voipbin/install)** *(deprecated, archived)* | Legacy GCP/Kubernetes deployment CLI and scripts. Superseded by this repo's [`install/`](install/) Docker Compose installer | ![Stars](https://img.shields.io/github/stars/voipbin/install?style=flat-square) |
+| **[voipbin/sandbox](https://github.com/voipbin/sandbox)** *(deprecated, archived)* | Legacy standalone location of the Docker Compose installer, now developed as [`install/`](install/) in this repo | ![Stars](https://img.shields.io/github/stars/voipbin/sandbox?style=flat-square) |
 
 ---
 
 ## 📚 Documentation
 
 - 📘 **[API Reference](https://api.voipbin.net/docs/)**. Explore and test all VoIPBin APIs
-- 🏗️ **[Backend Microservices](https://github.com/voipbin/monorepo)**. Source code for all 34 Go services
+- 🏗️ **[Backend Microservices](https://github.com/voipbin/monorepo)**. Source code for all 33 Go services
 - 🏠 **[Self-Install](install/)**. Docker Compose installer (the one documented self-hosting path)
 
 ---
@@ -472,6 +473,7 @@ Most source code lives in the individual repositories linked below. The one exce
 | Documentation & general feedback | **[voipbin/voipbin](https://github.com/voipbin/voipbin/issues)** |
 | Backend microservices (Go) | **[voipbin/monorepo](https://github.com/voipbin/monorepo)** |
 | Go SDK | **[voipbin/voipbin-go](https://github.com/voipbin/voipbin-go)** |
+| CLI (`vn`) | **[voipbin/vn](https://github.com/voipbin/vn)** |
 | MCP server | **[voipbin/mcp](https://github.com/voipbin/mcp)** |
 | Deployment / self-hosting (Docker Compose) | **This repo**, [`install/`](install/) |
 | Deployment / self-hosting (GCP/K8s, deprecated) | **[voipbin/install](https://github.com/voipbin/install)** |
