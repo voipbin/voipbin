@@ -375,7 +375,7 @@ curl -X POST https://api.voipbin.net/v1.0/ais \
 
 ## 🏠 Self-Install Guide
 
-Deploy the full stack on one server with Docker Compose. Lives in this repo's [`install/`](install/) directory.
+Deploy the full stack on one server with Docker Compose. Supports both a local/internal test domain and a real external domain with your own TLS certificate. Lives in this repo's [`install/`](install/) directory.
 
 ```bash
 git clone https://github.com/voipbin/voipbin.git

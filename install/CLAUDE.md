@@ -4,7 +4,24 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Overview
 
-This is the **VoIPBin sandbox** - a Docker Compose development environment for running the complete VoIPBin CPaaS (Communications Platform as a Service) stack locally. It orchestrates 25+ microservices along with supporting infrastructure.
+This is the **VoIPBin sandbox** - a Docker Compose development environment for running the complete VoIPBin CPaaS (Communications Platform as a Service) stack locally. It orchestrates 32 of VoIPBin's 33 backend Go microservices (`bin-sentinel-manager` needs a Kubernetes API and stays out of this Compose-based install) along with the SIP/media stack and supporting infrastructure — around 50 containers total. See README.md's [System Requirements](README.md#system-requirements) for the full breakdown.
+
+## Guardrails (Do Not)
+
+- **Never modify the database directly.** Always use the CLIs/APIs (see
+  "Test Data Setup" below).
+- **Never change `AMI_USERNAME`/`AMI_PASSWORD` away from `asterisk`/
+  `asterisk`** unless the Asterisk images themselves change what account
+  they ship (VOIP-1329) — a random value breaks call control silently
+  while SIP registration keeps working, which is easy to misdiagnose.
+- **Never recreate `asterisk-call`/`-conference`/`-registrar` without also
+  recreating its paired `-proxy` sidecar**, and vice versa — they share a
+  network namespace; recreating one alone orphans the other.
+- **Never hand-edit `docker-compose.yml`/`versions.lock` expecting a `git
+  pull` to update them.** Both are untracked, operator-owned copies of
+  `.dist` files by design (see "docker-compose.yml.dist vs
+  docker-compose.yml" below) — edit the `.dist` file and run the sync
+  scripts, or edit the live copy directly knowing `git pull` won't touch it.
 
 ## Quick Start
 
@@ -16,7 +33,7 @@ This is the **VoIPBin sandbox** - a Docker Compose development environment for r
 The `start.sh` script handles everything:
 - Environment initialization (generates .env and certificates if missing)
 - Database startup and schema migration
-- Starting all 25+ services
+- Starting all services
 - VoIP network interface setup (prompts for sudo password)
 - Creating test account and extensions (opt-in, see [Test Data Setup](#test-data-setup))
 
@@ -119,6 +136,9 @@ docker compose logs -f api-manager
 
 # Start specific services only
 docker compose up -d db redis rabbitmq
+
+# Verify .env.template and init.sh stayed in sync after editing either
+./scripts/check-env-template-sync.sh
 ```
 
 ### Database Management
@@ -569,8 +589,8 @@ The `init` script automatically finds an available IP in your subnet for Kamaili
 ```
 Docker Network:
 └── default (10.100.0.0/16)         # All services
-    ├── api-manager: service-name DNS (no fixed IP — removed Phase 1,
-    │                 see docs/plans/2026-07-05-production-grade-horizontal-scale-design.md)
+    ├── api-manager: service-name DNS (no fixed IP — removed in the
+    │                 Phase 1 horizontal-scale change, 2026-07-05)
     ├── square-admin: service-name DNS (no fixed IP — removed Phase 1)
     ├── square-meet: service-name DNS (no fixed IP — removed Phase 1)
     ├── square-talk: service-name DNS (no fixed IP — removed Phase 1)
@@ -1033,6 +1053,18 @@ db, redis, rabbitmq (infrastructure)
 | `clickhouse_data` | ClickHouse data persistence (timeline-manager) |
 | `asterisk-call-recording` | Call recordings |
 | `shared-data` | Batch-TTS wav files shared between `tts-manager` and its `tts-manager-http` sidecar |
+
+## Running the Test Suite
+
+`install/tests/` has an automated bats + plain-Python-assert suite
+separate from the manual SIP call testing below — see
+`install/tests/README.md` for the bats breakdown. Run it before touching
+`init.sh`, `common.sh`, or `.env.template`:
+
+```bash
+bats tests/*.bats
+python3 tests/test_cli_mode.py   # plain asserts, run directly — not via pytest
+```
 
 ## Testing Extension-to-Extension Calls
 
