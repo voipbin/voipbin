@@ -168,7 +168,7 @@ print(d['dbscheme_monorepo_commit'])
 # VOIP-1334: concurrent-write protection. bump-image-digest.sh's read-JSON ->
 # mutate -> atomic-rename write has no locking on its own - two concurrent
 # bumps of the SAME versions.lock (now realistic since many bin-*-manager
-# services can each independently deploy to bm-nyc-01) can silently lose one
+# services can each independently deploy to production) can silently lose one
 # writer's update. These tests exercise the real acquire_file_lock()
 # primitive against an external holder of the SAME lock file
 # bump-image-digest.sh itself uses - this is a faithful proof that the

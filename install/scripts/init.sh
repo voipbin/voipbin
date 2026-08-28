@@ -793,7 +793,7 @@ main() {
     # to 49 chars by res_config_mysql.c's `char pass[50]` buffer
     # (ast_copy_string() truncates, doesn't error) - the DB then holds a
     # password Asterisk never actually sends. Confirmed by directly reading
-    # Asterisk's addons/res_config_mysql.c and reproducing on bm-nyc-01: the
+    # Asterisk's addons/res_config_mysql.c and reproducing on production: the
     # connection succeeds the moment the DB account's password is set to
     # (or generated no longer than) 49 chars. Use the short generator here.
     DATABASE_ASTERISK_USERNAME="asterisk_rt"

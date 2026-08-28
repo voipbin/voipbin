@@ -228,10 +228,10 @@ fi
 # path) outside this script's knowledge. setup_external_ip() must not attempt
 # `ip addr add` for them — that duplicated the address across two interfaces
 # when a macvlan device already owned it (found running against a real
-# ReliableSite dedicated server, 2026-08-11).
+# dedicated server at a hosting provider, 2026-08-11).
 
 @test "load_external_ips loads EXTERNAL_IP_PINNED from .env" {
-    create_env_file "KAMAILIO_EXTERNAL_IP=199.127.61.42" "RTPENGINE_EXTERNAL_IP=199.127.61.134" "EXTERNAL_IP_PINNED=true"
+    create_env_file "KAMAILIO_EXTERNAL_IP=198.51.100.42" "RTPENGINE_EXTERNAL_IP=198.51.100.134" "EXTERNAL_IP_PINNED=true"
     load_network_functions
     EXTERNAL_IP=""; RTPENGINE_EXTERNAL_IP=""; EXTERNAL_IP_PINNED=""
 
@@ -242,10 +242,10 @@ fi
 
 @test "setup_external_ip skips ip addr add when pinned and IP already present on host" {
     load_network_functions
-    mock_ip_addr_show_only "199.127.61.42"
+    mock_ip_addr_show_only "198.51.100.42"
     EXTERNAL_IP_PINNED="true"
 
-    run setup_external_ip "199.127.61.42" "enp7s0"
+    run setup_external_ip "198.51.100.42" "enp7s0"
 
     [[ "$status" -eq 0 ]]
     [[ "$output" == *"already present on the host"* ]]
@@ -257,7 +257,7 @@ fi
     mock_ip_addr_show_only  # nothing present
     EXTERNAL_IP_PINNED="true"
 
-    run setup_external_ip "199.127.61.42" "enp7s0"
+    run setup_external_ip "198.51.100.42" "enp7s0"
 
     [[ "$status" -eq 0 ]]
     [[ "$output" == *"not found on any interface"* ]]

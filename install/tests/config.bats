@@ -99,7 +99,7 @@ teardown() {
     # Kamailio binds host ports 80/443 on its own dedicated
     # KAMAILIO_EXTERNAL_IP (network_mode: host, e.g. for WSS) — a wildcard
     # 0.0.0.0 publish for Caddy collides with that at the kernel bind layer
-    # even though the IPs differ (confirmed live on bm-nyc-01: "address
+    # even though the IPs differ (confirmed live on production: "address
     # already in use" starting web-proxy). HOST_EXTERNAL_IP is also the
     # address every admin/meet/talk/api DNS record targets.
     assert_file_contains "$PROJECT_ROOT/docker-compose.yml.dist" '"${HOST_EXTERNAL_IP:-0.0.0.0}:80:80"'

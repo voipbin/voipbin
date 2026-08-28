@@ -97,7 +97,7 @@ fi
 # setup_external_ip()'s pinned-IP path greps) to report the given IPs as
 # present; anything else ('ip addr add', etc.) exits nonzero so a test can
 # assert the pinned path never attempted to mutate the interface.
-# Usage: mock_ip_addr_show_only "199.127.61.42" "199.127.61.134"
+# Usage: mock_ip_addr_show_only "198.51.100.42" "198.51.100.134"
 mock_ip_addr_show_only() {
     local ips=("$@")
     local body="if [[ \"\$1\" == \"addr\" && \"\$2\" == \"show\" ]]; then"

@@ -141,7 +141,7 @@ log_info "  $IMAGE_REPO -> $DIGEST (source commit $SOURCE_COMMIT)"
 GENERATED_AT="$(date -u +%Y-%m-%dT%H:%M:%S.%6NZ)"
 
 # Locked (VOIP-1334): two concurrent bumps of the SAME versions.lock (e.g.
-# two services' CI deploys landing on bm-nyc-01 close together) must not
+# two services' CI deploys landing on production close together) must not
 # race - see acquire_file_lock()'s header comment in common.sh for the
 # full rationale and why this is fd-based rather than a generic
 # run-under-lock wrapper.

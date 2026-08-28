@@ -456,17 +456,17 @@ teardown() {
     load_init_functions
 
     parse_args --mode external --domain example.com --tls byo --cert c.pem --key k.pem \
-        --kamailio-ip 199.127.61.42 --rtpengine-ip 199.127.61.134 --yes
+        --kamailio-ip 198.51.100.42 --rtpengine-ip 198.51.100.134 --yes
 
-    assert_equal "$INIT_KAMAILIO_IP" "199.127.61.42"
-    assert_equal "$INIT_RTPENGINE_IP" "199.127.61.134"
+    assert_equal "$INIT_KAMAILIO_IP" "198.51.100.42"
+    assert_equal "$INIT_RTPENGINE_IP" "198.51.100.134"
 }
 
 @test "parse_args rejects --kamailio-ip without --rtpengine-ip" {
     load_init_functions
 
     run parse_args --mode external --domain example.com --tls byo --cert c.pem --key k.pem \
-        --kamailio-ip 199.127.61.42
+        --kamailio-ip 198.51.100.42
 
     [[ "$status" -eq 1 ]]
     [[ "$output" == *'--kamailio-ip and --rtpengine-ip must be given together'* ]]
@@ -476,7 +476,7 @@ teardown() {
     load_init_functions
 
     run parse_args --mode external --domain example.com --tls byo --cert c.pem --key k.pem \
-        --rtpengine-ip 199.127.61.134
+        --rtpengine-ip 198.51.100.134
 
     [[ "$status" -eq 1 ]]
     [[ "$output" == *'--kamailio-ip and --rtpengine-ip must be given together'* ]]
@@ -486,7 +486,7 @@ teardown() {
     load_init_functions
 
     run parse_args --mode external --domain example.com --tls byo --cert c.pem --key k.pem \
-        --kamailio-ip not-an-ip --rtpengine-ip 199.127.61.134
+        --kamailio-ip not-an-ip --rtpengine-ip 198.51.100.134
 
     [[ "$status" -eq 1 ]]
     [[ "$output" == *'invalid --kamailio-ip: not-an-ip'* ]]
@@ -502,7 +502,7 @@ teardown() {
     # so the fix must accept it — not merely fail cleanly. Not run under
     # `run` (a subshell): INIT_KAMAILIO_IP must persist to this scope.
     parse_args --mode external --domain example.com --tls byo --cert c.pem --key k.pem \
-        --kamailio-ip 199.099.008.042 --rtpengine-ip 199.127.61.134 --yes
+        --kamailio-ip 199.099.008.042 --rtpengine-ip 198.51.100.134 --yes
 
     assert_equal "$INIT_KAMAILIO_IP" "199.099.008.042"
 }
@@ -514,7 +514,7 @@ teardown() {
     # inspect $output for the crash message — deliberately a separate test
     # since `run`'s subshell would otherwise swallow INIT_KAMAILIO_IP above.
     run parse_args --mode external --domain example.com --tls byo --cert c.pem --key k.pem \
-        --kamailio-ip 199.099.008.042 --rtpengine-ip 199.127.61.134 --yes
+        --kamailio-ip 199.099.008.042 --rtpengine-ip 198.51.100.134 --yes
 
     [[ "$status" -eq 0 ]]
     [[ "$output" != *'value too great for base'* ]]
@@ -525,7 +525,7 @@ teardown() {
 
     # 010 = 8 in octal but must validate as the decimal value 10 (<=255).
     parse_args --mode external --domain example.com --tls byo --cert c.pem --key k.pem \
-        --kamailio-ip 010.010.010.010 --rtpengine-ip 199.127.61.134 --yes
+        --kamailio-ip 010.010.010.010 --rtpengine-ip 198.51.100.134 --yes
 
     assert_equal "$INIT_KAMAILIO_IP" "010.010.010.010"
 }
@@ -534,7 +534,7 @@ teardown() {
     load_init_functions
 
     run parse_args --mode external --domain example.com --tls byo --cert c.pem --key k.pem \
-        --kamailio-ip 199.256.1.1 --rtpengine-ip 199.127.61.134
+        --kamailio-ip 199.256.1.1 --rtpengine-ip 198.51.100.134
 
     [[ "$status" -eq 1 ]]
     [[ "$output" == *'invalid --kamailio-ip: 199.256.1.1'* ]]
@@ -544,7 +544,7 @@ teardown() {
     load_init_functions
 
     run parse_args --mode external --domain example.com --tls byo --cert c.pem --key k.pem \
-        --kamailio-ip 199.127.61.42 --rtpengine-ip 199.127.61.42
+        --kamailio-ip 198.51.100.42 --rtpengine-ip 198.51.100.42
 
     [[ "$status" -eq 1 ]]
     [[ "$output" == *'must be different addresses'* ]]
@@ -830,7 +830,7 @@ teardown() {
 @test "check_existing_env_compat refuses --force-reinit on a pinned install without re-passing --kamailio-ip" {
     load_init_functions
     create_env_file "DOMAIN_MODE=external" "BASE_DOMAIN=example.com" "EXTERNAL_IP_PINNED=true" \
-        "KAMAILIO_EXTERNAL_IP=199.127.61.42" "RTPENGINE_EXTERNAL_IP=199.127.61.134"
+        "KAMAILIO_EXTERNAL_IP=198.51.100.42" "RTPENGINE_EXTERNAL_IP=198.51.100.134"
     mock_command "docker" ""
     RESOLV_BACKUP="$TEST_TEMP_DIR/no-such-backup"
     parse_args --mode external --domain example.com --tls byo --cert c.pem --key k.pem --force-reinit --yes
@@ -846,7 +846,7 @@ teardown() {
 @test "check_existing_env_compat refuses --force-reinit on EXTERNAL_IP_PINNED=TRUE (uppercase), not just lowercase" {
     load_init_functions
     create_env_file "DOMAIN_MODE=external" "BASE_DOMAIN=example.com" "EXTERNAL_IP_PINNED=TRUE" \
-        "KAMAILIO_EXTERNAL_IP=199.127.61.42" "RTPENGINE_EXTERNAL_IP=199.127.61.134"
+        "KAMAILIO_EXTERNAL_IP=198.51.100.42" "RTPENGINE_EXTERNAL_IP=198.51.100.134"
     mock_command "docker" ""
     RESOLV_BACKUP="$TEST_TEMP_DIR/no-such-backup"
     parse_args --mode external --domain example.com --tls byo --cert c.pem --key k.pem --force-reinit --yes
@@ -860,11 +860,11 @@ teardown() {
 @test "check_existing_env_compat allows --force-reinit on a pinned install when IPs are re-passed" {
     load_init_functions
     create_env_file "DOMAIN_MODE=external" "BASE_DOMAIN=example.com" "EXTERNAL_IP_PINNED=true" \
-        "KAMAILIO_EXTERNAL_IP=199.127.61.42" "RTPENGINE_EXTERNAL_IP=199.127.61.134"
+        "KAMAILIO_EXTERNAL_IP=198.51.100.42" "RTPENGINE_EXTERNAL_IP=198.51.100.134"
     mock_command "docker" ""
     RESOLV_BACKUP="$TEST_TEMP_DIR/no-such-backup"
     parse_args --mode external --domain example.com --tls byo --cert c.pem --key k.pem \
-        --kamailio-ip 199.127.61.42 --rtpengine-ip 199.127.61.134 --force-reinit --yes
+        --kamailio-ip 198.51.100.42 --rtpengine-ip 198.51.100.134 --force-reinit --yes
 
     run check_existing_env_compat
 
