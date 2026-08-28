@@ -597,9 +597,10 @@ by the time you run it (order matters: wire the network first, then
 `setup-host.sh`/`start.sh`).
 
 **What "wired" means is provider-specific** — this project cannot automate
-it in general. What worked against a ReliableSite dedicated server (their
-model: each additional IP has its own gateway, and must be bound to a
-specific MAC address via their control panel before traffic is delivered):
+it in general. What worked against a typical dedicated-server provider
+(model: each additional IP has its own gateway, and must be bound to a
+specific MAC address via the provider's control panel before traffic is
+delivered):
 
 1. Create a macvlan sub-interface per pinned IP, off your primary NIC:
    `ip link add kamailio-ext link <primary-nic> type macvlan mode bridge`.
@@ -1143,12 +1144,7 @@ are seeded by the DB migration:
 | `execution-retention` | daily | yes | Prunes the scheduler's own execution audit rows older than 90 days |
 | `database-backup` | nightly | **no upstream** — `./scripts/start.sh` enables it | `mariadb-dump-only` + gzip of `bin_manager`/`asterisk`, written to `backups/scheduled-db/` on the host (retains the newest 7) |
 
-`database-backup` ships disabled in the upstream seed migration. Until
-VOIP-1325's cutover to self-hosted bare metal (ReliableSite, completed
-2026-08-20), production relied on managed GCP Cloud SQL backups; after
-VOIP-1386's follow-up migration to MariaDB (2026-08-23), production now
-uses this exact `database-backup` schedule — there is no separate
-mechanism to keep in sync anymore.
+`database-backup` ships disabled in the upstream seed migration.
 `start.sh` enables it on every run (idempotent — a no-op once already
 enabled), so a normal `./scripts/start.sh` install ends up with all three
 enabled. If you skip `start.sh` (e.g. `docker compose up -d` directly) or the
@@ -1485,11 +1481,9 @@ All managers connect to MySQL, Redis, and RabbitMQ. Key services:
   `tts-manager` needs `GOOGLE_APPLICATION_CREDENTIALS` for GCP Cloud TTS,
   but has a working fallback without it: AWS Polly.
 - **AMI/ARI credentials are fixed, not randomized** (`asterisk`/`asterisk`)
-  because they're baked into the Asterisk images. ARI (port 8088) listens
-  on `0.0.0.0` inside the images and is reachable from any container on
-  the internal network — a property of the images, not this installer; do
-  not change these two values, it will only break authentication without
-  closing the exposure.
+  because they're baked into the Asterisk images — do not change these two
+  values, it will only break authentication, not improve security. See
+  `install/CLAUDE.md` for the full rationale and network exposure notes.
 - **`asterisk-call`/`-conference`/`-registrar` and their `-proxy` sidecars
   must be restarted together.** Recreating one without the other leaves
   the AMI/ARI bridge orphaned; `voipbin> restart <service>` already
