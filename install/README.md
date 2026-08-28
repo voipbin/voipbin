@@ -14,7 +14,7 @@
    ██████████████████████   
 ```
 
-**Your Private AI-Powered CPaaS Laboratory** — A complete Docker Compose environment for building AI voice agents and communications applications. Deploy 25+ microservices with built-in AI capabilities: real-time speech-to-text, text-to-speech, LLM-powered conversations, and programmable voice workflows.
+**Your Private AI-Powered CPaaS Laboratory** — A complete Docker Compose environment for building AI voice agents and communications applications. Deploy the full VoIPBin stack with built-in AI capabilities: real-time speech-to-text, text-to-speech, LLM-powered conversations, and programmable voice workflows.
 
 ### Why VoIPBin Install?
 
@@ -36,6 +36,7 @@
   - [Hosting-provider routed IPs](#hosting-provider-routed-ips)
 - [Web Applications](#web-applications)
 - [Technical Architecture](#technical-architecture)
+- [System Requirements](#system-requirements)
 - [Prerequisites](#prerequisites)
 - [Networking & DNS](#networking--dns)
 - [SSL Certificate Trust](#ssl-certificate-trust)
@@ -43,7 +44,9 @@
 - [AI Voice Agents](#ai-voice-agents)
 - [Developer's Playground](#developers-playground)
 - [Service Reference](#service-reference)
+- [Known Limitations](#known-limitations)
 - [Troubleshooting](#troubleshooting)
+- [Environment Variables Reference](#environment-variables-reference)
 
 ---
 
@@ -63,7 +66,7 @@ step that actually needs root (`setup-host.sh`):
 ```bash
 ./scripts/init.sh --yes          # 1. Generate .env, certificates, docker-compose.yml
 sudo ./scripts/setup-host.sh     # 2. The single sudo command (host mutations)
-./scripts/start.sh               # 3. Start all 25+ services
+./scripts/start.sh               # 3. Start all services
 ./scripts/check-install.sh       # 4. Self-verify the install
 ```
 
@@ -153,7 +156,7 @@ The `start` command (either path) handles **everything** after initialization:
 4. Runs database migrations
 5. Configures DNS resolution for `*.voipbin.test`
 6. Sets up VoIP network interfaces
-7. Starts all 25+ microservices
+7. Starts all services
 8. Creates test account and extensions (opt-in, off by default — see below)
 
 ### What Gets Created
@@ -594,9 +597,10 @@ by the time you run it (order matters: wire the network first, then
 `setup-host.sh`/`start.sh`).
 
 **What "wired" means is provider-specific** — this project cannot automate
-it in general. What worked against a ReliableSite dedicated server (their
-model: each additional IP has its own gateway, and must be bound to a
-specific MAC address via their control panel before traffic is delivered):
+it in general. What worked against a typical dedicated-server provider
+(model: each additional IP has its own gateway, and must be bound to a
+specific MAC address via the provider's control panel before traffic is
+delivered):
 
 1. Create a macvlan sub-interface per pinned IP, off your primary NIC:
    `ip link add kamailio-ext link <primary-nic> type macvlan mode bridge`.
@@ -692,7 +696,7 @@ VoIPBin Install orchestrates a microservices architecture with four core layers:
 | **AI Engine** | Pipecat, AI Manager, Transcribe, TTS | Voice AI agents, real-time STT/TTS, LLM integration |
 | **SIP Edge** | Kamailio, RTPEngine | SIP signaling proxy, RTP media relay, NAT traversal |
 | **Media Servers** | Asterisk (Call, Registrar, Conference) | Call handling, SIP registration, conferencing |
-| **API & Managers** | 20+ backend services | REST API, call routing, billing, workflows |
+| **API & Managers** | 32 backend Go services | REST API, call routing, billing, workflows |
 
 ### Technology Stack
 
@@ -731,12 +735,35 @@ VoIPBin Install orchestrates a microservices architecture with four core layers:
                     │  ┌────▼─────────────▼────────────────┐  │
                     │  │     Docker Network (10.100.0.0/16)│  │
                     │  │  ┌─────────┐ ┌─────────┐ ┌──────┐ │  │
-                    │  │  │Asterisk │ │Asterisk │ │ 20+  │ │  │
+                    │  │  │Asterisk │ │Asterisk │ │  32  │ │  │
                     │  │  │  Call   │ │Registrar│ │Mgrs  │ │  │
                     │  │  └─────────┘ └─────────┘ └──────┘ │  │
                     │  └───────────────────────────────────┘  │
                     └─────────────────────────────────────────┘
 ```
+
+---
+
+## System Requirements
+
+- **OS**: Linux (Ubuntu/Debian tested) or macOS.
+- **Docker Engine + Docker Compose v2** (2.24.4+ recommended).
+- **Disk space**: `doctor.sh` enforces a hard minimum of 3 GiB free and warns
+  under 15 GiB (configurable via `DOCTOR_DISK_MIN_GB`/`DOCTOR_DISK_WARN_GB`).
+  Budget more over time for call recordings and DB growth.
+- **CPU/RAM**: not automatically checked yet (tracked as a follow-up). The
+  full stack is Docker Compose across ~50 containers depending on mode: 32
+  of VoIPBin's 33 backend Go microservices (`bin-sentinel-manager` needs a
+  Kubernetes API and isn't part of this Compose-based install), the
+  SIP/media stack (Kamailio, RTPEngine, 3x Asterisk + their AMI/ARI proxy
+  sidecars), supporting infrastructure (MySQL, Redis, RabbitMQ, PostgreSQL,
+  ClickHouse, CoreDNS), and 3 frontend apps. A laptop-class multi-core
+  machine with a few GB of RAM headroom works for development; a
+  single-vCPU/1GB VM will not keep up.
+- **Networking (external mode only)**: see the External Mode
+  [Prerequisites](#prerequisites) section — a directly-routable host with
+  distinct IPs for the host and Kamailio (RTPEngine needs one too; see the
+  network diagram earlier in this doc).
 
 ---
 
@@ -987,7 +1014,7 @@ sudo ./voipbin logs -f api-manager
 |---------|-------------|
 | `start [service]` | Start all services or a specific service |
 | `stop [service] [--all]` | Stop services (keeps infrastructure by default) |
-| `restart [service]` | Restart all or specific service. Restarting `asterisk-call` / `asterisk-conference` / `asterisk-registrar` automatically restarts its paired `-proxy` sidecar too (they share a network namespace; restarting the Asterisk container alone would leave the sidecar orphaned — see docs/plans for VOIP-1237). |
+| `restart [service]` | Restart all or specific service. Restarting `asterisk-call` / `asterisk-conference` / `asterisk-registrar` automatically restarts its paired `-proxy` sidecar too (they share a network namespace; restarting the Asterisk container alone would leave the sidecar orphaned — see the VOIP-1237 orphan-hazard comment on that service in `docker-compose.yml.dist`). |
 | `status` / `ps` | Display service status with endpoints |
 | `logs [-f] <service>` | View service logs (`-f` for follow mode) |
 
@@ -1065,6 +1092,7 @@ These commands use manager container CLIs for direct resource management:
 | `conference` | Conference management |
 | `conversation` | Conversation accounts and messages |
 | `talk` | Talk chat and messages |
+| `chat` | Chat room management (list/create/get/delete/participants) |
 
 **Automation:**
 
@@ -1094,6 +1122,7 @@ These commands use manager container CLIs for direct resource management:
 | Command | Description |
 |---------|-------------|
 | `init` | Initialize sandbox (generate .env, certs) |
+| `version [--json]` | Show pinned image versions (table or JSON) |
 | `update [images/scripts/all]` | Update Docker images or scripts (pinned repos: `update all` = full safe upgrade: backup, git pull, migrate, recreate, verify) |
 | `update --check` | Dry-run to preview updates |
 | `backup` | Full data backup (MySQL + recordings + config) into `backups/<ts>/` |
@@ -1115,8 +1144,7 @@ are seeded by the DB migration:
 | `execution-retention` | daily | yes | Prunes the scheduler's own execution audit rows older than 90 days |
 | `database-backup` | nightly | **no upstream** — `./scripts/start.sh` enables it | `mariadb-dump-only` + gzip of `bin_manager`/`asterisk`, written to `backups/scheduled-db/` on the host (retains the newest 7) |
 
-`database-backup` ships disabled in the upstream seed migration (production
-uses managed Cloud SQL backups, which have no sandbox equivalent).
+`database-backup` ships disabled in the upstream seed migration.
 `start.sh` enables it on every run (idempotent — a no-op once already
 enabled), so a normal `./scripts/start.sh` install ends up with all three
 enabled. If you skip `start.sh` (e.g. `docker compose up -d` directly) or the
@@ -1378,6 +1406,10 @@ Admin/Talk/Meet credentials below require opt-in test-account seeding
 
 ## Service Reference
 
+Full list of all 33 backend Go services: see the [main repo's Repositories
+table](https://github.com/voipbin/voipbin#-repositories) or run
+`docker compose config --services`.
+
 ### Infrastructure Services
 
 | Service | Container | Ports | Purpose |
@@ -1386,6 +1418,8 @@ Admin/Talk/Meet credentials below require opt-in test-account seeding
 | `redis` | voipbin-redis | 6379 | Cache and sessions |
 | `rabbitmq` | (no container_name — use `docker compose ps rabbitmq`) | 5672, 15672 | Message broker |
 | `coredns` | voipbin-dns | 53 | DNS server for *.voipbin.test |
+| `postgres` | voipbin-postgres | - (not published) | PostgreSQL + pgvector, rag-manager's vector store |
+| `clickhouse` | voipbin-clickhouse | - (not published) | ClickHouse, timeline-manager's analytics backend |
 
 ### SIP/VoIP Stack
 
@@ -1406,12 +1440,17 @@ All managers connect to MySQL, Redis, and RabbitMQ. Key services:
 | `api-manager` | voipbin-api-mgr | REST API gateway (port 8443) |
 | `call-manager` | voipbin-call-mgr | Call routing and control |
 | `customer-manager` | voipbin-customer-mgr | Customer and extension management |
+| `contact-manager` | (no container_name — use `docker compose ps contact-manager`) | Contact management |
+| `direct-manager` | (no container_name — use `docker compose ps direct-manager`) | Direct (per-entity addressable endpoint) records; agent-manager depends on it during agent creation |
 | `flow-manager` | voipbin-flow-mgr | Workflow execution engine |
 | `billing-manager` | voipbin-billing-mgr | Usage tracking and billing |
 | `registrar-manager` | voipbin-registrar-mgr | SIP registration management |
 | `ai-manager` | (no container_name — use `docker compose ps ai-manager`) | AI/chatbot features |
+| `rag-manager` | (no container_name — use `docker compose ps rag-manager`) | RAG knowledge base, backed by `postgres` — see [Known Limitations](#known-limitations) for the placeholder-GCP-credentials caveat |
+| `timeline-manager` | (no container_name — use `docker compose ps timeline-manager`) | Call timeline analytics, backed by `clickhouse` |
 | `transcribe-manager` | (no container_name — use `docker compose ps transcribe-manager`) | Speech-to-text |
 | `talk-manager` | voipbin-talk-mgr | Talk app backend |
+| `webchat-manager` | (no container_name — use `docker compose ps webchat-manager`) | Webchat widgets and sessions (the user-facing websocket lives in api-manager) |
 | `schedule-manager` | voipbin-schedule-mgr | Platform internal cron (number renewal, execution retention, DB backup) — see [Scheduled Jobs](#scheduled-jobs-voip-1281) |
 
 ### Frontend Services
@@ -1421,6 +1460,35 @@ All managers connect to MySQL, Redis, and RabbitMQ. Key services:
 | `square-admin` | (no container_name — use `docker compose ps square-admin`) | 3003 | Admin dashboard |
 | `square-meet` | (no container_name — use `docker compose ps square-meet`) | 3004 | Video conferencing |
 | `square-talk` | voipbin-talk | 3005 | Voice client |
+
+---
+
+## Known Limitations
+
+- **Single-public-IP NAT environments are not supported this cycle.**
+  Kamailio runs with host networking and binds its dedicated address
+  directly, so there is no port mapping to remap behind a NAT. See the
+  External Mode [Prerequisites](#prerequisites) section for supported
+  network topologies. Tracked as a follow-up.
+- **`bin-sentinel-manager` is not part of this Compose stack.** It requires
+  a Kubernetes API and stays out of scope for a pure Docker Compose
+  install; see [System Requirements](#system-requirements).
+- **`rag-manager` and `tts-manager` ship with placeholder GCP
+  credentials.** Both start fine, but need real GCP credentials for real
+  use: `rag-manager`'s RAG ingestion/query needs a real GCP project and
+  service-account key — replace `GCP_PROJECT_ID`/`GCP_REGION`/
+  `GCP_BUCKET_NAME_MEDIA`/`GOOGLE_APPLICATION_CREDENTIALS` in `.env`.
+  `tts-manager` needs `GOOGLE_APPLICATION_CREDENTIALS` for GCP Cloud TTS,
+  but has a working fallback without it: AWS Polly.
+- **AMI/ARI credentials are fixed, not randomized** (`asterisk`/`asterisk`)
+  because they're baked into the Asterisk images — do not change these two
+  values, it will only break authentication, not improve security. See
+  `install/CLAUDE.md` for the full rationale and network exposure notes.
+- **`asterisk-call`/`-conference`/`-registrar` and their `-proxy` sidecars
+  must be restarted together.** Recreating one without the other leaves
+  the AMI/ARI bridge orphaned; `voipbin> restart <service>` already
+  handles this pairing for you — avoid `docker compose restart` directly
+  on just one side.
 
 ---
 
@@ -1581,6 +1649,9 @@ sudo ./voipbin help <command>
 # View all available commands
 sudo ./voipbin ?
 ```
+
+Still stuck? [Join the Discord](https://discord.com/invite/waztvb63Yx) or
+email [support@voipbin.net](mailto:support@voipbin.net).
 
 ---
 

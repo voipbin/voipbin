@@ -700,7 +700,7 @@ udp   UNCONN 0      0      0.0.0.0:53         0.0.0.0:*  users:(("dnsmasq",pid=5
 }
 
 @test "external + WEB_REVERSE_PROXY=true: a listener on KAMAILIO_EXTERNAL_IP:443 is not a conflict, ports passes (review round 1 of NOJIRA-Fix-web-proxy-port-bind-conflict)" {
-    # This is the exact bm-nyc-01 scenario that caused the live outage this
+    # This is the exact production scenario that caused the live outage this
     # fix addresses: Kamailio (network_mode: host) binds its own dedicated
     # KAMAILIO_EXTERNAL_IP:443 for WSS. After binding web-proxy to
     # HOST_EXTERNAL_IP instead of a 0.0.0.0 wildcard, that is a genuinely

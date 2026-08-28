@@ -125,7 +125,7 @@ services:
       - POSTGRES_USER=voipbin
       - POSTGRES_PASSWORD=${POSTGRES_PASSWORD}
       # Renamed from `rag` to `bin_manager` (2026-08-17) to match the name
-      # bm-nyc-01's infra-postgresql was renamed to - see
+      # production's infra-postgresql was renamed to - see
       # monorepo-etc's infra-postgresql/README.md "rag -> bin_manager
       # rename" for the rationale. Only affects a *fresh* postgres init;
       # an existing local `postgres_data` volume with a `rag` database
@@ -234,7 +234,7 @@ services:
       # host, e.g. for WSS). A wildcard 0.0.0.0 publish for Caddy collides
       # with that at the kernel bind layer even though the two IPs are
       # different (a wildcard bind conflicts with any existing bind on the
-      # same port, specific-address or not) — confirmed live on bm-nyc-01.
+      # same port, specific-address or not) — confirmed live on production.
       # HOST_EXTERNAL_IP is also the address every admin/meet/talk/api DNS
       # record already targets, so this is the semantically correct bind
       # regardless of the conflict.

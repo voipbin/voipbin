@@ -967,7 +967,7 @@ print(digest)
 # snapshot - a silent lost update, not a crash. This became a real risk
 # once CircleCI started allowing many bin-*-manager services to each
 # independently SSH-deploy (and thus bump-image-digest.sh) to the same
-# bm-nyc-01 host, where a monorepo commit touching several services'
+# production host, where a monorepo commit touching several services'
 # directories can trigger several approvals/deploys close together.
 #
 # fd-based (not a "run this command under lock" wrapper) so the critical

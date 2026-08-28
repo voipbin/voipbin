@@ -575,22 +575,22 @@ teardown() {
     create_env_file \
         "DOMAIN_MODE=external" \
         "BASE_DOMAIN=example.com" \
-        "HOST_EXTERNAL_IP=104.243.38.39" \
-        "KAMAILIO_EXTERNAL_IP=199.127.61.42" \
-        "RTPENGINE_EXTERNAL_IP=199.127.61.134" \
+        "HOST_EXTERNAL_IP=203.0.113.10" \
+        "KAMAILIO_EXTERNAL_IP=198.51.100.42" \
+        "RTPENGINE_EXTERNAL_IP=198.51.100.134" \
         "EXTERNAL_IP_PINNED=true" \
         "API_URL=https://api.example.com:8443/" \
         "WEBSOCKET_URL=wss://api.example.com:8443/v1.0/ws"
     load_common
 
-    run update_env_ips "104.243.38.99"
+    run update_env_ips "203.0.113.20"
 
     [[ "$status" -eq 0 ]]
     [[ "$output" == *'unchanged (EXTERNAL_IP_PINNED=true)'* ]]
-    assert_file_contains "$PROJECT_DIR/.env" "HOST_EXTERNAL_IP=104.243.38.99"
+    assert_file_contains "$PROJECT_DIR/.env" "HOST_EXTERNAL_IP=203.0.113.20"
     # provider-registered IPs must survive the host+8 offset recompute
-    assert_file_contains "$PROJECT_DIR/.env" "KAMAILIO_EXTERNAL_IP=199.127.61.42"
-    assert_file_contains "$PROJECT_DIR/.env" "RTPENGINE_EXTERNAL_IP=199.127.61.134"
+    assert_file_contains "$PROJECT_DIR/.env" "KAMAILIO_EXTERNAL_IP=198.51.100.42"
+    assert_file_contains "$PROJECT_DIR/.env" "RTPENGINE_EXTERNAL_IP=198.51.100.134"
 }
 
 @test "update_env_ips returns the pinned Kamailio IP as its actual value (not empty)" {
@@ -601,16 +601,16 @@ teardown() {
     create_env_file \
         "DOMAIN_MODE=internal" \
         "BASE_DOMAIN=voipbin.test" \
-        "HOST_EXTERNAL_IP=104.243.38.39" \
-        "KAMAILIO_EXTERNAL_IP=199.127.61.42" \
-        "RTPENGINE_EXTERNAL_IP=199.127.61.134" \
+        "HOST_EXTERNAL_IP=203.0.113.10" \
+        "KAMAILIO_EXTERNAL_IP=198.51.100.42" \
+        "RTPENGINE_EXTERNAL_IP=198.51.100.134" \
         "EXTERNAL_IP_PINNED=true"
     load_common
 
-    result="$(update_env_ips "104.243.38.99")"
+    result="$(update_env_ips "203.0.113.20")"
     last_line="$(echo "$result" | tail -1)"
 
-    [[ "$last_line" == "199.127.61.42" ]]
+    [[ "$last_line" == "198.51.100.42" ]]
 }
 
 @test "update_env_ips's captured return value is the bare IP with no log noise (real caller pattern)" {
@@ -628,16 +628,16 @@ teardown() {
     create_env_file \
         "DOMAIN_MODE=internal" \
         "BASE_DOMAIN=voipbin.test" \
-        "HOST_EXTERNAL_IP=104.243.38.39" \
-        "KAMAILIO_EXTERNAL_IP=199.127.61.42" \
-        "RTPENGINE_EXTERNAL_IP=199.127.61.134" \
+        "HOST_EXTERNAL_IP=203.0.113.10" \
+        "KAMAILIO_EXTERNAL_IP=198.51.100.42" \
+        "RTPENGINE_EXTERNAL_IP=198.51.100.134" \
         "EXTERNAL_IP_PINNED=true"
     load_common
 
     local new_kamailio_ip
-    new_kamailio_ip=$(update_env_ips "104.243.38.99")
+    new_kamailio_ip=$(update_env_ips "203.0.113.20")
 
-    assert_equal "$new_kamailio_ip" "199.127.61.42"
+    assert_equal "$new_kamailio_ip" "198.51.100.42"
 }
 
 @test "update_env_ips treats EXTERNAL_IP_PINNED=TRUE (uppercase) as pinned, not as unset/false" {
@@ -648,16 +648,16 @@ teardown() {
     create_env_file \
         "DOMAIN_MODE=external" \
         "BASE_DOMAIN=example.com" \
-        "HOST_EXTERNAL_IP=104.243.38.39" \
-        "KAMAILIO_EXTERNAL_IP=199.127.61.42" \
-        "RTPENGINE_EXTERNAL_IP=199.127.61.134" \
+        "HOST_EXTERNAL_IP=203.0.113.10" \
+        "KAMAILIO_EXTERNAL_IP=198.51.100.42" \
+        "RTPENGINE_EXTERNAL_IP=198.51.100.134" \
         "EXTERNAL_IP_PINNED=TRUE"
     load_common
 
-    run update_env_ips "104.243.38.99"
+    run update_env_ips "203.0.113.20"
 
     [[ "$output" == *'unchanged (EXTERNAL_IP_PINNED=true)'* ]]
-    assert_file_contains "$PROJECT_DIR/.env" "KAMAILIO_EXTERNAL_IP=199.127.61.42"
+    assert_file_contains "$PROJECT_DIR/.env" "KAMAILIO_EXTERNAL_IP=198.51.100.42"
 }
 
 @test "update_env_ips legacy .env (no mode, no BASE_DOMAIN) falls back to voipbin.test" {

@@ -4,6 +4,39 @@ Team-shared engineering lessons for the sandbox repository. Add an entry
 after any user correction, postmortem, or discovered failure mode: the
 failure mode, the detection signal, and a prevention rule.
 
+## 2026-08-28 Real production IPs/hostnames leaked into test fixtures and code comments (public repo)
+
+- **Failure mode:** real production infrastructure details ended up
+  committed to this public repo and sat there for ~3 weeks unnoticed:
+  the actual `bm-nyc-01` host IP and the live Kamailio/RTPEngine external
+  IPs were hardcoded as `.bats` test fixtures (`tests/common.bats`,
+  `tests/init.bats`, `tests/setup-voip-network.bats`,
+  `tests/test_helper.bash`), and the internal hostname `bm-nyc-01` plus a
+  real hosting-provider name showed up in code/test comments
+  (`docker-compose.yml.dist`, several `scripts/*.sh`, several
+  `tests/*.bats`) as "confirmed live on <real host>" citations. It reads
+  naturally while writing — using the actual value you just debugged
+  against is the path of least resistance — which is exactly why it
+  wasn't caught by looking harder.
+- **Detection signal:** none, automated or otherwise. GitGuardian is wired
+  into this repo (PR checks show "GitGuardian Security Checks: pass") but
+  its default detectors target credential-shaped secrets (API keys,
+  tokens, private keys) — a bare IP address or a hosting-provider name in
+  a comment doesn't match any of those patterns, so it passes clean. This
+  was only found by an explicit, manual "does this leak anything
+  sensitive" audit prompted by a direct question, not by any tooling.
+- **Prevention rule:** when writing example/test values that need to
+  *look* like a real IP, host, or provider, use IANA/RFC-reserved
+  documentation ranges (RFC 5737: `192.0.2.0/24`, `198.51.100.0/24`,
+  `203.0.113.0/24`) instead of a value copied from an actual debugging
+  session or production `.env`. When citing "confirmed on production" as
+  evidence a fix was verified live, say "confirmed on production" —
+  don't name the specific host. Decided 2026-08-28: no automated
+  scanner added for this repo (GitGuardian custom detectors would catch
+  it, but the team chose manual vigilance over configuring one) — so this
+  entry is the only defense. Re-read it before writing anything that
+  cites a real host, IP, or provider name in this repo.
+
 ## 2026-07-31 mkcert CAROOT under sudo installs the wrong CA (VOIP-1275)
 
 - **Failure mode:** running `mkcert -install` under `sudo` resolves

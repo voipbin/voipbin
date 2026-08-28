@@ -111,7 +111,7 @@ main() {
     echo ""
 
     # Locked (VOIP-1334): two concurrent syncs of the SAME compose file (e.g.
-    # two services' CI deploys landing on bm-nyc-01 close together, each
+    # two services' CI deploys landing on production close together, each
     # calling bump-image-digest.sh -> this script) must not race - see
     # acquire_file_lock()'s header comment in common.sh for the full
     # rationale. Scoped to COMPOSE_FILE, the only file this script writes
