@@ -1129,9 +1129,9 @@ services:
       pipecat-manager:
         condition: service_healthy
     # Same env set the GKE pipecat-script-runner container received - the
-    # Python side calls the STT/LLM/TTS APIs directly. GOOGLE_API_KEY is
-    # intentionally only read here: the Go side (pipecat-manager above) never
-    # consumes it.
+    # Python side calls the STT/LLM/TTS APIs directly. GOOGLE_API_KEY and
+    # OPENROUTER_API_KEY are intentionally only read here: the Go side
+    # (pipecat-manager above) never consumes them.
     environment:
       - CARTESIA_API_KEY=${CARTESIA_API_KEY:-}
       - ELEVENLABS_API_KEY=${ELEVENLABS_API_KEY:-}
@@ -1139,6 +1139,7 @@ services:
       - DEEPGRAM_API_KEY=${DEEPGRAM_API_KEY:-}
       - XAI_API_KEY=${XAI_API_KEY:-}
       - GOOGLE_API_KEY=${GOOGLE_API_KEY:-}
+      - OPENROUTER_API_KEY=${OPENROUTER_API_KEY:-}
     command: ["python", "/app/scripts/pipecat/main.py"]
 
   queue-manager:
