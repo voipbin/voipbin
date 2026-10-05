@@ -1692,6 +1692,7 @@ email [support@voipbin.net](mailto:support@voipbin.net).
 |----------|---------|
 | `OPENAI_API_KEY` | OpenAI (AI features) |
 | `GOOGLE_API_KEY` | Google AI (pipecat-script-runner's Gemini access) |
+| `OPENROUTER_API_KEY` | OpenRouter (pipecat-script-runner, platform-managed models such as Claude, Llama, DeepSeek, Qwen, Mistral). The installer pins `pipecat-script-runner` by image digest, so the key only takes effect after the runner image that contains the `platform_openrouter` branch is adopted (`scripts/sync-compose-images.sh`). Empty key: these models fail at runner init with `OpenRouter is not configured`. Invalid non-empty key: OpenRouter's 401 is classified as an authentication error. |
 | `GOOGLE_APPLICATION_CREDENTIALS` | GCP service account JSON path |
 | `TWILIO_SID`, `TWILIO_API_KEY` | Twilio (phone numbers) |
 | `TELNYX_API_KEY` | Telnyx (telephony) |

@@ -958,6 +958,7 @@ ELEVENLABS_API_KEY=
 DEEPGRAM_API_KEY=
 XAI_API_KEY=
 GOOGLE_API_KEY=
+OPENROUTER_API_KEY=
 
 # ==============================================================================
 # AWS (OPTIONAL - for transcription)
