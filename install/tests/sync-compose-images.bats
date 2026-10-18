@@ -130,3 +130,99 @@ EOF
     [[ -f "$PROJECT_DIR/docker-compose.yml.dist.flock" ]]
     [[ ! -f "$PROJECT_DIR/versions.lock.dist.flock" ]]
 }
+
+# =============================================================================
+# Ownership, mode and temp-file handling of the atomic replace
+# =============================================================================
+
+@test "sync-compose-images.sh keeps the mode of the file it replaces" {
+    chmod 640 "$PROJECT_DIR/docker-compose.yml.dist"
+
+    run bash "$PROJECT_DIR/scripts/sync-compose-images.sh"
+
+    [[ "$status" -eq 0 ]]
+    assert_file_contains "$PROJECT_DIR/docker-compose.yml.dist" \
+        "voipbin/bin-agent-manager@sha256:1111111111111111111111111111111111111111111111111111111111aa"
+    [[ "$(stat -c %a "$PROJECT_DIR/docker-compose.yml.dist")" == "640" ]]
+}
+
+@test "sync-compose-images.sh keeps the owner of the file it replaces" {
+    [[ "$(id -u)" == "0" ]] || skip "needs root to hand a file to another uid"
+    chown 12345:23456 "$PROJECT_DIR/docker-compose.yml.dist"
+
+    run bash "$PROJECT_DIR/scripts/sync-compose-images.sh"
+
+    [[ "$status" -eq 0 ]]
+    [[ "$(stat -c %u:%g "$PROJECT_DIR/docker-compose.yml.dist")" == "12345:23456" ]]
+}
+
+@test "sync-compose-images.sh removes a leftover temp file once it holds the lock" {
+    run bash "$PROJECT_DIR/scripts/sync-compose-images.sh"
+    [[ "$status" -eq 0 ]]
+
+    echo "stale" > "$PROJECT_DIR/docker-compose.yml.dist.tmp"
+    run bash "$PROJECT_DIR/scripts/sync-compose-images.sh"
+
+    [[ "$status" -eq 0 ]]
+    [[ ! -e "$PROJECT_DIR/docker-compose.yml.dist.tmp" ]]
+}
+
+@test "sync-compose-images.sh leaves another run's temp file alone when it cannot get the lock" {
+    echo "in-flight" > "$PROJECT_DIR/docker-compose.yml.dist.tmp"
+    (
+        exec 9>"$PROJECT_DIR/docker-compose.yml.dist.flock"
+        flock -x 9
+        sleep 4
+    ) &
+    local holder_pid=$!
+    sleep 0.3
+
+    LOCK_TIMEOUT_SECONDS=1 run bash "$PROJECT_DIR/scripts/sync-compose-images.sh"
+
+    [[ "$status" -ne 0 ]]
+    [[ -e "$PROJECT_DIR/docker-compose.yml.dist.tmp" ]]
+
+    kill "$holder_pid" 2>/dev/null || true
+    wait "$holder_pid" 2>/dev/null || true
+}
+
+# euid 0 is simulated with an `id` stub and chown is logged by a stub, so the
+# decision logic is testable without real root.
+_stub_root_chown() {
+    cat > "$MOCK_BIN_DIR/id" <<'STUB'
+#!/bin/bash
+if [ "$1" = "-u" ]; then echo 0; exit 0; fi
+exec /usr/bin/id "$@"
+STUB
+    cat > "$MOCK_BIN_DIR/chown" <<STUB
+#!/bin/bash
+echo "\$@" >> "$TEST_TEMP_DIR/chown.log"
+STUB
+    chmod +x "$MOCK_BIN_DIR/id" "$MOCK_BIN_DIR/chown"
+}
+
+@test "sync-compose-images.sh gives a NEW lock file the directory owner when run as root" {
+    [[ "$(stat -c %u "$PROJECT_DIR")" != "0" ]] || skip "directory is root-owned here"
+    _stub_root_chown
+
+    run bash "$PROJECT_DIR/scripts/sync-compose-images.sh"
+
+    [[ "$status" -eq 0 ]]
+    grep -q "$(stat -c %u:%g "$PROJECT_DIR") $PROJECT_DIR/docker-compose.yml.dist.flock" "$TEST_TEMP_DIR/chown.log"
+}
+
+@test "sync-compose-images.sh does not re-own a lock file that already existed" {
+    [[ "$(stat -c %u "$PROJECT_DIR")" != "0" ]] || skip "directory is root-owned here"
+    : > "$PROJECT_DIR/docker-compose.yml.dist.flock"
+    _stub_root_chown
+
+    run bash "$PROJECT_DIR/scripts/sync-compose-images.sh"
+
+    [[ "$status" -eq 0 ]]
+    ! grep -q "docker-compose.yml.dist.flock" "$TEST_TEMP_DIR/chown.log" 2>/dev/null
+}
+
+@test "docker-compose.yml.tmp is gitignored" {
+    run git -C "$BATS_TEST_DIRNAME/.." check-ignore -q docker-compose.yml.tmp
+    [[ "$status" -eq 0 ]]
+}

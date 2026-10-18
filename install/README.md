@@ -114,8 +114,154 @@ touches. If you're upgrading an install that predates this split, the same
 recovery applies: `git log --all --oneline --diff-filter=D -- versions.lock`
 then `git show <that commit>^:./versions.lock > versions.lock`.
 
+After recovering these files, follow [Upgrading an Existing Install](#upgrading-an-existing-install).
+
 See [Install Modes](#install-modes) for `external` mode (a real domain
 instead of `voipbin.test`).
+
+### Upgrading an Existing Install
+
+Installs created before 2026-08-13 (before `docker-compose.yml` was split into
+the tracked `docker-compose.yml.dist`) are out of scope for this section;
+recover them as described above first, then follow these steps.
+
+`docker-compose.yml` and `.env` are yours: `git pull` never changes them and
+the CLI never merges them automatically. Upstream changes arrive in
+`docker-compose.yml.dist` and `.env.template`, and you merge them by hand.
+Run the git steps as the user that owns the checkout (not with `sudo`), from
+this `install/` directory. Use an `https://` remote: `sudo` does not forward
+`SSH_AUTH_SOCK`, so an SSH remote can fail to fetch when the CLI runs
+under `sudo`.
+
+```bash
+git fetch origin
+git diff HEAD..origin/<branch> -- docker-compose.yml.dist .env.template   # what changed upstream
+cp docker-compose.yml docker-compose.yml.pre-merge                         # keep copies before merging
+cp .env .env.pre-merge
+# Edit docker-compose.yml and .env by hand to adopt the changes shown above.
+git pull --ff-only origin <branch>
+sudo ./voipbin update all
+```
+
+If the checkout is not owned by root and the CLI runs as root, the CLI runs its
+git commands as the checkout owner, so file ownership is preserved. If your
+environment drops variables under `sudo` (for example a local monorepo path
+used for migrations), pass them explicitly:
+`sudo VOIPBIN_MONOREPO_DIR=<path> ./voipbin update all` (a sudoers policy
+that resets the environment can reject this; allow it with the `SETENV` tag
+or set the variable in a root shell instead). Running the scripts
+directly as root (the classic way) still works, but unprivileged git plus
+`sudo ./voipbin` is the supported combination.
+
+`update all` takes a backup, updates the scripts, syncs image digests into
+your `docker-compose.yml`, runs the database migrations, pulls and recreates
+containers, then verifies the stack. Containers are recreated, so expect a
+brief service interruption (calls and API requests in flight can fail).
+
+#### Items to merge for the move to service-owned migrations
+
+Once the pinned schema tree is marked as retired from Alembic (it contains a
+`RETIRED.md` marker), database schema changes are applied by each service
+itself instead of by the host-side Alembic stream for the main database.
+Merge these from the diff
+(the full `docker-compose.yml.dist` and `.env.template` diff is authoritative;
+re-check it rather than relying on this list):
+
+- two new services added to `docker-compose.yml`
+- a healthcheck on `schedule-manager`
+- a credential setting on `tts-manager`
+- the `shared-data` volume
+- `API_PUBLIC_BASE_URL`, in both `docker-compose.yml` and `.env`
+- `DOMAIN_SHORT_LABEL_ENABLED`
+- the database name used by `rag-manager`
+
+For a file you edited, a 3-way merge can save work, for example:
+`git show origin/<branch>:install/docker-compose.yml.dist > /tmp/new.dist; git show HEAD:install/docker-compose.yml.dist > /tmp/old.dist; git merge-file docker-compose.yml /tmp/old.dist /tmp/new.dist`
+(adjust the paths to where your checkout keeps `install/`, and review any
+conflict markers).
+
+After the merge, `docker compose config -q` should print nothing.
+
+#### Exit codes of `update all`
+
+| Code | Meaning |
+|------|---------|
+| 0 | Success (also for `--check`) |
+| 1 | Unexpected error |
+| 2 | Precondition failed (another operation holds the lock) |
+| 10 | Backup failed (nothing was changed) |
+| 11 | Script update (git) failed: not a git repository, detached HEAD, remote branch missing, fetch or pull failed, remote branch not an ancestor of HEAD after pull, or local changes conflict |
+| 12 | `versions.lock.dist` disappeared after the re-exec (pinning was removed upstream) |
+| 13 | Compose image digest sync failed (including a missing script) |
+| 14 | `docker compose pull` failed |
+| 15 | `migrate.sh` failed (including a missing script) |
+| 16 | `docker compose up -d` failed |
+| 17 | Verification: containers are starting, unhealthy or restarting (names are printed; the API ping is still attempted) |
+| 18 | Verification: containers are healthy but the api-manager `/ping` failed |
+| 19 | Verification: problem containers and a failed api-manager `/ping` |
+| 64 | Unknown `update` subcommand |
+| 130 | Interrupted by the user |
+
+`update scripts` (including `--check`) also exits 11 on a failed script update,
+and `update all` stops with 11 instead of continuing to the image update. `update all`
+(only; not `update scripts` or `update images` on their own) ends with a
+`UPDATE_RESULT rc=<n> stage=<name> ...` line that summarizes the outcome.
+
+**17 is expected with these images.** Two things cause it, and both are
+normal:
+
+- The container healthchecks of many services call `wget`, which the minimal
+  service images do not contain, so those containers report `unhealthy` even
+  though they are running. This happens on every install, with or without
+  provider API keys.
+- Services that need external provider credentials keep restarting until the
+  keys are set.
+
+So an `update all` normally ends with 17 and a successful ping. In that case
+the CLI still prints "Upgrade verification FAILED" with rollback options; do not
+follow them just because of a 17 whose cause is one of the two above. Confirm
+with `sudo ./voipbin doctor` and `sudo ./voipbin status`. To tell a missing
+healthcheck binary from a real fault, inspect a listed container:
+`docker inspect --format '{{.State.Status}} {{.RestartCount}} {{with .State.Health}}{{range .Log}}{{println .Output}}{{end}}{{end}}' <container>`
+and read its recent logs with `docker compose logs --tail 50 <service>`.
+A container that stays `running` with an unchanged restart count, whose health
+output says `executable file not found` and whose logs show no migration or
+database errors, is failing only its healthcheck. A container that is
+restarting, or whose logs show migration or database errors, is a real
+problem. A missing `wget` says nothing about whether the service itself
+works. `doctor` also reports these containers as failed and suggests a
+restart, which does not fix a missing `wget`. Run the inspect command twice,
+a minute apart, and compare the restart count. Codes 18 and 19 mean the API itself is down and are never normal.
+Services without a key can also delay the start, so `update all` may take
+longer to settle on such installs.
+
+#### Troubleshooting an upgrade
+
+- **Root-owned leftovers.** An earlier run as root can leave root-owned files
+  in the checkout (`tmp/`, `.git`, tracked files). The update then stops with
+  code 11 or an error naming the path. Fix with
+  `sudo chown -R <your-user>: <path>` (for example `tmp`, or `.backup/` when a
+  root-run backup created it) and rerun.
+- **`Can't locate revision`.** The live `versions.lock` pins a database-schema
+  commit that is newer than the one in `versions.lock.dist`, so the
+  Alembic stream cannot find the revision in the older tree. Pull the latest
+  `versions.lock.dist` (`git pull --ff-only`), compare it with your live
+  `versions.lock`, and align `dbscheme_monorepo_commit` before rerunning
+  `sudo ./voipbin update all`.
+- **Dirty migration state.** A service migration that was interrupted or failed
+  leaves its version table with `dirty=1`, and `doctor` reports the service.
+  Read the service's logs, then work out which version `N` is dirty and
+  confirm that `N` was not actually applied. Set the version to `N-1` with
+  `/app/bin/<name>-control migrate force <N-1>` (for `N=1` use
+  `/app/bin/<name>-control migrate force -- -1` to clear the version), then restart
+  the service. The schedule seed migration is a single idempotent statement,
+  so `force 1` followed by a restart is also safe there.
+  Run it with `docker compose exec <service> /app/bin/<name>-control migrate ...`,
+  where `<name>` is the service name without `-manager` (for example
+  `tts-manager` uses `/app/bin/tts-control`).
+  If the service is stuck in a restart loop and `exec` fails, run the same
+  command in a one-off container instead:
+  `docker compose run --rm --no-deps --entrypoint /app/bin/<name>-control <service> migrate ...`.
 
 ### Day-to-Day Operations: the `voipbin` CLI
 

@@ -626,3 +626,549 @@ load_sip_extensions_summary_gate() {
     [[ "$output" == *"1000 / pass1000"* ]]
     [[ "$output" == *"SIP Domain:    cust-123.registrar.voipbin.test"* ]]
 }
+
+# =============================================================================
+# check_database_initialized: service-owned schema. bin_manager counts as
+# migrated when alembic left a version row OR at least one service version
+# table (*schema_migrations) exists; asterisk always needs its alembic row.
+# =============================================================================
+
+# Docker stub answering each probe from files in $TEST_TEMP_DIR; a missing
+# file means "no output" (what mysql prints for a missing table/row).
+stub_docker_init_probe() {
+    mock_command_script "docker" '
+body="$*"
+read_or_empty() { [[ -f "'"$TEST_TEMP_DIR"'/$1" ]] && cat "'"$TEST_TEMP_DIR"'/$1"; return 0; }
+case "$body" in
+    *"bin_manager.alembic_version"*) read_or_empty bin_alembic ;;
+    *"asterisk.alembic_version"*)    read_or_empty ast_alembic ;;
+    *"LIKE"*"schema"*)               read_or_empty svc_tables ;;
+    *"information_schema.TABLES"*)   read_or_empty bin_tables ;;
+esac
+exit 0
+'
+    rm -f "$TEST_TEMP_DIR"/{bin_alembic,ast_alembic,svc_tables,bin_tables}
+}
+
+@test "check_database_initialized passes with service-owned bin_manager (no alembic row, schema tables present)" {
+    load_start_functions
+    stub_docker_init_probe
+    echo 40 > "$TEST_TEMP_DIR/bin_tables"
+    echo c07b40884361 > "$TEST_TEMP_DIR/ast_alembic"
+    echo 12 > "$TEST_TEMP_DIR/svc_tables"
+
+    run check_database_initialized
+
+    [[ "$status" -eq 0 ]]
+}
+
+@test "check_database_initialized fails when bin_manager has neither an alembic row nor a service version table" {
+    load_start_functions
+    stub_docker_init_probe
+    echo 40 > "$TEST_TEMP_DIR/bin_tables"
+    echo c07b40884361 > "$TEST_TEMP_DIR/ast_alembic"
+    echo 0 > "$TEST_TEMP_DIR/svc_tables"
+
+    run check_database_initialized
+
+    [[ "$status" -eq 1 ]]
+}
+
+@test "check_database_initialized fails when service tables exist but the asterisk stream never ran" {
+    load_start_functions
+    stub_docker_init_probe
+    echo 40 > "$TEST_TEMP_DIR/bin_tables"
+    echo 12 > "$TEST_TEMP_DIR/svc_tables"
+
+    run check_database_initialized
+
+    [[ "$status" -eq 1 ]]
+}
+
+@test "check_database_initialized fails when bin_manager has no tables at all, whatever else exists" {
+    load_start_functions
+    stub_docker_init_probe
+    echo 0 > "$TEST_TEMP_DIR/bin_tables"
+    echo c07b40884361 > "$TEST_TEMP_DIR/ast_alembic"
+    echo rev1 > "$TEST_TEMP_DIR/bin_alembic"
+    echo 12 > "$TEST_TEMP_DIR/svc_tables"
+
+    run check_database_initialized
+
+    [[ "$status" -eq 1 ]]
+}
+
+@test "check_database_initialized fails (does not abort) when docker is unreachable, under set -e" {
+    load_start_functions
+    mock_command "docker" "" 1
+
+    run bash -c 'set -e; source "'"$SCRIPTS_DIR"'/common.sh"; source "'"$TEST_TEMP_DIR"'/start_functions.sh"; if check_database_initialized; then echo yes; else echo no; fi'
+
+    [[ "$output" == *"no"* ]]
+}
+
+# =============================================================================
+# wait_for_service_schema (schema completion gate). The gate's collaborators
+# are replaced by functions driven from variables, and the clock is fake, so
+# the tests are instant and deterministic.
+# =============================================================================
+
+# Fake clock + sleep: each sleep advances the clock; SLEEPS counts them.
+gate_fake_env() {
+    FAKE_NOW=1000
+    SLEEPS=0
+    : > "$TEST_TEMP_DIR/polls"
+    schema_gate_now() { echo "$FAKE_NOW"; }
+    schema_gate_sleep() { SLEEPS=$((SLEEPS + 1)); FAKE_NOW=$((FAKE_NOW + $1)); }
+    GATE_MODE="service-owned"
+    GATE_BACKUP=1
+    GATE_STATUS_FN=gate_status_all_applied
+    schema_mode() { if [ -n "$GATE_MODE" ]; then echo "$GATE_MODE"; else return 1; fi; }
+    # Counted through a file: the status function runs inside $(...).
+    schema_table_status() { echo poll >> "$TEST_TEMP_DIR/polls"; "$GATE_STATUS_FN"; }
+    schema_gate_backup_listed() { [ "$GATE_BACKUP" = "1" ]; }
+    schema_gate_service_missing_key() { [[ ",${GATE_KEYLESS:-}," == *",$1,"* ]]; }
+}
+
+# `run` executes in a subshell, so SLEEPS/GATE_POLLS would be lost; gate_run
+# runs the gate in the current shell and sets $status / $output like `run`.
+gate_run() {
+    wait_for_service_schema "$@" > "$TEST_TEMP_DIR/gate.out"
+    status=$?
+    output="$(cat "$TEST_TEMP_DIR/gate.out")"
+}
+
+gate_polls() { wc -l < "$TEST_TEMP_DIR/polls" | tr -d ' '; }
+
+gate_status_all_applied() {
+    local e
+    for e in "${SERVICE_SCHEMA_TABLES[@]}"; do printf '%s\t1\t0\n' "${e%%:*}"; done
+}
+
+# All applied except the services named in GATE_MISSING (comma list).
+gate_status_except_missing() {
+    local e
+    for e in "${SERVICE_SCHEMA_TABLES[@]}"; do
+        if [[ ",${GATE_MISSING:-}," == *",${e#*:},"* ]]; then continue; fi
+        printf '%s\t1\t0\n' "${e%%:*}"
+    done
+}
+
+@test "gate: alembic mode skips immediately with one line and no sleep" {
+    load_start_functions
+    gate_fake_env
+    GATE_MODE="alembic"
+
+    wait_for_service_schema voipbin-db
+    local rc=$?
+
+    [[ "$rc" -eq 0 ]]
+    [[ "$SLEEPS" -eq 0 ]]
+}
+
+@test "gate: alembic mode prints SCHEMA_GATE skipped mode=alembic" {
+    load_start_functions
+    gate_fake_env
+    GATE_MODE="alembic"
+
+    gate_run voipbin-db
+
+    [[ "$status" -eq 0 ]]
+    [[ "$output" == "SCHEMA_GATE skipped mode=alembic" ]]
+}
+
+@test "gate: service-owned, all 26 applied and the backup schedule listed => complete after two polls" {
+    load_start_functions
+    gate_fake_env
+
+    wait_for_service_schema voipbin-db > "$TEST_TEMP_DIR/out.txt"
+
+    grep -q '^SCHEMA_GATE waiting done=26/26 missing=$' "$TEST_TEMP_DIR/out.txt"
+    grep -q '^SCHEMA_GATE complete elapsed=10$' "$TEST_TEMP_DIR/out.txt"
+    [[ "$SLEEPS" -eq 1 ]]
+    [[ "$(gate_polls)" -eq 2 ]]
+}
+
+@test "gate: a single all-applied poll is not enough (needs two consecutive)" {
+    load_start_functions
+    gate_fake_env
+    # Poll 1: tag-manager missing. Poll 2: everything applied. Poll 3: still.
+    gate_status_flip() {
+        if [ "$(gate_polls)" -le 1 ]; then GATE_MISSING="tag-manager" gate_status_except_missing; else gate_status_all_applied; fi
+    }
+    GATE_STATUS_FN=gate_status_flip
+
+    wait_for_service_schema voipbin-db > "$TEST_TEMP_DIR/out.txt"
+
+    grep -q '^SCHEMA_GATE waiting done=25/26 missing=tag-manager$' "$TEST_TEMP_DIR/out.txt"
+    grep -q '^SCHEMA_GATE waiting done=26/26 missing=$' "$TEST_TEMP_DIR/out.txt"
+    grep -q '^SCHEMA_GATE complete elapsed=20$' "$TEST_TEMP_DIR/out.txt"
+    [[ "$(gate_polls)" -eq 3 ]]
+}
+
+@test "gate: times out with a warning naming the missing services, returns 0, and prints elapsed" {
+    load_start_functions
+    gate_fake_env
+    GATE_STATUS_FN=gate_status_except_missing
+    GATE_MISSING="tag-manager,billing-manager"
+    SCHEMA_GATE_TIMEOUT_SECONDS=30
+
+    gate_run voipbin-db
+
+    [[ "$status" -eq 0 ]]
+    [[ "$output" == *"SCHEMA_GATE waiting done=24/26 missing=billing-manager,tag-manager"* ]]
+    [[ "$output" == *"SCHEMA_GATE incomplete elapsed=30 services=billing-manager,tag-manager"* ]]
+}
+
+@test "gate: a version table that is empty, dirty, or has two rows counts as not applied" {
+    load_start_functions
+    gate_fake_env
+    gate_status_bad_states() {
+        local e
+        for e in "${SERVICE_SCHEMA_TABLES[@]}"; do
+            case "${e%%:*}" in
+                agent_schema_migrations) ;;                                  # missing table: no row at all
+                ai_schema_migrations)       printf '%s\t0\t0\n' "${e%%:*}" ;; # empty
+                billing_schema_migrations)  printf '%s\t1\t1\n' "${e%%:*}" ;; # dirty
+                call_schema_migrations)     printf '%s\t2\t0\n' "${e%%:*}" ;; # two rows
+                *) printf '%s\t1\t0\n' "${e%%:*}" ;;
+            esac
+        done
+    }
+    GATE_STATUS_FN=gate_status_bad_states
+    SCHEMA_GATE_TIMEOUT_SECONDS=10
+
+    gate_run voipbin-db
+
+    [[ "$output" == *"done=22/26 missing=agent-manager,ai-manager,billing-manager,call-manager"* ]]
+}
+
+@test "gate: all applied but the database-backup schedule not listed keeps waiting and says so" {
+    load_start_functions
+    gate_fake_env
+    GATE_BACKUP=0
+    SCHEMA_GATE_TIMEOUT_SECONDS=20
+
+    gate_run voipbin-db
+
+    [[ "$output" == *"SCHEMA_GATE waiting done=26/26 missing= schedule=pending"* ]]
+    [[ "$output" == *"SCHEMA_GATE incomplete elapsed=20"* ]]
+}
+
+@test "gate: all services applied but the backup schedule never listed -> incomplete line carries schedule=pending" {
+    load_start_functions
+    gate_fake_env
+    GATE_STATUS_FN=gate_status_all_applied
+    GATE_BACKUP=0
+    SCHEMA_GATE_TIMEOUT_SECONDS=30
+
+    wait_for_service_schema voipbin-db > "$TEST_TEMP_DIR/out.txt"
+
+    grep -q '^SCHEMA_GATE incomplete elapsed=30 services= schedule=pending$' "$TEST_TEMP_DIR/out.txt"
+}
+
+@test "gate: the default limit is 300 seconds" {
+    load_start_functions
+    gate_fake_env
+    GATE_STATUS_FN=gate_status_except_missing
+    GATE_MISSING="tag-manager"
+    unset SCHEMA_GATE_TIMEOUT_SECONDS
+
+    wait_for_service_schema voipbin-db > "$TEST_TEMP_DIR/out.txt"
+
+    grep -q '^SCHEMA_GATE incomplete elapsed=300 services=tag-manager$' "$TEST_TEMP_DIR/out.txt"
+    [[ "$SLEEPS" -eq 30 ]]
+}
+
+@test "gate: a zero, negative or non-numeric limit falls back to 300 (it is not an off switch)" {
+    load_start_functions
+    local bad
+    for bad in 0 -5 abc "" 1.5; do
+        gate_fake_env
+        GATE_STATUS_FN=gate_status_except_missing
+        GATE_MISSING="tag-manager"
+        SCHEMA_GATE_TIMEOUT_SECONDS="$bad"
+        wait_for_service_schema voipbin-db > "$TEST_TEMP_DIR/out.txt"
+        grep -q '^SCHEMA_GATE incomplete elapsed=300 services=tag-manager$' "$TEST_TEMP_DIR/out.txt"
+    done
+}
+
+@test "gate: an undeterminable mode never decides; it waits to the limit, warns, and continues" {
+    load_start_functions
+    gate_fake_env
+    GATE_MODE=""
+    SCHEMA_GATE_TIMEOUT_SECONDS=30
+
+    gate_run voipbin-db
+
+    [[ "$status" -eq 0 ]]
+    [[ "$output" == *"SCHEMA_GATE incomplete elapsed=30 services=unknown"* ]]
+    [[ "$output" != *"SCHEMA_GATE skipped"* ]]
+    [[ "$output" != *"SCHEMA_GATE complete"* ]]
+}
+
+@test "gate: a mode lookup that fails once and then recovers is re-evaluated on the next poll" {
+    load_start_functions
+    gate_fake_env
+    schema_mode() { if [ "$SLEEPS" -lt 1 ]; then return 1; fi; echo alembic; }
+
+    gate_run voipbin-db
+
+    [[ "$output" == *"SCHEMA_GATE waiting state=unknown"* ]]
+    [[ "$output" == *"SCHEMA_GATE skipped mode=alembic"* ]]
+}
+
+@test "gate: a failing status query is treated like an unknown state, not as 'all missing'" {
+    load_start_functions
+    gate_fake_env
+    schema_table_status() { return 1; }
+    SCHEMA_GATE_TIMEOUT_SECONDS=20
+
+    gate_run voipbin-db
+
+    [[ "$status" -eq 0 ]]
+    [[ "$output" == *"SCHEMA_GATE incomplete elapsed=20 services=unknown"* ]]
+}
+
+@test "gate: ends early when every missing service is crash-looping on a missing key and nothing changed" {
+    load_start_functions
+    gate_fake_env
+    GATE_STATUS_FN=gate_status_except_missing
+    GATE_MISSING="tts-manager,rag-manager"
+    GATE_MISSING="tts-manager"
+    GATE_KEYLESS="tts-manager"
+
+    gate_run voipbin-db
+
+    [[ "$status" -eq 0 ]]
+    # First poll cannot be early (no previous poll to compare); the second ends it.
+    [[ "$output" == *"SCHEMA_GATE incomplete elapsed=10 services=tts-manager"* ]]
+    [[ "$SLEEPS" -eq 1 ]]
+}
+
+@test "gate: does NOT end early when one missing service has no missing-key evidence" {
+    load_start_functions
+    gate_fake_env
+    GATE_STATUS_FN=gate_status_except_missing
+    GATE_MISSING="tts-manager,tag-manager"
+    GATE_KEYLESS="tts-manager"
+    SCHEMA_GATE_TIMEOUT_SECONDS=60
+
+    gate_run voipbin-db
+
+    [[ "$output" == *"SCHEMA_GATE incomplete elapsed=60 services=tag-manager,tts-manager"* ]]
+    [[ "$SLEEPS" -eq 6 ]]
+}
+
+@test "gate: does NOT end early while the applied set is still changing between polls" {
+    load_start_functions
+    gate_fake_env
+    GATE_KEYLESS="tts-manager"
+    # tag-manager lands at poll 2; tts-manager never applies.
+    gate_status_progress() {
+        if [ "$(gate_polls)" -le 1 ]; then GATE_MISSING="tts-manager,tag-manager" gate_status_except_missing
+        else GATE_MISSING="tts-manager" gate_status_except_missing; fi
+    }
+    GATE_STATUS_FN=gate_status_progress
+
+    gate_run voipbin-db
+
+    # Poll 2 changed the set (so no early exit there); poll 3 is identical to poll 2.
+    [[ "$output" == *"SCHEMA_GATE incomplete elapsed=20 services=tts-manager"* ]]
+    [[ "$SLEEPS" -eq 2 ]]
+}
+
+@test "gate: never ends early when a missing service has no keyless evidence at all" {
+    load_start_functions
+    gate_fake_env
+    GATE_STATUS_FN=gate_status_except_missing
+    GATE_MISSING="tag-manager"
+    GATE_KEYLESS=""
+    SCHEMA_GATE_TIMEOUT_SECONDS=100
+
+    gate_run voipbin-db
+
+    [[ "$SLEEPS" -eq 10 ]]
+    [[ "$output" == *"SCHEMA_GATE incomplete elapsed=100 services=tag-manager"* ]]
+}
+
+@test "gate: the last sleep is shortened so the wait never runs past the limit" {
+    load_start_functions
+    gate_fake_env
+    GATE_MISSING="tag-manager"
+    GATE_KEYLESS=""
+    GATE_STATUS_FN=gate_status_except_missing
+    SCHEMA_GATE_TIMEOUT_SECONDS=15
+    local naps=""
+    schema_gate_sleep() { naps+="$1 "; SLEEPS=$((SLEEPS + 1)); FAKE_NOW=$((FAKE_NOW + $1)); }
+
+    gate_run voipbin-db
+
+    [[ "$SLEEPS" -eq 2 ]]
+    [[ "$naps" == "10 5 " ]]
+    [[ "$output" == *"SCHEMA_GATE incomplete elapsed=15 services=tag-manager"* ]]
+}
+
+@test "gate: callable from a set -e script without aborting it (incomplete and complete)" {
+    load_start_functions
+    run timeout 20 bash -c '
+        set -e
+        source "'"$SCRIPTS_DIR"'/common.sh"
+        clock="'"$TEST_TEMP_DIR"'/clock"; echo 0 > "$clock"
+        schema_gate_now() { cat "$clock"; }
+        schema_gate_sleep() { echo $(( $(cat "$clock") + $1 )) > "$clock"; }
+        schema_mode() { return 1; }
+        SCHEMA_GATE_TIMEOUT_SECONDS=30
+        wait_for_service_schema voipbin-db || echo "gate returned $?"
+        schema_mode() { echo service-owned; }
+        schema_table_status() { for e in "${SERVICE_SCHEMA_TABLES[@]}"; do printf "%s\t1\t0\n" "${e%%:*}"; done; }
+        schema_gate_backup_listed() { return 0; }
+        wait_for_service_schema voipbin-db || echo "gate returned $?"
+        echo after-gate
+    '
+
+    [[ "$status" -eq 0 ]]
+    [[ "$output" == *"SCHEMA_GATE incomplete elapsed=30 services=unknown"* ]]
+    [[ "$output" == *"SCHEMA_GATE complete"* ]]
+    [[ "$output" == *"after-gate"* ]]
+    [[ "$output" != *"gate returned"* ]]
+}
+
+# --- early-exit evidence (log classification) ---
+
+@test "log classifier: text format key-missing line with a plain 'migrations applied' line is accepted" {
+    load_start_functions
+    local logs
+    logs=$'time=2026-01-01T00:00:00Z level=info msg="migrations applied" version=3\ntime=2026-01-01T00:00:01Z level=fatal msg="Check TTS provider credentials: api key missing"'
+
+    run schema_gate_log_shows_missing_key "$logs"
+
+    [[ "$status" -eq 0 ]]
+}
+
+@test "log classifier: JSON format key-missing line with a 'no pending migrations' line is accepted" {
+    load_start_functions
+    local logs
+    logs=$'{"severity":"INFO","message":"no pending migrations"}\n{"severity":"ERROR","message":"openai token is not set"}'
+
+    run schema_gate_log_shows_missing_key "$logs"
+
+    [[ "$status" -eq 0 ]]
+}
+
+@test "log classifier: any migration or connection error line in the window rejects the key-missing evidence (text and JSON)" {
+    load_start_functions
+    local bad logs
+    for bad in \
+        'level=error msg="migration failed: dirty database version 4"' \
+        '{"severity":"ERROR","message":"could not run migrations: boom"}' \
+        'level=error msg="Error 1040: Too many connections"' \
+        'level=error msg="dial tcp 127.0.0.1:3306: connection refused"' \
+        'level=error msg="could not apply migration 000002"'; do
+        logs=$'level=fatal msg="api key missing"\n'"$bad"
+        run schema_gate_log_shows_missing_key "$logs"
+        [[ "$status" -ne 0 ]]
+    done
+}
+
+@test "log classifier: logs without a missing-key line are not evidence" {
+    load_start_functions
+
+    run schema_gate_log_shows_missing_key $'level=info msg="started"\nlevel=error msg="panic: nil pointer"'
+
+    [[ "$status" -ne 0 ]]
+}
+
+@test "missing-key evidence needs a container, 3+ restarts, and a clean key-missing log" {
+    load_start_functions
+    mock_command_script "docker" '
+case "$1" in
+    compose) cat "'"$TEST_TEMP_DIR"'/ps_out" 2>/dev/null; exit 0 ;;
+    inspect) cat "'"$TEST_TEMP_DIR"'/restarts" 2>/dev/null; exit 0 ;;
+    logs)    cat "'"$TEST_TEMP_DIR"'/logs" 2>/dev/null; exit 0 ;;
+esac
+exit 0
+'
+    rm -f "$TEST_TEMP_DIR/ps_out" "$TEST_TEMP_DIR/restarts" "$TEST_TEMP_DIR/logs"
+
+    # No container at all (never created).
+    run schema_gate_service_missing_key tts-manager
+    [[ "$status" -ne 0 ]]
+
+    echo abc123 > "$TEST_TEMP_DIR/ps_out"
+    echo 2 > "$TEST_TEMP_DIR/restarts"
+    echo 'level=fatal msg="api key missing"' > "$TEST_TEMP_DIR/logs"
+    run schema_gate_service_missing_key tts-manager
+    [[ "$status" -ne 0 ]]   # only 2 restarts
+
+    echo 3 > "$TEST_TEMP_DIR/restarts"
+    run schema_gate_service_missing_key tts-manager
+    [[ "$status" -eq 0 ]]
+
+    echo 'level=error msg="Error 1040: Too many connections"' >> "$TEST_TEMP_DIR/logs"
+    run schema_gate_service_missing_key tts-manager
+    [[ "$status" -ne 0 ]]   # connection-limit crash is not a key problem
+
+    echo 'level=info msg="started"' > "$TEST_TEMP_DIR/logs"
+    run schema_gate_service_missing_key tts-manager
+    [[ "$status" -ne 0 ]]   # cause unknown
+}
+
+@test "container lookup is by compose service (compose ps -a -q), not by container name" {
+    load_start_functions
+    mock_command_script "docker" 'echo "$*" >> "'"$TEST_TEMP_DIR"'/docker.args"; echo cid1; echo cid2'
+
+    run schema_gate_container_id contact-manager
+
+    [[ "$status" -eq 0 ]]
+    [[ "$output" == "cid1" ]]
+    grep -qF "compose ps -a -q contact-manager" "$TEST_TEMP_DIR/docker.args"
+}
+
+# --- wiring and list integrity ---
+
+@test "start.sh calls the schema gate after 'Waiting for services to stabilize' and before the backup step, never failing the start" {
+    local sleep_line gate_line backup_line
+    sleep_line="$(grep -n 'Waiting for services to stabilize' "$SCRIPTS_DIR/start.sh" | head -1 | cut -d: -f1)"
+    gate_line="$(grep -n 'wait_for_service_schema' "$SCRIPTS_DIR/start.sh" | head -1 | cut -d: -f1)"
+    backup_line="$(grep -n '^    ensure_scheduled_backup_enabled' "$SCRIPTS_DIR/start.sh" | head -1 | cut -d: -f1)"
+
+    [[ -n "$sleep_line" && -n "$gate_line" && -n "$backup_line" ]]
+    [[ "$gate_line" -gt "$sleep_line" ]]
+    [[ "$gate_line" -lt "$backup_line" ]]
+    grep -q 'wait_for_service_schema "voipbin-db" || true' "$SCRIPTS_DIR/start.sh"
+}
+
+@test "SERVICE_SCHEMA_TABLES matches the compose services that take a database DSN, minus those without migrations" {
+    load_common
+    run python3 - "$PROJECT_ROOT/docker-compose.yml.dist" "${SERVICE_SCHEMA_TABLES[@]}" <<'PYEOF'
+import re, sys
+compose, entries = sys.argv[1], sys.argv[2:]
+text = open(compose).read()
+body = text[re.search(r'^services:\n', text, re.M).end():]
+blocks = re.split(r'\n(?=  [a-z][a-z0-9-]*:\n)', body)
+dsn_services = set()
+for b in blocks:
+    name = b.split(':')[0].strip()
+    if 'DATABASE_DSN' in b:
+        dsn_services.add(name)
+# Services that connect to the database but ship no migrations.
+no_migrations = {'api-manager', 'hook-manager', 'transfer-manager', 'webhook-manager'}
+expected = dsn_services - no_migrations
+listed = {e.split(':', 1)[1] for e in entries}
+tables = [e.split(':', 1)[0] for e in entries]
+errors = []
+if listed != expected:
+    errors.append(f"service mismatch: only in compose={sorted(expected-listed)} only in list={sorted(listed-expected)}")
+if len(entries) != 26 or len(set(tables)) != 26:
+    errors.append(f"expected 26 unique tables, got {len(entries)}/{len(set(tables))}")
+for e in entries:
+    t, s = e.split(':', 1)
+    if t != s[:-len('-manager')] + '_schema_migrations':
+        errors.append(f"unexpected table name for {s}: {t}")
+print('\n'.join(errors))
+sys.exit(1 if errors else 0)
+PYEOF
+
+    [[ "$status" -eq 0 ]]
+}

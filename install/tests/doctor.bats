@@ -296,6 +296,22 @@ if [[ "$1" == "exec" ]]; then
         echo "mysqld is alive"
         exit 0
     fi
+    # Schema-ownership probes (mode, version-table listing, version-table
+    # rows). Each is answered from a file written by the test; with no file
+    # the generic answers below apply (healthy alembic install).
+    if [[ "$body" == *"TABLE_NAME='"'"'alembic_version'"'"'"* && -f "'"$TEST_TEMP_DIR"'/schema_mode_count" ]]; then
+        cat "'"$TEST_TEMP_DIR"'/schema_mode_count"
+        exit 0
+    fi
+    if [[ "$body" == *"TABLE_NAME IN ("* && -f "'"$TEST_TEMP_DIR"'/schema_listing" ]]; then
+        cat "'"$TEST_TEMP_DIR"'/schema_listing"
+        exit 0
+    fi
+    if [[ "$body" == *"UNION ALL"* || "$body" == *" AS t, COUNT"* ]]; then
+        [[ -f "'"$TEST_TEMP_DIR"'/schema_status_fail" ]] && exit 1
+        [[ -f "'"$TEST_TEMP_DIR"'/schema_status" ]] && cat "'"$TEST_TEMP_DIR"'/schema_status"
+        exit 0
+    fi
     if [[ "$body" == *"information_schema.TABLES"* ]]; then
         if [[ "$scenario" == "db-empty" || "$scenario" == "marker-stale" ]]; then
             echo "0"
@@ -306,6 +322,7 @@ if [[ "$1" == "exec" ]]; then
     fi
     if [[ "$body" == *"alembic_version"* ]]; then
         [[ "$scenario" == "db-empty" ]] && exit 1
+        [[ "$scenario" == "alembic-bin-empty" && "$body" == *"bin_manager.alembic_version"* ]] && exit 0
         echo "head123"
         exit 0
     fi
@@ -1071,6 +1088,146 @@ exit 0'
 
     [[ "$status" -eq 1 ]]
     [[ "$output" == *'DOCTOR database: fail'* ]]
+    [[ "$output" == *'FIX database: ./scripts/migrate.sh'* ]]
+}
+
+# --- database check: which stream owns bin_manager, and dirty version tables ---
+
+# Writes the schema probe files for a service-owned install. $1 = comma list
+# of services to leave unapplied, $2 = comma list of services to mark dirty.
+write_service_owned_schema() {
+    load_common
+    local missing="$1" dirty="$2" e svc
+    echo 0 > "$TEST_TEMP_DIR/schema_mode_count"
+    : > "$TEST_TEMP_DIR/schema_listing"
+    : > "$TEST_TEMP_DIR/schema_status"
+    for e in "${SERVICE_SCHEMA_TABLES[@]}"; do
+        svc="${e#*:}"
+        echo "${e%%:*}" >> "$TEST_TEMP_DIR/schema_listing"
+        if [[ ",$missing," == *",$svc,"* ]]; then continue; fi
+        if [[ ",$dirty," == *",$svc,"* ]]; then
+            printf '%s\t1\t1\n' "${e%%:*}" >> "$TEST_TEMP_DIR/schema_status"
+        else
+            printf '%s\t1\t0\n' "${e%%:*}" >> "$TEST_TEMP_DIR/schema_status"
+        fi
+    done
+}
+
+@test "database check passes for a service-owned install when all 26 services are applied" {
+    setup_healthy_internal
+    stub_docker_doctor healthy
+    write_service_owned_schema "" ""
+
+    run_doctor
+
+    [[ "$status" -eq 0 ]]
+    [[ "$output" == *'DOCTOR database: pass'* ]]
+    [[ "$output" == *'service migrations applied for all 26 services'* ]]
+}
+
+@test "database check lists the services whose migrations are missing (service-owned)" {
+    setup_healthy_internal
+    stub_docker_doctor healthy
+    write_service_owned_schema "tag-manager,billing-manager" ""
+
+    run_doctor
+
+    [[ "$status" -eq 1 ]]
+    [[ "$output" == *'DOCTOR database: fail'* ]]
+    [[ "$output" == *'services=billing-manager,tag-manager'* ]]
+    [[ "$output" == *'FIX database: for each service in [billing-manager,tag-manager]'* ]]
+    [[ "$output" == *'migrate status'* ]]
+    [[ "$output" == *'docker compose logs'* ]]
+}
+
+@test "database check fails on a dirty version table in a service-owned install and says it may be in progress" {
+    setup_healthy_internal
+    stub_docker_doctor healthy
+    write_service_owned_schema "" "tag-manager"
+
+    run_doctor
+
+    [[ "$status" -eq 1 ]]
+    [[ "$output" == *'DOCTOR database: fail'* ]]
+    [[ "$output" == *'dirty'* ]]
+    [[ "$output" == *'services=tag-manager'* ]]
+    [[ "$output" == *'retry shortly'* ]]
+}
+
+@test "database check also fails on a dirty version table in an alembic-mode install" {
+    setup_healthy_internal
+    stub_docker_doctor healthy
+    echo 1 > "$TEST_TEMP_DIR/schema_mode_count"
+    echo "tag_schema_migrations" > "$TEST_TEMP_DIR/schema_listing"
+    printf 'tag_schema_migrations\t1\t1\n' > "$TEST_TEMP_DIR/schema_status"
+
+    run_doctor
+
+    [[ "$status" -eq 1 ]]
+    [[ "$output" == *'DOCTOR database: fail'* ]]
+    [[ "$output" == *'services=tag-manager'* ]]
+}
+
+@test "database check in alembic mode ignores services without a version table" {
+    setup_healthy_internal
+    stub_docker_doctor healthy
+    echo 1 > "$TEST_TEMP_DIR/schema_mode_count"
+    : > "$TEST_TEMP_DIR/schema_listing"
+    : > "$TEST_TEMP_DIR/schema_status"
+
+    run_doctor
+
+    [[ "$status" -eq 0 ]]
+    [[ "$output" == *'DOCTOR database: pass'* ]]
+    [[ "$output" == *'alembic versions present'* ]]
+}
+
+@test "database check in alembic mode still requires a row in bin_manager.alembic_version" {
+    setup_healthy_internal
+    stub_docker_doctor alembic-bin-empty
+    echo 1 > "$TEST_TEMP_DIR/schema_mode_count"
+    : > "$TEST_TEMP_DIR/schema_listing"
+
+    run_doctor
+
+    [[ "$status" -eq 1 ]]
+    [[ "$output" == *'DOCTOR database: fail'* ]]
+    [[ "$output" == *'schema not initialized'* ]]
+}
+
+@test "database check reports 'cannot determine' (a failure) when the version-table query fails" {
+    setup_healthy_internal
+    stub_docker_doctor healthy
+    write_service_owned_schema "" ""
+    touch "$TEST_TEMP_DIR/schema_status_fail"
+
+    run_doctor
+
+    [[ "$status" -eq 1 ]]
+    [[ "$output" == *'DOCTOR database: fail'* ]]
+    [[ "$output" == *'cannot determine'* ]]
+}
+
+@test "database check reports 'cannot determine' when the mode lookup returns garbage" {
+    setup_healthy_internal
+    stub_docker_doctor healthy
+    echo "ERROR 2002" > "$TEST_TEMP_DIR/schema_mode_count"
+
+    run_doctor
+
+    [[ "$status" -eq 1 ]]
+    [[ "$output" == *'cannot determine'* ]]
+}
+
+@test "database check still fails an empty schema first, whatever the version tables say" {
+    setup_healthy_internal
+    stub_docker_doctor db-empty
+    write_service_owned_schema "" ""
+
+    run_doctor
+
+    [[ "$status" -eq 1 ]]
+    [[ "$output" == *'schema not initialized'* ]]
     [[ "$output" == *'FIX database: ./scripts/migrate.sh'* ]]
 }
 

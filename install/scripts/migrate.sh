@@ -1,16 +1,31 @@
 #!/bin/bash
 # VoIPBin - Containerized database migration (design §3.3)
 #
-# Runs alembic 'upgrade head' for BOTH schema streams (bin-manager, asterisk)
-# inside a python:3.11-slim container attached to the compose network.
-# Replaces the host-pip/alembic dependency entirely.
+# Runs alembic 'upgrade head' inside a python:3.11-slim container attached to
+# the compose network. Replaces the host-pip/alembic dependency entirely.
 #
-# - Reads the dbscheme monorepo commit from versions.lock (single source of
-#   truth; no hardcoded pin).
+# Two schema streams exist:
+#   - asterisk (PJSIP config): always migrated with alembic.
+#   - bin-manager: migrated with alembic only while alembic still owns the
+#     database. Once the pinned dbscheme tree carries
+#     bin-manager/RETIRED.md the services own their schema (each applies its
+#     embedded migrations on start) and this script no longer touches it.
+#     Alembic still runs for bin-manager when bin_manager.alembic_version
+#     already exists (an existing install is finished the old way) or when
+#     the pinned tree has no RETIRED.md. A MIGRATE_MODE line records the
+#     decision.
+#
+# - Reads the dbscheme monorepo commit from versions.lock.dist (the committed
+#   template) when present, otherwise from the live versions.lock. A
+#   versions.lock.dist that is present but unreadable or empty is an error;
+#   it never falls back to the live file (that would hide a pin mismatch).
 # - Non-interactive by design: no re-run prompt. Callers (update all /
 #   init_database.sh / start.sh) rely on the exit code.
 # - Sequential streams, abort on first failure (partial-migration recovery is
 #   documented in the design doc failure modes: stop -> voipbin restore).
+# - When run as root against a project owned by another user, the tmp/ cache
+#   is handed back to the project owner on every exit path, so a later
+#   unprivileged run can reuse or replace it.
 #
 # Exit codes: 0 ok, non-zero failure (callers MUST abort on non-zero).
 
@@ -36,7 +51,18 @@ DBSCHEME_DIR="$PROJECT_DIR/tmp/bin-dbscheme-manager"
 
 DB_CONTAINER="${VOIPBIN_DB_CONTAINER:-voipbin-db}"
 DB_USER="root"
-DB_PASSWORD="${MYSQL_ROOT_PASSWORD:-root_password}"
+# resolve_db_password: the environment value wins; otherwise the value in the
+# project's .env (the voipbin CLI does not export .env, so 'update all' would
+# otherwise fall through to the default and fail authentication); otherwise
+# the historical default. The value is never printed or put on an argv.
+resolve_db_password() {
+    local value="${MYSQL_ROOT_PASSWORD:-}"
+    if [[ -z "$value" ]]; then
+        value="$(get_env_var "$PROJECT_DIR/.env" MYSQL_ROOT_PASSWORD)"
+    fi
+    printf '%s' "${value:-root_password}"
+}
+DB_PASSWORD="$(resolve_db_password)"
 # All mysql invocations read the password from the CONTAINER's env
 # (MYSQL_ROOT_PASSWORD) instead of putting it on the host argv, where it
 # would be visible to every user via 'ps aux'.
@@ -56,14 +82,70 @@ MIGRATE_IMAGE="python:3.11-slim@sha256:b27df5841f3355e9473f9a516d38a6783b6c8dfea
 log()  { echo -e "\033[0;32m[migrate]\033[0m $1"; }
 err()  { echo -e "\033[0;31m[migrate:ERROR]\033[0m $1" >&2; }
 
-# Any temp fetch dir is cleaned up on ANY exit (incl. SIGINT / set -e aborts).
-WORKDIR=""
-trap '[ -n "$WORKDIR" ] && rm -rf "$WORKDIR"' EXIT
+# Set to 1 at startup when tmp/ already existed before this run, so
+# adopt_tmp_owner only re-owns a tmp/ this run created (or one left behind by
+# an earlier root run).
+TMP_PREEXISTED=0
+if [ -d "$PROJECT_DIR/tmp" ]; then
+    TMP_PREEXISTED=1
+fi
 
-# --- 1. Resolve the dbscheme pin from versions.lock (single source of truth) ---
-LOCK_FILE="$PROJECT_DIR/versions.lock"
-if [ ! -f "$LOCK_FILE" ]; then
-    err "versions.lock not found at $LOCK_FILE — cannot resolve dbscheme pin."
+# adopt_tmp_owner
+# Root writes the dbscheme cache and alembic.ini under tmp/; without this the
+# next unprivileged run cannot chmod, rewrite or delete them. Does nothing
+# unless the effective user is root and the project directory belongs to
+# someone else. Re-owns the cache recursively and tmp/ itself when this run
+# created it or when it is root-owned (leftover of an earlier root run).
+# Best effort and idempotent: it never changes the exit status.
+adopt_tmp_owner() {
+    local me proj_uid proj_gid tmp_uid
+    me="$(id -u 2>/dev/null)" || return 0
+    [ "$me" = "0" ] || return 0
+    proj_uid="$(stat -c %u "$PROJECT_DIR" 2>/dev/null || stat -f %u "$PROJECT_DIR" 2>/dev/null)" || return 0
+    proj_gid="$(stat -c %g "$PROJECT_DIR" 2>/dev/null || stat -f %g "$PROJECT_DIR" 2>/dev/null)" || return 0
+    [[ "$proj_uid" =~ ^[0-9]+$ && "$proj_gid" =~ ^[0-9]+$ ]] || return 0
+    [ "$proj_uid" != "0" ] || return 0
+
+    if [ -d "$PROJECT_DIR/tmp" ]; then
+        tmp_uid="$(stat -c %u "$PROJECT_DIR/tmp" 2>/dev/null || stat -f %u "$PROJECT_DIR/tmp" 2>/dev/null)" || tmp_uid=""
+        if [ "$TMP_PREEXISTED" = "0" ] || [ "$tmp_uid" = "0" ]; then
+            chown -h "$proj_uid:$proj_gid" "$PROJECT_DIR/tmp" 2>/dev/null || true
+        fi
+    fi
+    if [ -d "$DBSCHEME_DIR" ]; then
+        chown -hR "$proj_uid:$proj_gid" "$DBSCHEME_DIR" 2>/dev/null || true
+    fi
+    return 0
+}
+
+# Any temp fetch dir is cleaned up on ANY exit (incl. SIGINT / set -e aborts),
+# and the cache ownership is restored on the same paths. The original exit
+# status is preserved.
+WORKDIR=""
+on_exit() {
+    local rc=$?
+    if [ -n "$WORKDIR" ]; then
+        rm -rf "$WORKDIR" || true
+    fi
+    adopt_tmp_owner || true
+    exit "$rc"
+}
+trap on_exit EXIT
+
+# --- 1. Resolve the dbscheme pin ---
+# versions.lock.dist is the committed template and the source of truth for
+# the schema pin; the live versions.lock (untracked, operator-owned) is only
+# used when the template does not exist.
+DIST_LOCK_FILE="$PROJECT_DIR/versions.lock.dist"
+LIVE_LOCK_FILE="$PROJECT_DIR/versions.lock"
+if [ -f "$DIST_LOCK_FILE" ]; then
+    LOCK_FILE="$DIST_LOCK_FILE"
+    PIN_SOURCE="dist"
+elif [ -f "$LIVE_LOCK_FILE" ]; then
+    LOCK_FILE="$LIVE_LOCK_FILE"
+    PIN_SOURCE="live"
+else
+    err "Neither versions.lock.dist nor versions.lock found in $PROJECT_DIR — cannot resolve dbscheme pin."
     exit 1
 fi
 if ! command -v python3 >/dev/null 2>&1; then
@@ -76,14 +158,24 @@ DBSCHEME_COMMIT="$(VB_LOCK_FILE="$LOCK_FILE" python3 -c "import json,os;print(js
     exit 1
 }
 if [ -z "$DBSCHEME_COMMIT" ]; then
-    err "dbscheme_monorepo_commit missing/empty in versions.lock."
+    err "dbscheme_monorepo_commit missing/empty in $LOCK_FILE."
     exit 1
 fi
-log "dbscheme pin (from versions.lock): $DBSCHEME_COMMIT"
+log "dbscheme pin (from $(basename "$LOCK_FILE")): $DBSCHEME_COMMIT"
 
 # --- 2. Fetch bin-dbscheme-manager at the pinned commit ---
 fetch_dbscheme() {
     mkdir -p "$PROJECT_DIR/tmp"
+
+    # A tmp/ or cache left behind by an earlier root run cannot be reused or
+    # replaced by an unprivileged user. Say so with the fix instead of
+    # failing later with a bare chmod/rm error.
+    if [ ! -w "$PROJECT_DIR/tmp" ] || { [ -e "$DBSCHEME_DIR" ] && [ ! -w "$DBSCHEME_DIR" ]; }; then
+        err "$PROJECT_DIR/tmp (or its dbscheme cache) is not writable by $(id -un)."
+        err "It was probably created by an earlier run as root. Fix with:"
+        err "  sudo chown -R $(id -un) $PROJECT_DIR/tmp"
+        return 1
+    fi
 
     # Already at the right commit?
     if [ -f "$DBSCHEME_DIR/.pin" ]; then
@@ -96,7 +188,12 @@ fetch_dbscheme() {
         fi
     fi
 
-    rm -rf "$DBSCHEME_DIR"
+    if ! rm -rf "$DBSCHEME_DIR"; then
+        err "Could not remove the stale dbscheme cache $DBSCHEME_DIR."
+        err "It was probably created by an earlier run as root. Fix with:"
+        err "  sudo chown -R $(id -un) $PROJECT_DIR/tmp"
+        return 1
+    fi
     WORKDIR="$(mktemp -d "$PROJECT_DIR/tmp/dbscheme-fetch.XXXXXX")"
     local workdir="$WORKDIR"
     local mono_dir="${VOIPBIN_MONOREPO_DIR:-$HOME/gitvoipbin/monorepo}"
@@ -187,7 +284,53 @@ CREATE_OUT="$(docker exec "$DB_CONTAINER" sh -c "$MYSQL_IN_DB -e 'CREATE DATABAS
 #         already started drifting). ---
 provision_asterisk_db_user "$DB_CONTAINER" || exit 1
 
-# --- 5. Write alembic.ini for both streams (PyMySQL DSN, db service hostname) ---
+# --- 4c. Decide who owns the bin_manager schema ---
+# marker_present
+# Reads the already fetched dbscheme tree. Return codes:
+#   0  bin-manager/RETIRED.md exists (services own the bin_manager schema)
+#   1  bin-manager/ exists without RETIRED.md (alembic pin)
+#   2  bin-manager/ itself is missing (unexpected tree layout)
+marker_present() {
+    [ -d "$DBSCHEME_DIR/bin-manager" ] || return 2
+    if [ -e "$DBSCHEME_DIR/bin-manager/RETIRED.md" ]; then
+        return 0
+    fi
+    return 1
+}
+
+# bin_manager_mode
+# Prints "<mode> <reason>" where mode is alembic|service-owned and reason is
+# table|marker-absent|marker-present. bin_manager.alembic_version existing
+# wins (reason=table). Return codes: 0 decided, 1 tree layout error,
+# 2 the table check returned a non-numeric answer.
+bin_manager_mode() {
+    local rc=0 count
+    marker_present || rc=$?
+    if [ "$rc" = "2" ]; then
+        err "Unexpected dbscheme tree at pin ${DBSCHEME_COMMIT:0:12}: bin-manager/ directory is missing."
+        return 1
+    fi
+    count="$(schema_mysql "$DB_CONTAINER" "SELECT COUNT(*) FROM information_schema.TABLES WHERE TABLE_SCHEMA='bin_manager' AND TABLE_NAME='alembic_version';")" || count=""
+    if ! [[ "$count" =~ ^[0-9]+$ ]]; then
+        err "Could not check for bin_manager.alembic_version (got: '${count:-nothing}')."
+        return 2
+    fi
+    if [ "$count" -ge 1 ]; then
+        echo "alembic table"
+    elif [ "$rc" = "0" ]; then
+        echo "service-owned marker-present"
+    else
+        echo "alembic marker-absent"
+    fi
+    return 0
+}
+
+BIN_MANAGER_MODE_OUT="$(bin_manager_mode)" || exit 1
+BIN_MANAGER_MODE="${BIN_MANAGER_MODE_OUT%% *}"
+BIN_MANAGER_REASON="${BIN_MANAGER_MODE_OUT#* }"
+echo "MIGRATE_MODE bin_manager=$BIN_MANAGER_MODE reason=$BIN_MANAGER_REASON pin=${DBSCHEME_COMMIT:0:12} pin_source=$PIN_SOURCE"
+
+# --- 5. Write alembic.ini for the streams that will run (PyMySQL DSN, db service hostname) ---
 write_alembic_ini() {
     local stream_dir="$1" dbname="$2" script_location="$3"
     cat > "$DBSCHEME_DIR/$stream_dir/alembic.ini" <<EOF
@@ -233,8 +376,16 @@ EOF
     # reach of other local users (default umask leaves it world-readable).
     chmod 600 "$DBSCHEME_DIR/$stream_dir/alembic.ini"
 }
-write_alembic_ini "bin-manager" "bin_manager" "main"
+if [ "$BIN_MANAGER_MODE" = "alembic" ]; then
+    write_alembic_ini "bin-manager" "bin_manager" "main"
+fi
 write_alembic_ini "asterisk_config" "asterisk" "config"
+
+# Everything under tmp/ is written now (also runs again on exit, covering
+# the early-abort paths above). The call here is intentionally redundant with
+# the EXIT trap: it fixes ownership before the long-running migrations start,
+# so an interrupted run still leaves a correctly owned tmp/.
+adopt_tmp_owner
 
 # --- 6. Run migrations sequentially in a container (abort on first failure) ---
 run_stream() {
@@ -249,7 +400,11 @@ run_stream() {
     log "$label: OK"
 }
 
-run_stream "bin-manager" "bin_manager (voipbin core)"
+if [ "$BIN_MANAGER_MODE" = "alembic" ]; then
+    run_stream "bin-manager" "bin_manager (voipbin core)"
+else
+    log "bin_manager: schema is owned by the services, skipping alembic."
+fi
 run_stream "asterisk_config" "asterisk (PJSIP config)"
 
 log "All migrations applied successfully."

@@ -730,11 +730,52 @@ check_database() {
     tables=$(docker exec "$db_id" sh -c "$DOCTOR_MYSQL_IN_DB -N -e \"SELECT COUNT(*) FROM information_schema.TABLES WHERE TABLE_SCHEMA = 'bin_manager';\"" root 2>/dev/null)
     alembic_bin=$(docker exec "$db_id" sh -c "$DOCTOR_MYSQL_IN_DB -N -e 'SELECT version_num FROM bin_manager.alembic_version LIMIT 1;'" root 2>/dev/null)
     alembic_ast=$(docker exec "$db_id" sh -c "$DOCTOR_MYSQL_IN_DB -N -e 'SELECT version_num FROM asterisk.alembic_version LIMIT 1;'" root 2>/dev/null)
-    if [[ ! "$tables" =~ ^[0-9]+$ || "$tables" -eq 0 || -z "$alembic_bin" || -z "$alembic_ast" ]]; then
+    if [[ ! "$tables" =~ ^[0-9]+$ || "$tables" -eq 0 || -z "$alembic_ast" ]]; then
         doctor_fail database "schema not initialized (bin_manager tables=${tables:-unknown}, alembic bin_manager=${alembic_bin:-none} asterisk=${alembic_ast:-none})" "./scripts/migrate.sh (invoked by start.sh) or ./scripts/start.sh"
-    else
-        doctor_result database pass "db responding, bin_manager tables=$tables, alembic versions present in bin_manager and asterisk"
+        return
     fi
+
+    # Which stream owns bin_manager decides what "migrated" means (see the
+    # schema helpers in common.sh). A failed lookup is "cannot tell", never a
+    # pass.
+    local mode status
+    if ! mode=$(schema_mode "$db_id") || ! status=$(schema_table_status "$db_id"); then
+        doctor_fail database "cannot determine the schema state (the database query failed)" "docker compose logs --tail=50 db; then re-run ./voipbin doctor"
+        return
+    fi
+
+    # A dirty version table means a migration is running or failed halfway. It
+    # fails in either mode, with a hint that it may just be in progress.
+    local dirty
+    dirty=$(schema_dirty_services "$status")
+    if [[ -n "$dirty" ]]; then
+        doctor_fail database "migration state is dirty, services=$dirty (a migration may still be in progress; retry shortly)" "$(schema_service_fix_hint "$dirty")"
+        return
+    fi
+
+    if [[ "$mode" == "alembic" ]]; then
+        if [[ -z "$alembic_bin" ]]; then
+            doctor_fail database "schema not initialized (bin_manager tables=$tables, alembic bin_manager=none asterisk=$alembic_ast)" "./scripts/migrate.sh (invoked by start.sh) or ./scripts/start.sh"
+        else
+            doctor_result database pass "db responding, bin_manager tables=$tables, alembic versions present in bin_manager and asterisk"
+        fi
+        return
+    fi
+
+    local unapplied
+    unapplied=$(schema_unapplied_services "$status")
+    if [[ -n "$unapplied" ]]; then
+        doctor_fail database "service migrations not applied, services=$unapplied" "$(schema_service_fix_hint "$unapplied")"
+    else
+        doctor_result database pass "db responding, bin_manager tables=$tables, service migrations applied for all ${#SERVICE_SCHEMA_TABLES[@]} services, asterisk alembic present"
+    fi
+}
+
+# schema_service_fix_hint <service,service,...>
+# One FIX line for a database failure that names services.
+schema_service_fix_hint() {
+    local first="${1%%,*}"
+    echo "for each service in [$1]: docker compose logs --tail=50 <service>; docker compose exec <service> /app/bin/<name>-control migrate status (<name> = service name without -manager, e.g. ${first%-manager}-control); a dirty version needs the recovery steps in the README (Troubleshooting an upgrade, Dirty migration state), not a restart"
 }
 
 # The RUNNING registrar-manager's DOMAIN_NAME_EXTENSION must equal .env - a

@@ -1571,7 +1571,8 @@ services:
   # webchat websocket lives in api-manager, not here, so no port is published and
   # no container_name is pinned (it ships no CLI for ops scripts to exec into).
   # Its widgets carry a direct_hash column, so it depends on direct-manager's
-  # schema (supplied by the dbscheme pin) rather than on the container.
+  # schema (created by the dbscheme pin or by direct-manager's own migrations,
+  # whichever owns the schema) rather than on the container.
   webchat-manager:
     image: voipbin/bin-webchat-manager@sha256:c661ad0fbd6509a793778726f1632b23a142e536d88e6fb4e8f59440eabefe76
     logging: *default-logging

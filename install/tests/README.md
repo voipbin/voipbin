@@ -50,7 +50,9 @@ tests/
 ├── common.bats                   # Tests for scripts/common.sh
 ├── config.bats                   # Configuration validation tests
 ├── doctor.bats                   # Tests for scripts/doctor.sh (install doctor, VOIP-1280)
+├── generate-versions-lock.bats   # Tests for scripts/generate-versions-lock.sh
 ├── init.bats                     # Tests for scripts/init.sh
+├── schema-state.bats             # Tests for the service schema state helpers in scripts/common.sh
 ├── setup-dns.bats                # Tests for scripts/setup-dns.sh
 └── setup-voip-network.bats       # Tests for scripts/setup-voip-network.sh
 ```

@@ -18,6 +18,8 @@
 # operator adding the two vars to an EXISTING install's .env and declining
 # to re-run migrations got a silently unprovisioned DB user).
 
+bats_require_minimum_version 1.5.0
+
 load 'test_helper'
 
 setup() {
@@ -112,6 +114,10 @@ if [[ \"\$1\" == \"exec\" ]]; then
             if [[ '$db_state' == 'initialized' ]]; then echo 'rev-bin-1'; else echo ''; fi
             exit 0
             ;;
+        *'COUNT(*)'*'information_schema.TABLES'*)
+            if [[ '$db_state' == 'initialized' ]]; then echo 42; else echo 0; fi
+            exit 0
+            ;;
         *'asterisk.alembic_version'*)
             if [[ '$db_state' == 'initialized' ]]; then echo 'rev-ast-1'; else echo ''; fi
             exit 0
@@ -173,4 +179,96 @@ exit 0
     [[ "$status" -ne 0 ]]
     [[ "$output" == *"DATABASE_ASTERISK_PASSWORD"* ]]
     ! grep -q "CREATE DATABASE" "$log_file"
+}
+
+# --- check_migrations_applied: shared rule with start.sh (db_schema_initialized) ---
+#
+# bin_manager counts as migrated with an alembic row OR a service version
+# table; asterisk always needs its alembic row; bin_manager must have tables.
+
+stub_docker_schema_probe() {
+    rm -f "$TEST_TEMP_DIR"/{bin_alembic,ast_alembic,svc_tables,bin_tables}
+    mock_command_script "docker" '
+body="$*"
+read_or_empty() { [[ -f "'"$TEST_TEMP_DIR"'/$1" ]] && cat "'"$TEST_TEMP_DIR"'/$1"; return 0; }
+case "$body" in
+    *"bin_manager.alembic_version"*) read_or_empty bin_alembic ;;
+    *"asterisk.alembic_version"*)    read_or_empty ast_alembic ;;
+    *"LIKE"*"schema"*)               read_or_empty svc_tables ;;
+    *"information_schema.TABLES"*)   read_or_empty bin_tables ;;
+esac
+exit 0
+'
+}
+
+@test "check_migrations_applied: service-owned bin_manager (schema tables, no alembic row) counts as applied" {
+    load_init_database_main_functions
+    stub_docker_schema_probe
+    echo 30 > "$TEST_TEMP_DIR/bin_tables"
+    echo c07b40884361 > "$TEST_TEMP_DIR/ast_alembic"
+    echo 5 > "$TEST_TEMP_DIR/svc_tables"
+
+    run check_migrations_applied
+
+    [[ "$status" -eq 0 ]]
+    [[ "$output" == *"Migrations already applied"* ]]
+}
+
+@test "check_migrations_applied: alembic bin_manager plus asterisk counts as applied" {
+    load_init_database_main_functions
+    stub_docker_schema_probe
+    echo 30 > "$TEST_TEMP_DIR/bin_tables"
+    echo c07b40884361 > "$TEST_TEMP_DIR/ast_alembic"
+    echo a5e6f559299c > "$TEST_TEMP_DIR/bin_alembic"
+
+    run check_migrations_applied
+
+    [[ "$status" -eq 0 ]]
+}
+
+@test "check_migrations_applied: bin_manager with no alembic row and no service version table is not applied" {
+    load_init_database_main_functions
+    stub_docker_schema_probe
+    echo 30 > "$TEST_TEMP_DIR/bin_tables"
+    echo c07b40884361 > "$TEST_TEMP_DIR/ast_alembic"
+    echo 0 > "$TEST_TEMP_DIR/svc_tables"
+
+    run check_migrations_applied
+
+    [[ "$status" -eq 1 ]]
+}
+
+@test "check_migrations_applied: service tables without the asterisk alembic row are not applied" {
+    load_init_database_main_functions
+    stub_docker_schema_probe
+    echo 30 > "$TEST_TEMP_DIR/bin_tables"
+    echo 5 > "$TEST_TEMP_DIR/svc_tables"
+
+    run check_migrations_applied
+
+    [[ "$status" -eq 1 ]]
+}
+
+@test "check_migrations_applied: an empty bin_manager is not applied even if version rows exist" {
+    load_init_database_main_functions
+    stub_docker_schema_probe
+    echo 0 > "$TEST_TEMP_DIR/bin_tables"
+    echo c07b40884361 > "$TEST_TEMP_DIR/ast_alembic"
+    echo a5e6f559299c > "$TEST_TEMP_DIR/bin_alembic"
+
+    run check_migrations_applied
+
+    [[ "$status" -eq 1 ]]
+}
+
+@test "check_migrations_applied uses the shared db_schema_initialized rule (no duplicate copy of the query)" {
+    run grep -c "alembic_version" "$SCRIPTS_DIR/init_database.sh"
+    local direct="$output"
+
+    grep -q "db_schema_initialized voipbin-db" "$SCRIPTS_DIR/init_database.sh"
+    # start.sh and init_database.sh both delegate to the same common.sh function.
+    grep -q "db_schema_initialized voipbin-db" "$SCRIPTS_DIR/start.sh"
+    run ! grep -q "SELECT version_num FROM bin_manager.alembic_version" "$SCRIPTS_DIR/init_database.sh"
+    run ! grep -q "SELECT version_num FROM bin_manager.alembic_version" "$SCRIPTS_DIR/start.sh"
+    [[ -n "$direct" ]]
 }

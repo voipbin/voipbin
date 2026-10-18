@@ -104,21 +104,13 @@ check_databases_exist() {
     return 1
 }
 
-# Check if alembic migrations have been applied
+# Check if the schema has been migrated. The rule is shared with start.sh
+# (db_schema_initialized in common.sh): bin_manager has tables, the asterisk
+# alembic stream has a version, and bin_manager is owned by alembic (a row in
+# its alembic_version) or by the services (a *schema_migrations table).
 check_migrations_applied() {
-    local bin_manager_version
-    local asterisk_version
-
-    # Check bin_manager
-    bin_manager_version=$(docker exec voipbin-db sh -c "$IN_DB_MYSQL -N -e 'SELECT version_num FROM bin_manager.alembic_version LIMIT 1;'" root 2>/dev/null || echo "")
-
-    # Check asterisk
-    asterisk_version=$(docker exec voipbin-db sh -c "$IN_DB_MYSQL -N -e 'SELECT version_num FROM asterisk.alembic_version LIMIT 1;'" root 2>/dev/null || echo "")
-
-    if [ -n "$bin_manager_version" ] && [ -n "$asterisk_version" ]; then
-        log_info "Migrations already applied:"
-        log_info "  bin_manager: $bin_manager_version"
-        log_info "  asterisk: $asterisk_version"
+    if db_schema_initialized voipbin-db; then
+        log_info "Migrations already applied (bin_manager and asterisk schemas present)"
         return 0
     fi
     return 1

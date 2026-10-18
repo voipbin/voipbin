@@ -88,6 +88,21 @@ LOCK_ONLY_IMAGES=(
     voipbin/bin-sentinel-manager
 )
 
+# Give a newly created file the owner of its directory when running as root in
+# a directory that belongs to someone else (best effort, never fatal).
+# GNU stat first, BSD stat as the fallback.
+adopt_dir_owner() {
+    local path="$1" dir uid gid
+    [ "$(id -u)" = "0" ] || return 0
+    dir="$(dirname "$path")"
+    uid="$(stat -c %u "$dir" 2>/dev/null || stat -f %u "$dir" 2>/dev/null || echo 0)"
+    gid="$(stat -c %g "$dir" 2>/dev/null || stat -f %g "$dir" 2>/dev/null || echo 0)"
+    if [ "$uid" != "0" ]; then
+        chown "$uid:$gid" "$path" 2>/dev/null || true
+    fi
+    return 0
+}
+
 # =============================================================================
 # Main
 # =============================================================================
@@ -118,13 +133,27 @@ main() {
     # (reading LOCK_FILE needs no lock of its own: bump-image-digest.sh's
     # atomic rename means a reader here always sees either the fully-old or
     # fully-new versions.lock, never a partial one).
+    # Whether the lock file pre-exists is decided before the redirect below
+    # creates it: only a newly created lock file is handed to the directory
+    # owner; an existing one keeps its owner.
+    local flock_existed=0
+    [ -e "$COMPOSE_FILE.flock" ] && flock_existed=1
+
     (
     acquire_file_lock "$COMPOSE_FILE" "${LOCK_TIMEOUT_SECONDS:-30}" || exit $?
+
+    if [ "$flock_existed" = "0" ]; then
+        adopt_dir_owner "$COMPOSE_FILE.flock"
+    fi
+    # A temp file left by an interrupted run. Removed only after the lock is
+    # held, so another run's in-flight temp file is never deleted.
+    rm -f "$COMPOSE_FILE.tmp"
 
     python3 - "$LOCK_FILE" "$COMPOSE_FILE" "${LOCK_ONLY_IMAGES[@]}" <<'PYEOF'
 import json
 import os
 import re
+import stat
 import sys
 
 lock_path, compose_path = sys.argv[1:3]
@@ -210,9 +239,20 @@ if errors:
 
 updated = "".join(out_lines)
 if updated != original:
+    # Keep the replaced file's owner and mode: the temp file is created by
+    # this process (often root, via the CLI) and would otherwise change who
+    # owns the live compose file after os.replace().
+    orig_stat = os.stat(compose_path)
     tmp_path = compose_path + ".tmp"
     with open(tmp_path, "w") as f:
         f.write(updated)
+        f.flush()
+        try:
+            os.fchown(f.fileno(), orig_stat.st_uid, orig_stat.st_gid)
+        except PermissionError:
+            # A non-root user cannot hand the file to another uid/gid.
+            pass
+        os.fchmod(f.fileno(), stat.S_IMODE(orig_stat.st_mode))
     os.replace(tmp_path, compose_path)
 
 total_lines = sum(referenced.values())

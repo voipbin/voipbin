@@ -408,19 +408,17 @@ check_host_prereqs() {
     return 0
 }
 
-# Check if database is initialized. Mirrors doctor.sh's check_database(): a
-# partial migration (bin_manager gets some tables, then alembic aborts before
-# the asterisk_config stream ever runs) must NOT be mistaken for "done", or
-# every subsequent start.sh run silently skips migrate.sh forever and the
-# asterisk schema (e.g. ps_aors, needed for extension/AOR creation) never
-# gets created.
+# Check if database is initialized. The rule lives in common.sh
+# (db_schema_initialized, shared with init_database.sh): bin_manager has
+# tables, asterisk.alembic_version has a row, and bin_manager is owned by
+# either alembic (a row in its alembic_version) or the services (at least
+# one *schema_migrations table). A partial migration (bin_manager gets some
+# tables, then the asterisk stream never runs) must NOT be mistaken for
+# "done", or every subsequent start.sh run silently skips migrate.sh forever
+# and the asterisk schema (e.g. ps_aors, needed for extension/AOR creation)
+# never gets created.
 check_database_initialized() {
-    local tables alembic_bin alembic_ast
-    tables=$(docker exec voipbin-db sh -c "$START_MYSQL_IN_DB -N -e \"SELECT COUNT(*) FROM information_schema.TABLES WHERE TABLE_SCHEMA = 'bin_manager';\"" root 2>/dev/null || echo "0")
-    alembic_bin=$(docker exec voipbin-db sh -c "$START_MYSQL_IN_DB -N -e 'SELECT version_num FROM bin_manager.alembic_version LIMIT 1;'" root 2>/dev/null)
-    alembic_ast=$(docker exec voipbin-db sh -c "$START_MYSQL_IN_DB -N -e 'SELECT version_num FROM asterisk.alembic_version LIMIT 1;'" root 2>/dev/null)
-
-    if [[ "$tables" =~ ^[0-9]+$ ]] && [ "$tables" -gt "0" ] && [ -n "$alembic_bin" ] && [ -n "$alembic_ast" ]; then
+    if db_schema_initialized voipbin-db; then
         return 0
     fi
     return 1
@@ -829,7 +827,9 @@ main() {
     else
         log_warn "Database not initialized. Running containerized migration (migrate.sh)..."
         # migrate.sh runs alembic inside a python:3.11-slim container on the
-        # compose network — no host pip/alembic required (design §3.3).
+        # compose network — no host pip/alembic required. It
+        # skips the bin_manager stream once the pinned schema tree is marked
+        # as service-owned; the services then create their own tables.
         if ! "$SCRIPT_DIR/migrate.sh"; then
             log_error "Database migration failed!"
             log_error "Check the output above, then re-run: voipbin> start"
@@ -906,6 +906,11 @@ main() {
     # Step 10: Wait for services to stabilize
     log_step "Waiting for services to stabilize..."
     sleep 5
+
+    # Step 10a: Wait for the services to apply their own schema migrations
+    # (service-owned mode). Returns immediately in alembic mode, and never
+    # fails the start: on timeout it prints which services are still missing.
+    wait_for_service_schema "voipbin-db" || true
 
     # Step 10b: Enable the scheduler's in-stack DB backup (VOIP-1281) — ships
     # disabled upstream, self-hosted installs turn it on.
