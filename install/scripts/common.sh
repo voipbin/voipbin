@@ -1012,15 +1012,10 @@ acquire_file_lock() {
 # Service-owned schema state (start.sh, doctor.sh, init_database.sh)
 # =============================================================================
 #
-# Two schema owners can exist for the bin_manager database:
-#   - alembic mode:        the legacy dbscheme stream owns it and
-#                          bin_manager.alembic_version exists.
-#   - service-owned mode:  each service applies its own embedded migrations on
-#                          start and records them in <prefix>_schema_migrations
-#                          (golang-migrate: one row, columns version/dirty).
-# The mode is decided by one fact only: whether bin_manager.alembic_version
-# exists. A table that exists but has no row is still alembic mode (alembic
-# resumes from there).
+# The services own the bin_manager schema: each applies its own embedded
+# migrations on start and records them in <prefix>_schema_migrations
+# (golang-migrate: one row, columns version/dirty). The installer only
+# creates the empty databases and runs the asterisk (PJSIP) Alembic stream.
 #
 # A service counts as "applied" when its version table exists, holds exactly
 # one row and that row has dirty=0. A missing table, an empty table (created
@@ -1107,21 +1102,6 @@ schema_service_for_table() {
     printf '%s' "$table"
 }
 
-# schema_mode <db-container>
-# Prints "alembic" or "service-owned". Returns 1 (prints nothing) when the
-# answer cannot be determined, so callers never guess a mode.
-schema_mode() {
-    local n
-    n="$(schema_mysql "$1" "SELECT COUNT(*) FROM information_schema.TABLES WHERE TABLE_SCHEMA='bin_manager' AND TABLE_NAME='alembic_version';")" || return 1
-    [[ "$n" =~ ^[0-9]+$ ]] || return 1
-    if [ "$n" -ge 1 ]; then
-        echo "alembic"
-    else
-        echo "service-owned"
-    fi
-    return 0
-}
-
 # schema_table_status <db-container>
 # Prints "<table>\t<rows>\t<dirty-rows>" for every existing version table: the
 # exact names in SERVICE_SCHEMA_TABLES plus any other table ending in
@@ -1185,22 +1165,16 @@ schema_dirty_services() {
 
 # db_schema_initialized <db-container>
 # True when the database holds a complete first install: bin_manager has
-# tables, asterisk.alembic_version has a row, and bin_manager is owned by
-# either alembic (a row in its alembic_version) or the services (at least one
-# *schema_migrations table). A half-migrated install (bin_manager tables but
-# the asterisk stream never ran) is NOT initialized.
+# tables, asterisk.alembic_version has a row, and at least one service has
+# created its *schema_migrations table. A half-migrated install (bin_manager
+# tables but the asterisk stream never ran) is NOT initialized.
 db_schema_initialized() {
-    local container="$1" tables ast bin svc_tables
+    local container="$1" tables ast svc_tables
     tables="$(schema_mysql "$container" "SELECT COUNT(*) FROM information_schema.TABLES WHERE TABLE_SCHEMA = 'bin_manager';")" || tables=0
     [[ "$tables" =~ ^[0-9]+$ ]] && [ "$tables" -gt 0 ] || return 1
 
     ast="$(schema_mysql "$container" "SELECT version_num FROM asterisk.alembic_version LIMIT 1;")" || ast=""
     [ -n "$ast" ] || return 1
-
-    bin="$(schema_mysql "$container" "SELECT version_num FROM bin_manager.alembic_version LIMIT 1;")" || bin=""
-    if [ -n "$bin" ]; then
-        return 0
-    fi
 
     svc_tables="$(schema_mysql "$container" "SELECT COUNT(*) FROM information_schema.TABLES WHERE TABLE_SCHEMA='bin_manager' AND TABLE_NAME LIKE '%schema\\_migrations';")" || svc_tables=0
     [[ "$svc_tables" =~ ^[0-9]+$ ]] && [ "$svc_tables" -gt 0 ] || return 1
@@ -1259,12 +1233,11 @@ schema_gate_backup_listed() {
 }
 
 # wait_for_service_schema <db-container>
-# Waits until every service has applied its own migrations (service-owned
-# mode), then returns 0. Never fails the caller: on timeout or an early exit
-# it prints a warning naming the services still missing and returns 0.
+# Waits until every service has applied its own migrations, then returns 0.
+# Never fails the caller: on timeout or an early exit it prints a warning
+# naming the services still missing and returns 0.
 #
 # Output (stdout, one line each):
-#   SCHEMA_GATE skipped mode=alembic
 #   SCHEMA_GATE waiting done=<n>/<total> missing=<service,...>   (every 10s)
 #   SCHEMA_GATE complete elapsed=<seconds>
 #   SCHEMA_GATE incomplete elapsed=<seconds> services=<service,...>[ schedule=pending]
@@ -1285,21 +1258,14 @@ wait_for_service_schema() {
     local interval=10
     local total=${#SERVICE_SCHEMA_TABLES[@]}
 
-    local start elapsed mode status entry svc nap
+    local start elapsed status entry svc nap
     local applied missing done_n backup_ok
     local prev_applied="" have_prev=0 streak=0
     start="$(schema_gate_now)"
 
     while true; do
-        mode=""
-        mode="$(schema_mode "$db")" || mode=""
-        if [ "$mode" = "alembic" ]; then
-            echo "SCHEMA_GATE skipped mode=alembic"
-            return 0
-        fi
-
         status=""
-        if [ "$mode" = "service-owned" ] && status="$(schema_table_status "$db")"; then
+        if status="$(schema_table_status "$db")"; then
             applied=""
             missing=""
             done_n=0

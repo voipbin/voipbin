@@ -114,16 +114,34 @@ touches. If you're upgrading an install that predates this split, the same
 recovery applies: `git log --all --oneline --diff-filter=D -- versions.lock`
 then `git show <that commit>^:./versions.lock > versions.lock`.
 
-After recovering these files, follow [Upgrading an Existing Install](#upgrading-an-existing-install).
+An install that predates this split also predates the service-owned database
+schema, so it cannot be upgraded in place; see
+[Upgrading an Existing Install](#upgrading-an-existing-install) for what to do.
 
 See [Install Modes](#install-modes) for `external` mode (a real domain
 instead of `voipbin.test`).
 
 ### Upgrading an Existing Install
 
-Installs created before 2026-08-13 (before `docker-compose.yml` was split into
-the tracked `docker-compose.yml.dist`) are out of scope for this section;
-recover them as described above first, then follow these steps.
+**Installs created before the service-owned database schema are not
+supported.** Earlier installs created the main database (`bin_manager`) with
+a separate Alembic migration stream. Each service now creates and migrates its
+own tables when it starts, and there is no migration path from the earlier
+layout and no data transfer between the two. Do **not** run `update all` on an
+earlier install: the services would try to create their tables on top of
+tables the old stream created. Reinstall instead: the full reset is
+`./scripts/clean.sh --volumes --purge` (it deletes all data), after which you
+follow the install steps at the top of this README again. To check whether an
+install is an earlier one, run this from the `install/` directory:
+
+```bash
+docker exec voipbin-db sh -c "MYSQL_PWD=\"\$MYSQL_ROOT_PASSWORD\" mysql -uroot -N -e \"SELECT COUNT(*) FROM information_schema.TABLES WHERE TABLE_SCHEMA='bin_manager' AND TABLE_NAME='alembic_version'\""
+```
+
+`1` means an earlier install (reinstall); `0` means the steps below apply.
+
+The steps below are the normal procedure for moving an install that already
+uses service-owned schemas to a later version.
 
 `docker-compose.yml` and `.env` are yours: `git pull` never changes them and
 the CLI never merges them automatically. Upstream changes arrive in
@@ -158,22 +176,9 @@ your `docker-compose.yml`, runs the database migrations, pulls and recreates
 containers, then verifies the stack. Containers are recreated, so expect a
 brief service interruption (calls and API requests in flight can fail).
 
-#### Items to merge for the move to service-owned migrations
-
-Once the pinned schema tree is marked as retired from Alembic (it contains a
-`RETIRED.md` marker), database schema changes are applied by each service
-itself instead of by the host-side Alembic stream for the main database.
-Merge these from the diff
-(the full `docker-compose.yml.dist` and `.env.template` diff is authoritative;
-re-check it rather than relying on this list):
-
-- two new services added to `docker-compose.yml`
-- a healthcheck on `schedule-manager`
-- a credential setting on `tts-manager`
-- the `shared-data` volume
-- `API_PUBLIC_BASE_URL`, in both `docker-compose.yml` and `.env`
-- `DOMAIN_SHORT_LABEL_ENABLED`
-- the database name used by `rag-manager`
+The full `docker-compose.yml.dist` and `.env.template` diff is authoritative:
+re-read it for new services, healthchecks, volumes and settings instead of
+relying on a summary.
 
 For a file you edited, a 3-way merge can save work, for example:
 `git show origin/<branch>:install/docker-compose.yml.dist > /tmp/new.dist; git show HEAD:install/docker-compose.yml.dist > /tmp/old.dist; git merge-file docker-compose.yml /tmp/old.dist /tmp/new.dist`
@@ -242,11 +247,10 @@ longer to settle on such installs.
   code 11 or an error naming the path. Fix with
   `sudo chown -R <your-user>: <path>` (for example `tmp`, or `.backup/` when a
   root-run backup created it) and rerun.
-- **`Can't locate revision`.** The live `versions.lock` pins a database-schema
-  commit that is newer than the one in `versions.lock.dist`, so the
-  Alembic stream cannot find the revision in the older tree. Pull the latest
-  `versions.lock.dist` (`git pull --ff-only`), compare it with your live
-  `versions.lock`, and align `dbscheme_monorepo_commit` before rerunning
+- **`Can't locate revision`.** The asterisk (PJSIP) schema in the database is
+  at a revision that the pinned schema tree does not contain, for example
+  after an older `versions.lock.dist` was checked out. Pull the latest
+  `versions.lock.dist` (`git pull --ff-only`) before rerunning
   `sudo ./voipbin update all`.
 - **Dirty migration state.** A service migration that was interrupted or failed
   leaves its version table with `dirty=1`, and `doctor` reports the service.

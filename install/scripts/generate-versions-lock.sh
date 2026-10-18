@@ -59,15 +59,14 @@
 # exits non-zero and versions.lock is NOT written. Established entries are
 # unaffected and keep the fallback behavior described above.
 #
-# Service-owned schema check: once the target's bin-dbscheme-manager tree
-# carries bin-manager/RETIRED.md, the services own their schema, so every image
-# that ships embedded migrations (<service>/migrations/embed.go at the target)
-# must be pinned to an image built from a commit that already contained the
-# migration runner (the first commit calling migrationhandler.Run in the
-# service's cmd/ directory) or a later one, and must carry the same migrations/
-# files as the target. A violation, or a service that falls back to its current
-# pin ("keeping current pin"), fails the run with a non-zero exit and nothing
-# is written. Targets without RETIRED.md are not checked. The check only READS
+# Service-owned schema check: the services own the bin_manager schema, so
+# every image that ships embedded migrations (<service>/migrations/embed.go at
+# the target) must be pinned to an image built from a commit that already
+# contained the migration runner (the first commit calling
+# migrationhandler.Run in the service's cmd/ directory) or a later one, and
+# must carry the same migrations/ files as the target. A violation, or a
+# service that falls back to its current pin ("keeping current pin"), fails
+# the run with a non-zero exit and nothing is written. The check only READS
 # MONOREPO_PATH (it never fetches) and finds the introduction commit in the
 # target's own history, so it does not depend on the checkout's remotes.
 #
@@ -224,14 +223,9 @@ print(digest)
 # verify_service_migration_pins <target-commit> <resolved-file> <images>
 # <resolved-file> holds "image<TAB>sha<TAB>digest" lines for the images that
 # resolved to a registry tag; <images> is the newline separated image list.
-# Returns 0 when the target is not marked or all checks pass, 1 otherwise.
+# Returns 0 when all checks pass, 1 otherwise.
 verify_service_migration_pins() {
     local target="$1" resolved_file="$2" images="$3"
-    local marker="bin-dbscheme-manager/bin-manager/RETIRED.md"
-
-    if ! git -C "$MONOREPO_PATH" cat-file -e "$target:$marker" 2> /dev/null; then
-        return 0
-    fi
 
     log_step "Checking service-owned schema pins"
     local image service_dir sha intro failed=0 checked=0

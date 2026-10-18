@@ -1,6 +1,6 @@
 #!/usr/bin/env bats
-# Tests for the service-owned schema helpers in common.sh (schema_mode,
-# schema_table_status, schema_table_applied, schema_*_services) and for
+# Tests for the service-owned schema helpers in common.sh
+# (schema_table_status, schema_table_applied, schema_*_services) and for
 # scripts/check-schema-table-list.sh.
 #
 # Most tests stub docker. The "real MySQL" tests are opt-in: set
@@ -52,32 +52,6 @@ status_text() {
     [[ "$output" == "'agent_schema_migrations','ai_schema_migrations'"* ]]
     [[ "$output" == *"'webchat_schema_migrations'" ]]
     [[ "$(grep -o "'" <<< "$output" | wc -l)" -eq 52 ]]
-}
-
-@test "schema_mode: table count 0 => service-owned, >=1 => alembic, garbage or failure => rc 1" {
-    mock_command "docker" "0"
-    run schema_mode voipbin-db
-    [[ "$status" -eq 0 && "$output" == "service-owned" ]]
-
-    mock_command "docker" "1"
-    run schema_mode voipbin-db
-    [[ "$status" -eq 0 && "$output" == "alembic" ]]
-
-    mock_command "docker" "ERROR 1045 (28000): Access denied"
-    run schema_mode voipbin-db
-    [[ "$status" -eq 1 && -z "$output" ]]
-
-    mock_command "docker" "" 1
-    run schema_mode voipbin-db
-    [[ "$status" -eq 1 ]]
-}
-
-@test "schema_mode asks about bin_manager.alembic_version in information_schema" {
-    mock_command_script "docker" 'echo "$*" >> "'"$TEST_TEMP_DIR"'/args"; echo 0'
-
-    run schema_mode voipbin-db
-
-    grep -q "TABLE_SCHEMA='bin_manager' AND TABLE_NAME='alembic_version'" "$TEST_TEMP_DIR/args"
 }
 
 @test "schema_table_status lists only tables that have a dirty column" {
@@ -269,18 +243,6 @@ real_db_setup() {
     run ! schema_table_applied billing_schema_migrations "$st"
     run ! schema_table_applied call_schema_migrations "$st"
     [[ "$(schema_dirty_services "$st")" == "billing-manager,rag_schema_migrations" ]]
-    real_db "DROP DATABASE bin_manager;" >/dev/null
-}
-
-@test "real mysql: schema_mode follows the existence of bin_manager.alembic_version" {
-    real_db_setup
-
-    run schema_mode "$SCHEMA_TEST_DB_CONTAINER"
-    [[ "$output" == "service-owned" ]]
-
-    real_db "CREATE TABLE bin_manager.alembic_version (version_num varchar(32) NOT NULL);" >/dev/null
-    run schema_mode "$SCHEMA_TEST_DB_CONTAINER"
-    [[ "$output" == "alembic" ]]
     real_db "DROP DATABASE bin_manager;" >/dev/null
 }
 

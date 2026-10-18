@@ -30,9 +30,9 @@ DB_ROOT_PASSWORD="${MYSQL_ROOT_PASSWORD:-root_password}"
 # means this script does not need MYSQL_ROOT_PASSWORD set in the host shell
 # (it isn't, since this script never sources .env) — the container already
 # has the var injected via docker-compose.yml. DB_ROOT_PASSWORD above is
-# retained only for the legacy configure_alembic()/run_migrations() fallback
-# path below (unused by main(), which delegates to migrate.sh), which writes
-# a DSN into an alembic.ini config file rather than a process argv.
+# retained only for the legacy configure_alembic()/run_migrations() functions
+# below (never called: main() delegates to migrate.sh), which write a DSN into
+# an alembic.ini config file rather than a process argv.
 IN_DB_MYSQL='exec mysql -u"$0" -p"${MYSQL_ROOT_PASSWORD:-root_password}"'
 
 # Monorepo configuration
@@ -106,8 +106,8 @@ check_databases_exist() {
 
 # Check if the schema has been migrated. The rule is shared with start.sh
 # (db_schema_initialized in common.sh): bin_manager has tables, the asterisk
-# alembic stream has a version, and bin_manager is owned by alembic (a row in
-# its alembic_version) or by the services (a *schema_migrations table).
+# alembic stream has a version, and at least one service has created its
+# *schema_migrations table.
 check_migrations_applied() {
     if db_schema_initialized voipbin-db; then
         log_info "Migrations already applied (bin_manager and asterisk schemas present)"
@@ -440,10 +440,12 @@ main() {
     echo ""
 
     # Delegate schema migration to the containerized migrate.sh (design §3.3):
-    # runs alembic inside python:3.11-slim on the compose network - no host
-    # pip/alembic required. The legacy host-alembic functions
-    # (setup_dbscheme/configure_alembic/run_migrations) remain above for
-    # reference/fallback but are no longer on the default path.
+    # runs the asterisk alembic stream inside python:3.11-slim on the compose
+    # network - no host pip/alembic required - while the services own the
+    # bin_manager schema. The legacy host-alembic functions
+    # (setup_dbscheme/configure_alembic/run_migrations) above are never
+    # called; configure_alembic()/run_migrations() still reference the
+    # bin-manager stream and must not be used.
     if ! "$SCRIPT_DIR/migrate.sh"; then
         log_error "Containerized migration failed (scripts/migrate.sh)."
         exit 1

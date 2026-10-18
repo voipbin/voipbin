@@ -410,10 +410,9 @@ check_host_prereqs() {
 
 # Check if database is initialized. The rule lives in common.sh
 # (db_schema_initialized, shared with init_database.sh): bin_manager has
-# tables, asterisk.alembic_version has a row, and bin_manager is owned by
-# either alembic (a row in its alembic_version) or the services (at least
-# one *schema_migrations table). A partial migration (bin_manager gets some
-# tables, then the asterisk stream never runs) must NOT be mistaken for
+# tables, asterisk.alembic_version has a row, and at least one service has
+# created its *schema_migrations table. A partial migration (bin_manager gets
+# some tables, then the asterisk stream never runs) must NOT be mistaken for
 # "done", or every subsequent start.sh run silently skips migrate.sh forever
 # and the asterisk schema (e.g. ps_aors, needed for extension/AOR creation)
 # never gets created.
@@ -826,10 +825,10 @@ main() {
         log_info "Database is already initialized"
     else
         log_warn "Database not initialized. Running containerized migration (migrate.sh)..."
-        # migrate.sh runs alembic inside a python:3.11-slim container on the
-        # compose network — no host pip/alembic required. It
-        # skips the bin_manager stream once the pinned schema tree is marked
-        # as service-owned; the services then create their own tables.
+        # migrate.sh creates the databases and runs the asterisk alembic
+        # stream inside a python:3.11-slim container on the compose network
+        # (no host pip/alembic required); the services then create their own
+        # bin_manager tables.
         if ! "$SCRIPT_DIR/migrate.sh"; then
             log_error "Database migration failed!"
             log_error "Check the output above, then re-run: voipbin> start"
@@ -907,9 +906,9 @@ main() {
     log_step "Waiting for services to stabilize..."
     sleep 5
 
-    # Step 10a: Wait for the services to apply their own schema migrations
-    # (service-owned mode). Returns immediately in alembic mode, and never
-    # fails the start: on timeout it prints which services are still missing.
+    # Step 10a: Wait for the services to apply their own schema migrations.
+    # Never fails the start: on timeout it prints which services are still
+    # missing.
     wait_for_service_schema "voipbin-db" || true
 
     # Step 10b: Enable the scheduler's in-stack DB backup (VOIP-1281) — ships

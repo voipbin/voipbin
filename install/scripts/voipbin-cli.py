@@ -6303,7 +6303,7 @@ Type 'registrar <subcommand> help' for more details.
         def run_migrations():
             """Run database migrations via the containerized migrate.sh
             (no host alembic needed; non-interactive by design). The pinned
-            schema revision source is decided by migrate.sh."""
+            schema revision source is resolved by migrate.sh."""
             # migrate.sh resolves the dbscheme pin from versions.lock. On a
             # genuinely unpinned repo there is no lock to migrate against -
             # skip with guidance instead of guaranteed failure.

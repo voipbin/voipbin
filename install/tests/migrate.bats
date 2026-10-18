@@ -97,16 +97,16 @@ esac
     stub_git_for_fresh_fetch
     mkdir -p "$PROJECT_DIR/tmp"
     fetch_dbscheme
-    mkdir -p "$DBSCHEME_DIR/bin-manager"
+    mkdir -p "$DBSCHEME_DIR/asterisk_config"
 
-    write_alembic_ini "bin-manager" "bin_manager" "main"
+    write_alembic_ini "asterisk_config" "asterisk" "config"
 
-    local ini="$DBSCHEME_DIR/bin-manager/alembic.ini"
+    local ini="$DBSCHEME_DIR/asterisk_config/alembic.ini"
     [[ -f "$ini" ]]
     local mode
     mode="$(stat -c '%a' "$ini")"
     [[ "$mode" == "600" ]]
-    grep -q "sqlalchemy.url = mysql+pymysql://$DB_USER:$DB_PASSWORD@db:3306/bin_manager" "$ini"
+    grep -q "sqlalchemy.url = mysql+pymysql://$DB_USER:$DB_PASSWORD@db:3306/asterisk" "$ini"
 }
 
 @test "write_alembic_ini writes alembic.ini at mode 600 (cached-fetch path)" {
@@ -154,127 +154,11 @@ esac
 }
 
 # =============================================================================
-# Schema ownership: pin source, mode decision, stream selection, cache
+# Schema ownership: pin source, stream selection (asterisk only), cache
 # ownership. Function-level tests use the extracted helpers; the end-to-end
 # tests copy migrate.sh next to a throwaway project directory and run it with
 # stubbed docker/sleep/chown so nothing touches the network or a real database.
 # =============================================================================
-
-# Fake `docker` for the function-level tests: answers the alembic_version
-# table-count query from $TEST_TEMP_DIR/alembic_count (empty file => no answer).
-stub_docker_alembic_count() {
-    printf '%s\n' "$1" > "$TEST_TEMP_DIR/alembic_count"
-    mock_command_script "docker" '
-if [[ "$*" == *"TABLE_NAME='"'"'alembic_version'"'"'"* ]]; then
-    cat "'"$TEST_TEMP_DIR"'/alembic_count"
-    [[ -s "'"$TEST_TEMP_DIR"'/alembic_count" ]] || exit 1
-    exit 0
-fi
-exit 0
-'
-}
-
-make_dbscheme_tree() {
-    # $1 = "marker" to add bin-manager/RETIRED.md, "nomarker" for a plain tree,
-    #      "nodir" for a tree without the bin-manager directory.
-    mkdir -p "$DBSCHEME_DIR/asterisk_config"
-    case "$1" in
-        marker)   mkdir -p "$DBSCHEME_DIR/bin-manager"; : > "$DBSCHEME_DIR/bin-manager/RETIRED.md" ;;
-        nomarker) mkdir -p "$DBSCHEME_DIR/bin-manager" ;;
-        nodir)    ;;
-    esac
-}
-
-@test "marker_present: 0 with RETIRED.md, 1 without it, 2 when bin-manager/ is missing" {
-    load_migrate_functions
-
-    make_dbscheme_tree marker
-    run marker_present
-    [[ "$status" -eq 0 ]]
-
-    rm -f "$DBSCHEME_DIR/bin-manager/RETIRED.md"
-    run marker_present
-    [[ "$status" -eq 1 ]]
-
-    rm -rf "$DBSCHEME_DIR/bin-manager"
-    run marker_present
-    [[ "$status" -eq 2 ]]
-}
-
-@test "bin_manager_mode: alembic_version table present => alembic (reason table), marker or not" {
-    load_migrate_functions
-    DB_CONTAINER="voipbin-db"
-    stub_docker_alembic_count 1
-
-    make_dbscheme_tree nomarker
-    run bin_manager_mode
-    [[ "$status" -eq 0 ]]
-    [[ "$output" == "alembic table" ]]
-
-    make_dbscheme_tree marker
-    run bin_manager_mode
-    [[ "$status" -eq 0 ]]
-    [[ "$output" == "alembic table" ]]
-}
-
-@test "bin_manager_mode: no table and RETIRED.md present => service-owned" {
-    load_migrate_functions
-    DB_CONTAINER="voipbin-db"
-    stub_docker_alembic_count 0
-    make_dbscheme_tree marker
-
-    run bin_manager_mode
-
-    [[ "$status" -eq 0 ]]
-    [[ "$output" == "service-owned marker-present" ]]
-}
-
-@test "bin_manager_mode: no table and no RETIRED.md => alembic (marker-absent)" {
-    load_migrate_functions
-    DB_CONTAINER="voipbin-db"
-    stub_docker_alembic_count 0
-    make_dbscheme_tree nomarker
-
-    run bin_manager_mode
-
-    [[ "$status" -eq 0 ]]
-    [[ "$output" == "alembic marker-absent" ]]
-}
-
-@test "bin_manager_mode: missing bin-manager/ directory is an error, never an alembic run" {
-    load_migrate_functions
-    DB_CONTAINER="voipbin-db"
-    stub_docker_alembic_count 0
-    make_dbscheme_tree nodir
-
-    run bin_manager_mode
-
-    [[ "$status" -eq 1 ]]
-    [[ "$output" == *"bin-manager/ directory is missing"* ]]
-    [[ "$output" == *"${DBSCHEME_COMMIT:0:12}"* ]]
-}
-
-@test "bin_manager_mode: a non-numeric table check is an error (no guessing)" {
-    load_migrate_functions
-    DB_CONTAINER="voipbin-db"
-    stub_docker_alembic_count "ERROR 2002 cannot connect"
-    make_dbscheme_tree marker
-
-    run bin_manager_mode
-
-    [[ "$status" -eq 2 ]]
-}
-
-@test "bin_manager_mode: a failing query is an error" {
-    load_migrate_functions
-    DB_CONTAINER="voipbin-db"
-    mock_command "docker" "" 1
-    make_dbscheme_tree marker
-
-    run bin_manager_mode
-
-    [[ "$status" -eq 2 ]]
-}
 
 # --- adopt_tmp_owner (root run against a project owned by someone else) ---
 
@@ -408,7 +292,6 @@ setup_migrate_project() {
     DOCKER_LOG="$TEST_TEMP_DIR/docker.log"
     CHOWN_LOG="$TEST_TEMP_DIR/chown.log"
     : > "$DOCKER_LOG"; : > "$CHOWN_LOG"
-    echo 0 > "$TEST_TEMP_DIR/alembic_count"
     rm -f "$TEST_TEMP_DIR/mysql_down" "$TEST_TEMP_DIR/create_fail"
 
     mock_command_script "sleep" 'exit 0'
@@ -425,8 +308,6 @@ case "$1" in
             *"CREATE DATABASE"*)
                 if [[ -f "'"$TEST_TEMP_DIR"'/create_fail" ]]; then echo "boom"; exit 1; fi
                 exit 0 ;;
-            *"TABLE_NAME='"'"'alembic_version'"'"'"*)
-                cat "'"$TEST_TEMP_DIR"'/alembic_count"; exit 0 ;;
         esac
         exit 0 ;;
     run) exit 0 ;;
@@ -441,11 +322,10 @@ write_lock() {
 }
 
 cache_tree() {
-    # $1 = pin, $2 = marker|nomarker|nodir
+    # $1 = pin
     DBSCHEME_DIR="$MIG_PROJECT/tmp/bin-dbscheme-manager"
-    mkdir -p "$DBSCHEME_DIR"
+    mkdir -p "$DBSCHEME_DIR/asterisk_config" "$DBSCHEME_DIR/bin-manager"
     echo "$1" > "$DBSCHEME_DIR/.pin"
-    make_dbscheme_tree "$2"
 }
 
 run_migrate() {
@@ -456,7 +336,7 @@ run_migrate() {
     setup_migrate_project
     write_lock versions.lock.dist pinDIST000000
     write_lock versions.lock pinLIVE000000
-    cache_tree pinDIST000000 marker
+    cache_tree pinDIST000000
 
     run_migrate
 
@@ -471,7 +351,7 @@ run_migrate() {
 @test "migrate.sh falls back to the live versions.lock when there is no versions.lock.dist" {
     setup_migrate_project
     write_lock versions.lock pinLIVE000000
-    cache_tree pinLIVE000000 marker
+    cache_tree pinLIVE000000
 
     run_migrate
 
@@ -484,7 +364,7 @@ run_migrate() {
     setup_migrate_project
     write_lock versions.lock.dist ""
     write_lock versions.lock pinLIVE000000
-    cache_tree pinLIVE000000 marker
+    cache_tree pinLIVE000000
 
     run_migrate
 
@@ -497,7 +377,7 @@ run_migrate() {
     setup_migrate_project
     echo '{not json' > "$MIG_PROJECT/versions.lock.dist"
     write_lock versions.lock pinLIVE000000
-    cache_tree pinLIVE000000 marker
+    cache_tree pinLIVE000000
 
     run_migrate
 
@@ -514,15 +394,16 @@ run_migrate() {
     [[ "$output" == *"versions.lock.dist"* ]]
 }
 
-@test "migrate.sh: marked tree, no alembic_version table => service-owned, only the asterisk stream runs" {
+@test "migrate.sh runs only the asterisk stream and never touches bin_manager with alembic" {
     setup_migrate_project
     write_lock versions.lock.dist pinDIST000000
-    cache_tree pinDIST000000 marker
+    cache_tree pinDIST000000
 
     run_migrate
 
     [[ "$status" -eq 0 ]]
-    [[ "$output" == *"MIGRATE_MODE bin_manager=service-owned reason=marker-present pin=pinDIST00000 pin_source=dist"* ]]
+    [[ "$output" == *"DBSCHEME_PIN pin=pinDIST00000 pin_source=dist"* ]]
+    [[ "$output" != *"MIGRATE_MODE"* ]]
     [[ "$(grep -c '^run ' "$DOCKER_LOG")" == "1" ]]
     grep -q -- "-w /dbscheme/asterisk_config" "$DOCKER_LOG"
     run ! grep -q -- "-w /dbscheme/bin-manager" "$DOCKER_LOG"
@@ -531,79 +412,35 @@ run_migrate() {
     [[ ! -e "$DBSCHEME_DIR/bin-manager/alembic.ini" ]]
 }
 
-@test "migrate.sh: unmarked tree => alembic for both streams, bin-manager first" {
+@test "migrate.sh: a bin-manager stream in the pinned tree is ignored, whatever the database holds" {
     setup_migrate_project
     write_lock versions.lock.dist pinDIST000000
-    cache_tree pinDIST000000 nomarker
-    mkdir -p "$DBSCHEME_DIR/bin-manager"
+    cache_tree pinDIST000000
+    : > "$DBSCHEME_DIR/bin-manager/RETIRED.md"
 
     run_migrate
 
     [[ "$status" -eq 0 ]]
-    [[ "$output" == *"MIGRATE_MODE bin_manager=alembic reason=marker-absent"* ]]
-    [[ "$(grep -c '^run ' "$DOCKER_LOG")" == "2" ]]
-    local first second
-    first="$(grep '^run ' "$DOCKER_LOG" | sed -n 1p)"
-    second="$(grep '^run ' "$DOCKER_LOG" | sed -n 2p)"
-    [[ "$first" == *"-w /dbscheme/bin-manager"* ]]
-    [[ "$second" == *"-w /dbscheme/asterisk_config"* ]]
-    [[ -f "$DBSCHEME_DIR/bin-manager/alembic.ini" ]]
+    [[ "$(grep -c '^run ' "$DOCKER_LOG")" == "1" ]]
+    run ! grep -q "alembic_version" "$DOCKER_LOG"
+    run ! grep -q -- "-w /dbscheme/bin-manager" "$DOCKER_LOG"
 }
 
-@test "migrate.sh: existing alembic_version table wins over the marker (alembic finishes the old way)" {
+@test "migrate.sh: a tree without asterisk_config fails the asterisk stream and exits non-zero" {
     setup_migrate_project
     write_lock versions.lock.dist pinDIST000000
-    cache_tree pinDIST000000 marker
-    echo 1 > "$TEST_TEMP_DIR/alembic_count"
-
-    run_migrate
-
-    [[ "$status" -eq 0 ]]
-    [[ "$output" == *"MIGRATE_MODE bin_manager=alembic reason=table"* ]]
-    [[ "$(grep -c '^run ' "$DOCKER_LOG")" == "2" ]]
-}
-
-@test "migrate.sh: the asterisk stream runs in every mode" {
-    local variant
-    for variant in marker nomarker; do
-        setup_migrate_project
-        write_lock versions.lock.dist pinDIST000000
-        cache_tree pinDIST000000 "$variant"
-        mkdir -p "$DBSCHEME_DIR/bin-manager"
-        run_migrate
-        [[ "$status" -eq 0 ]]
-        grep -q -- "-w /dbscheme/asterisk_config" "$DOCKER_LOG"
-    done
-}
-
-@test "migrate.sh: a tree without bin-manager/ exits 1 and runs no stream" {
-    setup_migrate_project
-    write_lock versions.lock.dist pinDIST000000
-    cache_tree pinDIST000000 nodir
-
-    run_migrate
-
-    [[ "$status" -eq 1 ]]
-    [[ "$output" == *"bin-manager/ directory is missing"* ]]
-    ! grep -q "^run " "$DOCKER_LOG"
-}
-
-@test "migrate.sh: an unreadable table check exits non-zero and runs no stream" {
-    setup_migrate_project
-    write_lock versions.lock.dist pinDIST000000
-    cache_tree pinDIST000000 marker
-    echo "garbage" > "$TEST_TEMP_DIR/alembic_count"
+    cache_tree pinDIST000000
+    rm -rf "$DBSCHEME_DIR/asterisk_config"
 
     run_migrate
 
     [[ "$status" -ne 0 ]]
-    ! grep -q "^run " "$DOCKER_LOG"
 }
 
 @test "migrate.sh keeps the utf8 / utf8_general_ci database creation statement" {
     setup_migrate_project
     write_lock versions.lock.dist pinDIST000000
-    cache_tree pinDIST000000 marker
+    cache_tree pinDIST000000
 
     run_migrate
 
@@ -616,7 +453,7 @@ run_migrate() {
     [[ "$(id -u)" != "0" ]] || skip "needs an unprivileged runner (project owner must not be root)"
     setup_migrate_project
     write_lock versions.lock.dist pinDIST000000
-    cache_tree pinDIST000000 marker
+    cache_tree pinDIST000000
     mock_command_script "id" 'if [[ "$1" == "-u" ]]; then echo 0; else exec /usr/bin/id "$@"; fi'
 
     run_migrate
@@ -631,7 +468,7 @@ run_migrate() {
     [[ "$(id -u)" != "0" ]] || skip "needs an unprivileged runner (project owner must not be root)"
     setup_migrate_project
     write_lock versions.lock.dist pinDIST000000
-    cache_tree pinDIST000000 marker
+    cache_tree pinDIST000000
     touch "$TEST_TEMP_DIR/mysql_down"
     mock_command_script "id" 'if [[ "$1" == "-u" ]]; then echo 0; else exec /usr/bin/id "$@"; fi'
 
@@ -678,7 +515,7 @@ run_migrate() {
     [[ "$(id -u)" != "0" ]] || skip "needs an unprivileged runner (project owner must not be root)"
     setup_migrate_project
     write_lock versions.lock.dist pinDIST000000
-    cache_tree pinDIST000000 marker
+    cache_tree pinDIST000000
     touch "$TEST_TEMP_DIR/create_fail"
     mock_command_script "id" 'if [[ "$1" == "-u" ]]; then echo 0; else exec /usr/bin/id "$@"; fi'
 
@@ -693,7 +530,7 @@ run_migrate() {
     [[ "$(id -u)" != "0" ]] || skip "needs an unprivileged runner (project owner must not be root)"
     setup_migrate_project
     write_lock versions.lock.dist pinDIST000000
-    cache_tree pinDIST000000 marker
+    cache_tree pinDIST000000
     mock_command_script "id" 'if [[ "$1" == "-u" ]]; then echo 0; else exec /usr/bin/id "$@"; fi'
     mock_command_script "chown" 'exit 1'
 
@@ -706,7 +543,7 @@ run_migrate() {
     [[ "$(id -u)" != "0" ]] || skip "needs an unprivileged runner"
     setup_migrate_project
     write_lock versions.lock.dist pinDIST000000
-    cache_tree pinDIST000000 marker
+    cache_tree pinDIST000000
 
     run_migrate
 

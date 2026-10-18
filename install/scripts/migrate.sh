@@ -1,19 +1,14 @@
 #!/bin/bash
 # VoIPBin - Containerized database migration (design §3.3)
 #
-# Runs alembic 'upgrade head' inside a python:3.11-slim container attached to
-# the compose network. Replaces the host-pip/alembic dependency entirely.
+# Creates the databases, prepares the asterisk-registrar realtime account and
+# runs the asterisk (PJSIP config) Alembic 'upgrade head' inside a
+# python:3.11-slim container attached to the compose network. Replaces the
+# host-pip/alembic dependency entirely.
 #
-# Two schema streams exist:
-#   - asterisk (PJSIP config): always migrated with alembic.
-#   - bin-manager: migrated with alembic only while alembic still owns the
-#     database. Once the pinned dbscheme tree carries
-#     bin-manager/RETIRED.md the services own their schema (each applies its
-#     embedded migrations on start) and this script no longer touches it.
-#     Alembic still runs for bin-manager when bin_manager.alembic_version
-#     already exists (an existing install is finished the old way) or when
-#     the pinned tree has no RETIRED.md. A MIGRATE_MODE line records the
-#     decision.
+# The bin_manager schema is owned by the services: each one applies its own
+# embedded migrations on start. This script never runs Alembic against
+# bin_manager.
 #
 # - Reads the dbscheme monorepo commit from versions.lock.dist (the committed
 #   template) when present, otherwise from the live versions.lock. A
@@ -284,53 +279,10 @@ CREATE_OUT="$(docker exec "$DB_CONTAINER" sh -c "$MYSQL_IN_DB -e 'CREATE DATABAS
 #         already started drifting). ---
 provision_asterisk_db_user "$DB_CONTAINER" || exit 1
 
-# --- 4c. Decide who owns the bin_manager schema ---
-# marker_present
-# Reads the already fetched dbscheme tree. Return codes:
-#   0  bin-manager/RETIRED.md exists (services own the bin_manager schema)
-#   1  bin-manager/ exists without RETIRED.md (alembic pin)
-#   2  bin-manager/ itself is missing (unexpected tree layout)
-marker_present() {
-    [ -d "$DBSCHEME_DIR/bin-manager" ] || return 2
-    if [ -e "$DBSCHEME_DIR/bin-manager/RETIRED.md" ]; then
-        return 0
-    fi
-    return 1
-}
+# --- 4c. Record which schema pin the asterisk stream comes from ---
+echo "DBSCHEME_PIN pin=${DBSCHEME_COMMIT:0:12} pin_source=$PIN_SOURCE"
 
-# bin_manager_mode
-# Prints "<mode> <reason>" where mode is alembic|service-owned and reason is
-# table|marker-absent|marker-present. bin_manager.alembic_version existing
-# wins (reason=table). Return codes: 0 decided, 1 tree layout error,
-# 2 the table check returned a non-numeric answer.
-bin_manager_mode() {
-    local rc=0 count
-    marker_present || rc=$?
-    if [ "$rc" = "2" ]; then
-        err "Unexpected dbscheme tree at pin ${DBSCHEME_COMMIT:0:12}: bin-manager/ directory is missing."
-        return 1
-    fi
-    count="$(schema_mysql "$DB_CONTAINER" "SELECT COUNT(*) FROM information_schema.TABLES WHERE TABLE_SCHEMA='bin_manager' AND TABLE_NAME='alembic_version';")" || count=""
-    if ! [[ "$count" =~ ^[0-9]+$ ]]; then
-        err "Could not check for bin_manager.alembic_version (got: '${count:-nothing}')."
-        return 2
-    fi
-    if [ "$count" -ge 1 ]; then
-        echo "alembic table"
-    elif [ "$rc" = "0" ]; then
-        echo "service-owned marker-present"
-    else
-        echo "alembic marker-absent"
-    fi
-    return 0
-}
-
-BIN_MANAGER_MODE_OUT="$(bin_manager_mode)" || exit 1
-BIN_MANAGER_MODE="${BIN_MANAGER_MODE_OUT%% *}"
-BIN_MANAGER_REASON="${BIN_MANAGER_MODE_OUT#* }"
-echo "MIGRATE_MODE bin_manager=$BIN_MANAGER_MODE reason=$BIN_MANAGER_REASON pin=${DBSCHEME_COMMIT:0:12} pin_source=$PIN_SOURCE"
-
-# --- 5. Write alembic.ini for the streams that will run (PyMySQL DSN, db service hostname) ---
+# --- 5. Write alembic.ini for the asterisk stream (PyMySQL DSN, db service hostname) ---
 write_alembic_ini() {
     local stream_dir="$1" dbname="$2" script_location="$3"
     cat > "$DBSCHEME_DIR/$stream_dir/alembic.ini" <<EOF
@@ -376,9 +328,6 @@ EOF
     # reach of other local users (default umask leaves it world-readable).
     chmod 600 "$DBSCHEME_DIR/$stream_dir/alembic.ini"
 }
-if [ "$BIN_MANAGER_MODE" = "alembic" ]; then
-    write_alembic_ini "bin-manager" "bin_manager" "main"
-fi
 write_alembic_ini "asterisk_config" "asterisk" "config"
 
 # Everything under tmp/ is written now (also runs again on exit, covering
@@ -400,11 +349,6 @@ run_stream() {
     log "$label: OK"
 }
 
-if [ "$BIN_MANAGER_MODE" = "alembic" ]; then
-    run_stream "bin-manager" "bin_manager (voipbin core)"
-else
-    log "bin_manager: schema is owned by the services, skipping alembic."
-fi
 run_stream "asterisk_config" "asterisk (PJSIP config)"
 
 log "All migrations applied successfully."

@@ -265,16 +265,15 @@ exit 1'
 
 # =============================================================================
 # check_database_initialized (VOIP-1289): a partial migration must not be
-# mistaken for "done" — bin_manager alone having tables is not sufficient,
-# both schemas must be at some alembic revision.
+# mistaken for "done" — bin_manager alone having tables is not sufficient:
+# the asterisk stream needs its alembic revision and a service must have
+# created its version table.
 # =============================================================================
 
 @test "check_database_initialized fails when only bin_manager has tables (asterisk never migrated)" {
     load_start_functions
     mock_command_script "docker" '
-if [[ "$*" == *"bin_manager.alembic_version"* ]]; then
-    echo "a5e6f559299c"
-elif [[ "$*" == *"asterisk.alembic_version"* ]]; then
+if [[ "$*" == *"asterisk.alembic_version"* ]]; then
     exit 1
 elif [[ "$*" == *"information_schema.TABLES"* ]]; then
     echo "42"
@@ -286,12 +285,10 @@ fi
     [[ "$status" -eq 1 ]]
 }
 
-@test "check_database_initialized passes when both schemas have an alembic version" {
+@test "check_database_initialized passes when the asterisk stream has a version and services have version tables" {
     load_start_functions
     mock_command_script "docker" '
-if [[ "$*" == *"bin_manager.alembic_version"* ]]; then
-    echo "a5e6f559299c"
-elif [[ "$*" == *"asterisk.alembic_version"* ]]; then
+if [[ "$*" == *"asterisk.alembic_version"* ]]; then
     echo "c07b40884361"
 elif [[ "$*" == *"information_schema.TABLES"* ]]; then
     echo "42"
@@ -629,8 +626,8 @@ load_sip_extensions_summary_gate() {
 
 # =============================================================================
 # check_database_initialized: service-owned schema. bin_manager counts as
-# migrated when alembic left a version row OR at least one service version
-# table (*schema_migrations) exists; asterisk always needs its alembic row.
+# migrated when at least one service version table (*schema_migrations)
+# exists; asterisk always needs its alembic row.
 # =============================================================================
 
 # Docker stub answering each probe from files in $TEST_TEMP_DIR; a missing
@@ -640,17 +637,16 @@ stub_docker_init_probe() {
 body="$*"
 read_or_empty() { [[ -f "'"$TEST_TEMP_DIR"'/$1" ]] && cat "'"$TEST_TEMP_DIR"'/$1"; return 0; }
 case "$body" in
-    *"bin_manager.alembic_version"*) read_or_empty bin_alembic ;;
     *"asterisk.alembic_version"*)    read_or_empty ast_alembic ;;
     *"LIKE"*"schema"*)               read_or_empty svc_tables ;;
     *"information_schema.TABLES"*)   read_or_empty bin_tables ;;
 esac
 exit 0
 '
-    rm -f "$TEST_TEMP_DIR"/{bin_alembic,ast_alembic,svc_tables,bin_tables}
+    rm -f "$TEST_TEMP_DIR"/{ast_alembic,svc_tables,bin_tables}
 }
 
-@test "check_database_initialized passes with service-owned bin_manager (no alembic row, schema tables present)" {
+@test "check_database_initialized passes when the asterisk row and a service version table exist" {
     load_start_functions
     stub_docker_init_probe
     echo 40 > "$TEST_TEMP_DIR/bin_tables"
@@ -662,12 +658,30 @@ exit 0
     [[ "$status" -eq 0 ]]
 }
 
-@test "check_database_initialized fails when bin_manager has neither an alembic row nor a service version table" {
+@test "check_database_initialized fails when no service version table exists yet" {
     load_start_functions
     stub_docker_init_probe
     echo 40 > "$TEST_TEMP_DIR/bin_tables"
     echo c07b40884361 > "$TEST_TEMP_DIR/ast_alembic"
     echo 0 > "$TEST_TEMP_DIR/svc_tables"
+
+    run check_database_initialized
+
+    [[ "$status" -eq 1 ]]
+}
+
+@test "check_database_initialized: a bin_manager.alembic_version row does not count as initialized" {
+    load_start_functions
+    mock_command_script "docker" '
+body="$*"
+case "$body" in
+    *"bin_manager.alembic_version"*) echo a5e6f559299c ;;
+    *"asterisk.alembic_version"*)    echo c07b40884361 ;;
+    *"LIKE"*"schema"*)               echo 0 ;;
+    *"information_schema.TABLES"*)   echo 40 ;;
+esac
+exit 0
+'
 
     run check_database_initialized
 
@@ -690,7 +704,6 @@ exit 0
     stub_docker_init_probe
     echo 0 > "$TEST_TEMP_DIR/bin_tables"
     echo c07b40884361 > "$TEST_TEMP_DIR/ast_alembic"
-    echo rev1 > "$TEST_TEMP_DIR/bin_alembic"
     echo 12 > "$TEST_TEMP_DIR/svc_tables"
 
     run check_database_initialized
@@ -720,10 +733,8 @@ gate_fake_env() {
     : > "$TEST_TEMP_DIR/polls"
     schema_gate_now() { echo "$FAKE_NOW"; }
     schema_gate_sleep() { SLEEPS=$((SLEEPS + 1)); FAKE_NOW=$((FAKE_NOW + $1)); }
-    GATE_MODE="service-owned"
     GATE_BACKUP=1
     GATE_STATUS_FN=gate_status_all_applied
-    schema_mode() { if [ -n "$GATE_MODE" ]; then echo "$GATE_MODE"; else return 1; fi; }
     # Counted through a file: the status function runs inside $(...).
     schema_table_status() { echo poll >> "$TEST_TEMP_DIR/polls"; "$GATE_STATUS_FN"; }
     schema_gate_backup_listed() { [ "$GATE_BACKUP" = "1" ]; }
@@ -752,29 +763,6 @@ gate_status_except_missing() {
         if [[ ",${GATE_MISSING:-}," == *",${e#*:},"* ]]; then continue; fi
         printf '%s\t1\t0\n' "${e%%:*}"
     done
-}
-
-@test "gate: alembic mode skips immediately with one line and no sleep" {
-    load_start_functions
-    gate_fake_env
-    GATE_MODE="alembic"
-
-    wait_for_service_schema voipbin-db
-    local rc=$?
-
-    [[ "$rc" -eq 0 ]]
-    [[ "$SLEEPS" -eq 0 ]]
-}
-
-@test "gate: alembic mode prints SCHEMA_GATE skipped mode=alembic" {
-    load_start_functions
-    gate_fake_env
-    GATE_MODE="alembic"
-
-    gate_run voipbin-db
-
-    [[ "$status" -eq 0 ]]
-    [[ "$output" == "SCHEMA_GATE skipped mode=alembic" ]]
 }
 
 @test "gate: service-owned, all 26 applied and the backup schedule listed => complete after two polls" {
@@ -893,29 +881,16 @@ gate_status_except_missing() {
     done
 }
 
-@test "gate: an undeterminable mode never decides; it waits to the limit, warns, and continues" {
+@test "gate: a status query that fails once and then recovers is re-evaluated on the next poll" {
     load_start_functions
     gate_fake_env
-    GATE_MODE=""
-    SCHEMA_GATE_TIMEOUT_SECONDS=30
+    schema_table_status() { if [ "$SLEEPS" -lt 1 ]; then return 1; fi; gate_status_all_applied; }
 
     gate_run voipbin-db
 
     [[ "$status" -eq 0 ]]
-    [[ "$output" == *"SCHEMA_GATE incomplete elapsed=30 services=unknown"* ]]
-    [[ "$output" != *"SCHEMA_GATE skipped"* ]]
-    [[ "$output" != *"SCHEMA_GATE complete"* ]]
-}
-
-@test "gate: a mode lookup that fails once and then recovers is re-evaluated on the next poll" {
-    load_start_functions
-    gate_fake_env
-    schema_mode() { if [ "$SLEEPS" -lt 1 ]; then return 1; fi; echo alembic; }
-
-    gate_run voipbin-db
-
     [[ "$output" == *"SCHEMA_GATE waiting state=unknown"* ]]
-    [[ "$output" == *"SCHEMA_GATE skipped mode=alembic"* ]]
+    [[ "$output" == *"SCHEMA_GATE complete"* ]]
 }
 
 @test "gate: a failing status query is treated like an unknown state, not as 'all missing'" {
@@ -1017,10 +992,9 @@ gate_status_except_missing() {
         clock="'"$TEST_TEMP_DIR"'/clock"; echo 0 > "$clock"
         schema_gate_now() { cat "$clock"; }
         schema_gate_sleep() { echo $(( $(cat "$clock") + $1 )) > "$clock"; }
-        schema_mode() { return 1; }
+        schema_table_status() { return 1; }
         SCHEMA_GATE_TIMEOUT_SECONDS=30
         wait_for_service_schema voipbin-db || echo "gate returned $?"
-        schema_mode() { echo service-owned; }
         schema_table_status() { for e in "${SERVICE_SCHEMA_TABLES[@]}"; do printf "%s\t1\t0\n" "${e%%:*}"; done; }
         schema_gate_backup_listed() { return 0; }
         wait_for_service_schema voipbin-db || echo "gate returned $?"

@@ -1,10 +1,10 @@
 #!/usr/bin/env bats
 # Tests for scripts/generate-versions-lock.sh: the service-owned schema check.
 #
-# Once the target's bin-dbscheme-manager tree carries bin-manager/RETIRED.md,
-# every image with embedded migrations must be pinned to a build that already
-# contains the migration runner, and a service that would "keep its current
-# pin" fails the run. Targets without the marker are not checked.
+# Every image with embedded migrations must be pinned to a build that already
+# contains the migration runner and carries the target's migration files, and
+# a service that would "keep its current pin" fails the run. The check always
+# runs.
 #
 # Isolation: a throwaway git repository stands in for the monorepo and a
 # stubbed docker answers the registry lookups ($TEST_TEMP_DIR/published lists
@@ -38,28 +38,23 @@ commit_all() {
 # History (first-parent line):
 #   C0  tag-manager embeds migrations (no runner call yet) and api-manager exists
 #   C1  tag-manager's cmd calls migrationhandler.Run (the introduction commit)
-#   C2  adds bin-dbscheme-manager/bin-manager/RETIRED.md (marked target)
-#   C3  changes tag-manager's migrations after C1 (marked target, newer files)
+#   C2  changes tag-manager's migrations after C1 (newer files)
 make_monorepo() {
     mkdir -p "$MONO"
     git -C "$MONO" init -q -b main
     mkdir -p "$MONO/bin-tag-manager/migrations" "$MONO/bin-tag-manager/cmd/tag-manager" \
-             "$MONO/bin-api-manager/cmd" "$MONO/bin-dbscheme-manager/bin-manager"
+             "$MONO/bin-api-manager/cmd"
     printf 'package migrations\n' > "$MONO/bin-tag-manager/migrations/embed.go"
     printf -- '-- baseline\n' > "$MONO/bin-tag-manager/migrations/000001_baseline.up.sql"
     printf 'package main\n' > "$MONO/bin-tag-manager/cmd/tag-manager/main.go"
     printf 'package main\n' > "$MONO/bin-api-manager/cmd/main.go"
-    printf 'env\n' > "$MONO/bin-dbscheme-manager/bin-manager/env.py"
     C0="$(commit_all c0)"
 
     printf 'package main\n\nfunc main() { migrationhandler.Run() }\n' > "$MONO/bin-tag-manager/cmd/tag-manager/main.go"
     C1="$(commit_all c1)"
 
-    : > "$MONO/bin-dbscheme-manager/bin-manager/RETIRED.md"
-    C2="$(commit_all c2)"
-
     printf -- '-- second\n' > "$MONO/bin-tag-manager/migrations/000002_second.up.sql"
-    C3="$(commit_all c3)"
+    C2="$(commit_all c2)"
 }
 
 write_lock() {
@@ -114,33 +109,33 @@ run_generate() {
         bash "$SCRIPTS_DIR/generate-versions-lock.sh" "$1"
 }
 
-@test "marked target: tag-manager pinned at the runner introduction commit passes and writes the lock" {
+@test "tag-manager pinned at the runner introduction commit passes and writes the lock" {
     publish bin-tag-manager "$C1"
     publish bin-api-manager "$C0"
 
-    run_generate "$C2"
+    run_generate "$C1"
 
     [[ "$status" -eq 0 ]]
     [[ "$output" == *"Service-owned schema check passed (1 services with embedded migrations)"* ]]
     [[ -f "$OUT" ]]
-    grep -q "\"dbscheme_monorepo_commit\": \"$C2\"" "$OUT"
+    grep -q "\"dbscheme_monorepo_commit\": \"$C1\"" "$OUT"
 }
 
-@test "marked target: a tag older than the migration runner fails and writes nothing" {
+@test "a tag older than the migration runner fails and writes nothing" {
     publish bin-tag-manager "$C0"
     publish bin-api-manager "$C0"
 
-    run_generate "$C2"
+    run_generate "$C1"
 
     [[ "$status" -ne 0 ]]
     [[ "$output" == *"voipbin/bin-tag-manager: pinned tag ${C0:0:12} predates the migration runner (introduced in ${C1:0:12})"* ]]
     [[ ! -e "$OUT" ]]
 }
 
-@test "marked target: a service with no registry tag (would keep its current pin) fails and writes nothing" {
+@test "a service with no registry tag (would keep its current pin) fails and writes nothing" {
     publish bin-api-manager "$C0"
 
-    run_generate "$C2"
+    run_generate "$C1"
 
     [[ "$status" -ne 0 ]]
     [[ "$output" == *"keeping current pin"* ]]
@@ -148,8 +143,8 @@ run_generate() {
     [[ ! -e "$OUT" ]]
 }
 
-@test "marked target: an image whose service directory is gone at the target is not a schema-owning service" {
-    # Remove the directory at C4 (marker still present): the image has no
+@test "an image whose service directory is gone at the target is not a schema-owning service" {
+    # Remove the directory at C4: the image has no
     # embed.go at the target, so the check skips it and the run keeps the
     # old pin for it, as it always did.
     git_mono rm -rq bin-tag-manager
@@ -163,25 +158,26 @@ run_generate() {
     [[ "$output" == *"Service-owned schema check passed (0 services"* ]]
 }
 
-@test "marked target: migrations that differ between the pinned build and the target fail" {
+@test "migrations that differ between the pinned build and the target fail" {
     publish bin-tag-manager "$C1"
     publish bin-api-manager "$C0"
 
-    run_generate "$C3"
+    run_generate "$C2"
 
     [[ "$status" -ne 0 ]]
     [[ "$output" == *"has different bin-tag-manager/migrations files than the target"* ]]
     [[ ! -e "$OUT" ]]
 }
 
-@test "unmarked target: no check runs, older tags and kept pins are accepted as before" {
+@test "a target older than the migration runner fails: the check has no off switch" {
     publish bin-tag-manager "$C0"
+    publish bin-api-manager "$C0"
 
-    run_generate "$C1"
+    run_generate "$C0"
 
-    [[ "$status" -eq 0 ]]
-    [[ "$output" != *"Service-owned schema check"* ]]
-    [[ -f "$OUT" ]]
+    [[ "$status" -ne 0 ]]
+    [[ "$output" == *"cannot find the commit that first called migrationhandler.Run in bin-tag-manager/cmd"* ]]
+    [[ ! -e "$OUT" ]]
 }
 
 @test "the check only reads MONOREPO_PATH: the repository is unchanged afterwards" {
@@ -190,7 +186,7 @@ run_generate() {
     local before after
     before="$(git_mono for-each-ref; git_mono status --porcelain)"
 
-    run_generate "$C2"
+    run_generate "$C1"
 
     after="$(git_mono for-each-ref; git_mono status --porcelain)"
     [[ "$status" -eq 0 ]]
@@ -203,7 +199,7 @@ run_generate() {
     publish bin-tag-manager "$C1"
     publish bin-api-manager "$C0"
 
-    run_generate "$C2"
+    run_generate "$C1"
 
     [[ "$status" -eq 0 ]]
 }

@@ -110,10 +110,6 @@ if [[ \"\$1\" == \"exec\" ]]; then
             if [[ '$db_state' == 'initialized' ]]; then echo 2; else echo 0; fi
             exit 0
             ;;
-        *'bin_manager.alembic_version'*)
-            if [[ '$db_state' == 'initialized' ]]; then echo 'rev-bin-1'; else echo ''; fi
-            exit 0
-            ;;
         *'COUNT(*)'*'information_schema.TABLES'*)
             if [[ '$db_state' == 'initialized' ]]; then echo 42; else echo 0; fi
             exit 0
@@ -183,16 +179,15 @@ exit 0
 
 # --- check_migrations_applied: shared rule with start.sh (db_schema_initialized) ---
 #
-# bin_manager counts as migrated with an alembic row OR a service version
-# table; asterisk always needs its alembic row; bin_manager must have tables.
+# bin_manager counts as migrated when a service version table exists;
+# asterisk always needs its alembic row; bin_manager must have tables.
 
 stub_docker_schema_probe() {
-    rm -f "$TEST_TEMP_DIR"/{bin_alembic,ast_alembic,svc_tables,bin_tables}
+    rm -f "$TEST_TEMP_DIR"/{ast_alembic,svc_tables,bin_tables}
     mock_command_script "docker" '
 body="$*"
 read_or_empty() { [[ -f "'"$TEST_TEMP_DIR"'/$1" ]] && cat "'"$TEST_TEMP_DIR"'/$1"; return 0; }
 case "$body" in
-    *"bin_manager.alembic_version"*) read_or_empty bin_alembic ;;
     *"asterisk.alembic_version"*)    read_or_empty ast_alembic ;;
     *"LIKE"*"schema"*)               read_or_empty svc_tables ;;
     *"information_schema.TABLES"*)   read_or_empty bin_tables ;;
@@ -201,7 +196,7 @@ exit 0
 '
 }
 
-@test "check_migrations_applied: service-owned bin_manager (schema tables, no alembic row) counts as applied" {
+@test "check_migrations_applied: a service version table plus the asterisk row counts as applied" {
     load_init_database_main_functions
     stub_docker_schema_probe
     echo 30 > "$TEST_TEMP_DIR/bin_tables"
@@ -214,19 +209,7 @@ exit 0
     [[ "$output" == *"Migrations already applied"* ]]
 }
 
-@test "check_migrations_applied: alembic bin_manager plus asterisk counts as applied" {
-    load_init_database_main_functions
-    stub_docker_schema_probe
-    echo 30 > "$TEST_TEMP_DIR/bin_tables"
-    echo c07b40884361 > "$TEST_TEMP_DIR/ast_alembic"
-    echo a5e6f559299c > "$TEST_TEMP_DIR/bin_alembic"
-
-    run check_migrations_applied
-
-    [[ "$status" -eq 0 ]]
-}
-
-@test "check_migrations_applied: bin_manager with no alembic row and no service version table is not applied" {
+@test "check_migrations_applied: no service version table is not applied" {
     load_init_database_main_functions
     stub_docker_schema_probe
     echo 30 > "$TEST_TEMP_DIR/bin_tables"
@@ -249,12 +232,12 @@ exit 0
     [[ "$status" -eq 1 ]]
 }
 
-@test "check_migrations_applied: an empty bin_manager is not applied even if version rows exist" {
+@test "check_migrations_applied: an empty bin_manager is not applied even if version tables are listed" {
     load_init_database_main_functions
     stub_docker_schema_probe
     echo 0 > "$TEST_TEMP_DIR/bin_tables"
     echo c07b40884361 > "$TEST_TEMP_DIR/ast_alembic"
-    echo a5e6f559299c > "$TEST_TEMP_DIR/bin_alembic"
+    echo 5 > "$TEST_TEMP_DIR/svc_tables"
 
     run check_migrations_applied
 

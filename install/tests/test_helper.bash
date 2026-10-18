@@ -576,13 +576,11 @@ load_migrate_functions() {
         awk '/^fetch_dbscheme\(\) \{/,/^}/' "$SCRIPTS_DIR/migrate.sh"
         awk '/^write_alembic_ini\(\) \{/,/^}/' "$SCRIPTS_DIR/migrate.sh"
         awk '/^adopt_tmp_owner\(\) \{/,/^}/' "$SCRIPTS_DIR/migrate.sh"
-        awk '/^marker_present\(\) \{/,/^}/' "$SCRIPTS_DIR/migrate.sh"
-        awk '/^bin_manager_mode\(\) \{/,/^}/' "$SCRIPTS_DIR/migrate.sh"
         awk '/^resolve_db_password\(\) \{/,/^}/' "$SCRIPTS_DIR/migrate.sh"
     } > "$temp_migrate"
 
     local fn
-    for fn in fetch_dbscheme write_alembic_ini adopt_tmp_owner marker_present bin_manager_mode resolve_db_password; do
+    for fn in fetch_dbscheme write_alembic_ini adopt_tmp_owner resolve_db_password; do
         if ! grep -q "^${fn}() {" "$temp_migrate"; then
             echo "load_migrate_functions: failed to extract $fn from migrate.sh" >&2
             return 1
