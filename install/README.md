@@ -132,7 +132,7 @@ earlier install: the services would try to create their tables on top of
 tables the old stream created. Reinstall instead: the full reset is
 `./scripts/clean.sh --volumes --purge` (it deletes all data), after which you
 follow the install steps at the top of this README again. To check whether an
-install is an earlier one, run this from the `install/` directory:
+install is an earlier one, run:
 
 ```bash
 docker exec voipbin-db sh -c "MYSQL_PWD=\"\$MYSQL_ROOT_PASSWORD\" mysql -uroot -N -e \"SELECT COUNT(*) FROM information_schema.TABLES WHERE TABLE_SCHEMA='bin_manager' AND TABLE_NAME='alembic_version'\""

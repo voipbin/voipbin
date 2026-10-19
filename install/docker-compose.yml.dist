@@ -633,6 +633,8 @@ services:
       - PROMETHEUS_ENDPOINT=/metrics
       - PROMETHEUS_LISTEN_ADDRESS=:2112
       - ENGINE_KEY_CHATGPT=${OPENAI_API_KEY:-}
+      # Summaries, analysis and the assistant builder use Gemini by default.
+      - GOOGLE_API_KEY=${GOOGLE_API_KEY:-}
     command: ./ai-manager
 
   api-manager:

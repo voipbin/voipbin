@@ -893,6 +893,23 @@ gate_status_except_missing() {
     [[ "$output" == *"SCHEMA_GATE complete"* ]]
 }
 
+@test "gate: an unreadable poll between two readable ones breaks the consecutive-poll requirement" {
+    load_start_functions
+    gate_fake_env
+    # polls 1,3,4 readable and complete; poll 2 unreadable
+    schema_table_status() {
+        echo poll >> "$TEST_TEMP_DIR/polls"
+        if [ "$(gate_polls)" -eq 2 ]; then return 1; fi
+        gate_status_all_applied
+    }
+
+    gate_run voipbin-db
+
+    [[ "$status" -eq 0 ]]
+    [[ "$output" == *"SCHEMA_GATE waiting state=unknown"* ]]
+    [[ "$output" == *"SCHEMA_GATE complete elapsed=30"* ]]
+}
+
 @test "gate: a failing status query is treated like an unknown state, not as 'all missing'" {
     load_start_functions
     gate_fake_env
