@@ -535,8 +535,8 @@ wait_for_admin_agent() {
 }
 
 # Enable the scheduler's in-stack DB backup (VOIP-1281). It ships disabled
-# upstream (bin-dbscheme-manager seed migration a5e6f559299c: "production
-# uses managed Cloud SQL backups; self-hosted installs enable it"), since a
+# upstream (the schedule-manager seed migration: "production uses managed
+# Cloud SQL backups; self-hosted installs enable it"), since a
 # self-hosted sandbox has no managed-backup equivalent. Idempotent: a no-op
 # if already enabled (re-runs of start.sh, restarts).
 ensure_scheduled_backup_enabled() {

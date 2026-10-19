@@ -321,6 +321,7 @@ if [[ "$1" == "exec" ]]; then
     fi
     if [[ "$body" == *"alembic_version"* ]]; then
         [[ "$scenario" == "db-empty" ]] && exit 1
+        [[ "$scenario" == "asterisk-row-missing" && "$body" == *"asterisk.alembic_version"* ]] && exit 0
         echo "head123"
         exit 0
     fi
@@ -1122,7 +1123,7 @@ write_service_owned_schema() {
     [[ "$output" == *'service migrations applied for all 26 services'* ]]
 }
 
-@test "database check lists the services whose migrations are missing " {
+@test "database check lists the services whose migrations are missing" {
     setup_healthy_internal
     stub_docker_doctor healthy
     write_service_owned_schema "tag-manager,billing-manager" ""
@@ -1149,6 +1150,20 @@ write_service_owned_schema() {
     [[ "$output" == *'dirty'* ]]
     [[ "$output" == *'services=tag-manager'* ]]
     [[ "$output" == *'retry shortly'* ]]
+}
+
+@test "database check fails when the asterisk alembic stream has no version row" {
+    setup_healthy_internal
+    stub_docker_doctor asterisk-row-missing
+    write_service_owned_schema "" ""
+
+    run_doctor
+
+    [[ "$status" -eq 1 ]]
+    [[ "$output" == *'DOCTOR database: fail'* ]]
+    [[ "$output" == *'schema not initialized'* ]]
+    [[ "$output" == *'asterisk alembic=none'* ]]
+    [[ "$output" == *'FIX database: ./scripts/start.sh'* ]]
 }
 
 @test "database check reports 'cannot determine' (a failure) when the version-table query fails" {
