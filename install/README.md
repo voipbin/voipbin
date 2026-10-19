@@ -138,7 +138,8 @@ install is an earlier one, run:
 docker exec voipbin-db sh -c "MYSQL_PWD=\"\$MYSQL_ROOT_PASSWORD\" mysql -uroot -N -e \"SELECT COUNT(*) FROM information_schema.TABLES WHERE TABLE_SCHEMA='bin_manager' AND TABLE_NAME='alembic_version'\""
 ```
 
-`1` means an earlier install (reinstall); `0` means the steps below apply.
+`1` means an earlier install (reinstall); `0` means the steps below apply. The
+command needs the `db` container to be running (`docker compose up -d db`).
 
 The steps below are the normal procedure for moving an install that already
 uses service-owned schemas to a later version.
