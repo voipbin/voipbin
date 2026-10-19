@@ -51,6 +51,11 @@
 # current state of every individual image - that per-image truth already
 # lives in image_source_tags. This script deliberately does not touch those
 # three fields; only generate-versions-lock.sh (the full-regen tool) does.
+# Consequently dbscheme_monorepo_commit (the pin migrate.sh reads from the
+# committed template) never moves in a single-image bump, and the check in
+# generate-versions-lock.sh that services owning their schema are pinned to a
+# build containing the migration runner is NOT run here. A bump of such a
+# service is only safe when the new build is newer than the one it replaces.
 #
 # Failure ordering: image-repo membership in versions.lock is checked BEFORE
 # any registry call, so a typo'd/untracked image-repo fails fast and cheap

@@ -13,6 +13,7 @@ import getpass
 import hashlib
 import json
 import os
+import pwd
 import readline
 import re
 import shlex
@@ -21,6 +22,7 @@ import signal
 import subprocess
 import sys
 import time
+import traceback
 import urllib.error
 import urllib.request
 import yaml
@@ -74,7 +76,27 @@ PROTECTED_PATHS = [
     ".backup/",
     ".git/",
     "__pycache__/",
+    "backups/",
+    "docker-compose.yml.tmp",
+    ".env.pre-merge",
+    "docker-compose.yml.pre-merge",
 ]
+
+# Exit codes of `update` (non-interactive). 0 = success (including --check).
+RC_UNEXPECTED = 1
+RC_PRECONDITION = 2
+RC_BACKUP_FAILED = 10
+RC_SCRIPTS_FAILED = 11
+RC_UNPINNED = 12
+RC_SYNC_FAILED = 13
+RC_PULL_FAILED = 14
+RC_MIGRATE_FAILED = 15
+RC_UP_FAILED = 16
+RC_VERIFY_CONTAINERS = 17
+RC_VERIFY_PING = 18
+RC_VERIFY_BOTH = 19
+RC_USAGE = 64
+RC_INTERRUPTED = 130
 
 # Files/directories that are tracked for script updates
 # NOTE: docker-compose.yml/versions.lock (no suffix) are the untracked,
@@ -1271,6 +1293,183 @@ def run_cmd(cmd, capture=True, check=False):
         return result.stdout.strip() if capture else ""
     except subprocess.CalledProcessError as e:
         return e.stderr.strip() if e.stderr else str(e)
+
+
+# =============================================================================
+# Git helpers (script update)
+# =============================================================================
+#
+# The CLI runs as root (check_root), but the checkout is normally owned by an
+# unprivileged user. Running git as root would leave root-owned objects in
+# .git and in the work tree, so every git call is made as the owner of the
+# repository's `.git`. The demotion uses preexec_fn, which Python documents as
+# unsafe in processes that have threads: these helpers must only be called from
+# the single-threaded script-update path, never from the ThreadPoolExecutor
+# used by _update_images.
+
+class GitOwnerError(Exception):
+    """The repository owner cannot be used to run git (no passwd entry)."""
+
+
+def _find_git_marker(start):
+    """Walk from `start` towards the filesystem root looking for `.git`
+    (a directory, or a file for worktrees). Uses os.stat only - no git call,
+    so no git is run as root before the owner is known. Returns
+    (directory, marker_path, stat_result) or None."""
+    cur = os.path.realpath(start)
+    while True:
+        marker = os.path.join(cur, ".git")
+        try:
+            return cur, marker, os.stat(marker)
+        except OSError:
+            pass
+        parent = os.path.dirname(cur)
+        if parent == cur:
+            return None
+        cur = parent
+
+
+def _git_owner(marker_stat):
+    """(uid, gid) git must run as, or None to run as the current user.
+    Only a root process facing a non-root-owned repository demotes."""
+    if os.geteuid() == 0 and marker_stat.st_uid != 0:
+        return (marker_stat.st_uid, marker_stat.st_gid)
+    return None
+
+
+def _run_as(owner, argv, cwd):
+    """Run argv (captured, text) as `owner` ((uid, gid) or None)."""
+    env = os.environ.copy()
+    env["GIT_TERMINAL_PROMPT"] = "0"
+    kwargs = {}
+    if owner:
+        uid, gid = owner
+        try:
+            pw = pwd.getpwuid(uid)
+        except KeyError:
+            raise GitOwnerError(f"uid {uid} has no passwd entry")
+        env["HOME"] = pw.pw_dir
+        env.pop("XDG_CONFIG_HOME", None)
+        groups = os.getgrouplist(pw.pw_name, gid)
+
+        def _demote():
+            os.setgroups(groups)
+            os.setgid(gid)
+            os.setuid(uid)
+
+        kwargs["preexec_fn"] = _demote
+    return subprocess.run(argv, cwd=cwd, env=env, capture_output=True,
+                          text=True, **kwargs)
+
+
+def _git(cwd, *args, owner=None):
+    """Run `git <args>` in cwd as `owner`. Argument list, never a shell."""
+    return _run_as(owner, ["git"] + list(args), cwd)
+
+
+def _not_writable_by(owner, paths, cwd):
+    """Subset of `paths` the (demoted) owner cannot write. Evaluated in a child
+    process running as that owner: os.access() in a root process is always
+    True and says nothing about the owner's rights."""
+    if not paths:
+        return []
+    script = 'for p in "$@"; do [ -w "$p" ] || printf "%s\\n" "$p"; done'
+    # Hand the paths over in bounded batches so a large checkout cannot
+    # exceed the kernel argv limit (E2BIG).
+    out = []
+    batch, size = [], 0
+    for p in list(paths) + [None]:
+        if p is None or size + len(p) + 1 > 60000 or len(batch) >= 2000:
+            if batch:
+                res = _run_as(owner, ["sh", "-c", script, "sh"] + batch, cwd)
+                out.extend(line for line in (res.stdout or "").splitlines() if line)
+            batch, size = [], 0
+        if p is not None:
+            batch.append(p)
+            size += len(p) + 1
+    return out
+
+
+def _ownership_offenders(owner, git_dir, top, tracked, lstat_fn=None):
+    """Paths under .git / the tracked files that a demoted git could not
+    update: owned by someone else AND not writable for the owner, or tracked
+    files whose directory is not writable. Used before touching the work tree."""
+    lstat_fn = lstat_fn or os.lstat
+    uid = owner[0]
+    candidates = [git_dir]
+    foreign = []
+
+    def consider(path):
+        try:
+            st = lstat_fn(path)
+        except OSError:
+            return
+        if st.st_uid != uid:
+            foreign.append(path)
+
+    if os.path.isdir(git_dir):
+        for root, dirs, files in os.walk(git_dir):
+            for name in dirs + files:
+                consider(os.path.join(root, name))
+    parents = set()
+    for rel in tracked:
+        path = os.path.join(top, rel)
+        consider(path)
+        # A tracked directory the user deleted locally is not an ownership
+        # problem; check the nearest ancestor that still exists instead.
+        parent = os.path.dirname(path)
+        while parent and parent != top and not os.path.isdir(parent):
+            parent = os.path.dirname(parent)
+        if os.path.isdir(parent):
+            parents.add(parent)
+    candidates += sorted(parents) + foreign
+    seen = set()
+    uniq = [c for c in candidates if not (c in seen or seen.add(c))]
+    bad = set(_not_writable_by(owner, uniq, top))
+    # A foreign-owned entry that the owner can still write (group write) is fine.
+    return sorted(p for p in bad if p in foreign or p in parents or p == git_dir)
+
+
+def _match_parent_owner(path):
+    """Give a newly created file the owner of its directory when this process
+    runs as root and the directory belongs to someone else."""
+    try:
+        if os.geteuid() != 0:
+            return
+        st = os.stat(os.path.dirname(os.path.abspath(path)))
+        if st.st_uid != os.geteuid():
+            os.chown(path, st.st_uid, st.st_gid)
+    except OSError:
+        pass
+
+
+def _is_protected_path(rel):
+    """True when `rel` (relative to the install directory) is one of
+    PROTECTED_PATHS. Boundary match: `.env` does not protect `.env.template`."""
+    rel = rel.rstrip("/")
+    for p in PROTECTED_PATHS:
+        base = p.rstrip("/")
+        if rel == base or rel.startswith(base + "/"):
+            return True
+    return False
+
+
+def _parse_porcelain_z(raw):
+    """Parse `git status --porcelain -z` into [(xy, path)]. A rename or copy
+    entry carries the destination first and the source as a separate field."""
+    entries = []
+    fields = raw.split("\0")
+    i = 0
+    while i < len(fields):
+        f = fields[i]
+        i += 1
+        if len(f) < 4:
+            continue
+        xy, path = f[:2], f[3:]
+        if "R" in xy or "C" in xy:
+            i += 1  # skip the source path
+        entries.append((xy, path))
+    return entries
 
 
 def docker_exec(container, cmd, interactive=False):
@@ -5113,6 +5312,15 @@ Type 'registrar <subcommand> help' for more details.
 
         pinned = os.path.exists(os.path.join(project_dir, "versions.lock"))
 
+        # Exit code of this command (see the table in `update --help` / README).
+        # main() turns a non-zero value into the process exit status.
+        self.last_update_rc = 0
+        self._update_scripts_rc = RC_SCRIPTS_FAILED
+        self._update_stage = "init"
+        self._verify_rc = 0
+        self._verify_bad = 0
+        self._verify_ping = "skipped"
+
         if resume_from == "pull":
             # "Did the just-pulled release unpin this product" must be
             # detected from versions.lock.dist (the file `git pull` can
@@ -5129,30 +5337,55 @@ Type 'registrar <subcommand> help' for more details.
                 print("  commit (the release unpinned this repo). The pinned upgrade flow does")
                 print("  not apply anymore - run 'update all' again to use the standard path,")
                 print("  and run scripts/migrate.sh manually if the release requires migrations.")
+                # This early return sits before the atexit registration in
+                # _upgrade_pinned, so release the op lock held across the
+                # re-exec here instead of leaking it.
+                self._release_op_lock(os.path.join(project_dir, ".voipbin-op.lock"))
+                self.last_update_rc = RC_UNPINNED
+                self._update_stage = "resume"
+                self._print_update_result()
                 return
 
         if subcommand == "scripts":
-            self._update_scripts(project_dir, check_only)
+            if not self._update_scripts(project_dir, check_only):
+                self.last_update_rc = self._update_scripts_rc or RC_SCRIPTS_FAILED
         elif subcommand == "all":
             if pinned:
                 # Pinned repo: safe-ordered upgrade flow (design §3.5).
-                self._upgrade_pinned(
+                rc = self._upgrade_pinned(
                     project_dir,
                     check_only=check_only,
                     skip_backup=skip_backup,
                     resume_from=resume_from,
                     backup_ts=backup_ts,
                 )
+                self.last_update_rc = rc if isinstance(rc, int) else 0
+                if check_only:
+                    self._update_stage = "check"
             else:
-                self._update_scripts(project_dir, check_only)
-                if not check_only:
-                    print("")
-                self._update_images(project_dir, check_only)
+                self._update_stage = "scripts"
+                if not self._update_scripts(project_dir, check_only):
+                    # A failed script update must not be followed by an image
+                    # update against stale scripts.
+                    self.last_update_rc = self._update_scripts_rc or RC_SCRIPTS_FAILED
+                else:
+                    if not check_only:
+                        print("")
+                    self._update_stage = "images"
+                    self._update_images(project_dir, check_only)
+            self._print_update_result()
         elif subcommand in ("", "images"):
             self._update_images(project_dir, check_only)
         else:
             print(f"{red('Unknown subcommand:')} {subcommand}")
             print("Usage: update [scripts|images|all] [--check] [--skip-backup]")
+            print("Exit codes of 'update all' are listed in the README (upgrade section).")
+            self.last_update_rc = RC_USAGE
+
+    def _print_update_result(self):
+        """One machine-readable line for scripted callers; no secrets."""
+        print(f"UPDATE_RESULT rc={self.last_update_rc} stage={self._update_stage} "
+              f"containers_bad={self._verify_bad} ping={self._verify_ping}")
 
     # -------------------------------------------------------------------------
     # Pinned-repo upgrade flow (design §3.5)
@@ -5208,11 +5441,13 @@ Type 'registrar <subcommand> help' for more details.
             print("     files are untracked - git pull alone never touches them, see each .dist file's")
             print("     header comment/\"_comment\" field)")
             print("  3. docker compose pull     - fetch the new pinned digests")
-            print("  4. scripts/migrate.sh      - alembic migrations at the new dbscheme pin (abort on failure)")
+            print("  4. scripts/migrate.sh      - database migrations at the pinned schema revision (abort on failure)")
+            print("  Exit codes: 0 ok, 2 busy, 10 backup, 11 scripts, 12 unpinned, 13 sync, 14 pull,")
+            print("              15 migrate, 16 up, 17-19 verify (containers / ping / both)")
             print("  5. docker compose up -d    - recreate only containers whose digest changed")
             print("  6. verify                  - poll container health (120s) + GET api-manager /ping")
             print(f"\n{yellow('No changes made.')} Run 'update all' without --check to upgrade.")
-            return
+            return 0
 
         if resume_from != "pull":
             # Concurrency lock: held from here THROUGH the execv (the lock file
@@ -5220,17 +5455,18 @@ Type 'registrar <subcommand> help' for more details.
             # resumed run. Blocks concurrent backup / second update all.
             lock = self._acquire_op_lock(project_dir, "update all")
             if not lock:
-                return
+                self._update_stage = "lock"
+                return RC_PRECONDITION
             # Any unexpected exception (incl. Ctrl-C during mysqldump) before
             # the execv must not leak the lock: on the success path execv
             # replaces the process so this except never runs, and the resumed
             # process owns/releases the lock via atexit.
             try:
-                self._upgrade_pinned_pre_exec(project_dir, lock, skip_backup, backup_ts)
+                return self._upgrade_pinned_pre_exec(project_dir, lock, skip_backup, backup_ts)
             except BaseException:
                 self._release_op_lock(lock)
                 raise
-            return  # only reached on abort paths inside pre_exec
+            # pre_exec only returns on abort paths (a success execs)
 
         # ---- Resumed process (new code) continues from step 3. NEVER re-exec here. ----
         # The op lock acquired before the execv is still on disk; release it on
@@ -5258,11 +5494,12 @@ Type 'registrar <subcommand> help' for more details.
         # needed here beyond pointing COMPOSE_FILE at the live file below.
         sync_script = os.path.join(project_dir, "scripts", "sync-compose-images.sh")
         print(f"\n{blue('==>')} Step 2b/6: syncing docker-compose.yml image digests from versions.lock.dist...")
+        self._update_stage = "sync"
         if not os.path.exists(sync_script):
             print(f"\n{red('Upgrade aborted:')} {sync_script} not found.")
             print("  The 'update scripts' step may have pulled an incomplete tree -")
             print("  check 'git status' in the repo, or re-clone and retry 'update all'.")
-            return
+            return RC_SYNC_FAILED
         sync_env = os.environ.copy()
         sync_env["COMPOSE_FILE"] = os.path.join(project_dir, "docker-compose.yml")
         rc = subprocess.call(["bash", sync_script], cwd=project_dir, env=sync_env)
@@ -5271,24 +5508,26 @@ Type 'registrar <subcommand> help' for more details.
             print("  docker-compose.yml was not modified - the script writes atomically via a")
             print("  temp file + rename, so a mid-run failure leaves the old file intact.")
             print("  Old containers are still running the old digests.")
-            return
+            return RC_SYNC_FAILED
 
         # ---- Step 3: docker compose pull (fetch the NEW pinned digests) ----
         print(f"\n{blue('==>')} Step 3/6: pulling new pinned images (docker compose pull)...")
+        self._update_stage = "pull"
         rc = subprocess.call("docker compose pull", shell=True, cwd=project_dir)
         if rc != 0:
             print(f"\n{red('Upgrade aborted:')} docker compose pull failed (exit {rc}).")
             print("  Old containers are still running the old digests; safe to re-run 'update all'.")
-            return
+            return RC_PULL_FAILED
 
         # ---- Step 4: migrations (surfaced live, abort on failure) ----
         migrate_script = os.path.join(project_dir, "scripts", "migrate.sh")
         print(f"\n{blue('==>')} Step 4/6: running database migrations (scripts/migrate.sh)...")
+        self._update_stage = "migrate"
         if not os.path.exists(migrate_script):
             print(f"\n{red('Upgrade aborted:')} {migrate_script} not found.")
             print("  The 'update scripts' step may have pulled an incomplete tree -")
             print("  check 'git status' in the repo, or re-clone and retry 'update all'.")
-            return
+            return RC_MIGRATE_FAILED
         rc = subprocess.call(["bash", migrate_script], cwd=project_dir)
         if rc != 0:
             print(f"\n{red('Upgrade aborted:')} migration failed (exit {rc}).")
@@ -5301,10 +5540,11 @@ Type 'registrar <subcommand> help' for more details.
             print("       ENTIRE tree and detach HEAD, not just install/'s files)")
             print(f"    4. COMPOSE_FILE={os.path.join(project_dir, 'docker-compose.yml')} bash scripts/sync-compose-images.sh")
             print("    5. voipbin start")
-            return
+            return RC_MIGRATE_FAILED
 
         # ---- Step 5: recreate changed containers ----
         print(f"\n{blue('==>')} Step 5/6: recreating services (docker compose up -d)...")
+        self._update_stage = "up"
         rc = subprocess.call("docker compose up -d", shell=True, cwd=project_dir)
         if rc != 0:
             print(f"\n{red('Upgrade aborted:')} docker compose up -d failed (exit {rc}).")
@@ -5312,16 +5552,23 @@ Type 'registrar <subcommand> help' for more details.
             print("  'git checkout <previous commit> -- docker-compose.yml.dist versions.lock.dist scripts/'")
             print("  (pathspec-scoped - a bare checkout would revert this repo's entire tree)")
             print(f"  and 'COMPOSE_FILE={os.path.join(project_dir, 'docker-compose.yml')} bash scripts/sync-compose-images.sh'.")
-            return
+            return RC_UP_FAILED
 
         # ---- Step 6: verify ----
         print(f"\n{blue('==>')} Step 6/6: verifying stack health...")
+        self._update_stage = "verify"
+        self._verify_rc = 0
         if self._verify_stack(project_dir):
+            self._update_stage = "done"
             print(f"\n{bold(green('Upgrade complete!'))}")
             if backup_ts:
                 print(f"  Pre-upgrade backup kept at backups/{backup_ts}/")
             print("  Run 'voipbin status' to inspect services.")
+            return 0
         else:
+            # A False return with no recorded code (e.g. a replaced
+            # _verify_stack) must still fail: derive 17.
+            verify_rc = self._verify_rc or RC_VERIFY_CONTAINERS
             print(f"\n{red('Upgrade verification FAILED.')}")
             print("  Recovery options:")
             print("    - Data rollback:  stop services, then run:")
@@ -5337,6 +5584,7 @@ Type 'registrar <subcommand> help' for more details.
             print("        docker compose up -d")
             print(f"  {yellow('Do NOT use')} 'voipbin rollback' here: it replays docker-compose.override.yml")
             print("  snapshots that only exist on UNPINNED repos and would silently unpin this repo.")
+            return verify_rc
 
     def _upgrade_pinned_pre_exec(self, project_dir, lock, skip_backup, backup_ts):
         """Steps 1-2 of the pinned upgrade + the re-exec. Runs with the op lock
@@ -5347,21 +5595,27 @@ Type 'registrar <subcommand> help' for more details.
             print(f"\n{yellow('==>')} Step 1/6: backup SKIPPED (--skip-backup)")
         else:
             print(f"\n{blue('==>')} Step 1/6: creating pre-upgrade backup...")
+            self._update_stage = "backup"
             backup_ts = self._do_backup(project_dir)
             if not backup_ts:
                 print(f"\n{red('Upgrade aborted:')} backup failed. Nothing was changed.")
                 print("  Fix the backup problem, or re-run with --skip-backup to opt out (not recommended).")
                 self._release_op_lock(lock)
-                return
+                self._update_stage = "backup"
+                return RC_BACKUP_FAILED
 
         # ---- Step 2: update scripts (git pull) ----
         print(f"\n{blue('==>')} Step 2/6: updating scripts (git pull)...")
+        self._update_stage = "scripts"
+        self._update_scripts_rc = RC_SCRIPTS_FAILED
         if not self._update_scripts(project_dir, check_only=False):
-            print(f"\n{red('Upgrade aborted:')} git pull failed. The old pin is intact.")
+            print(f"\n{red('Upgrade aborted:')} the script update failed.")
+            print("  If the message above says the pull failed, the old pin is intact.")
             if backup_ts:
-                print(f"  Pre-upgrade backup: backups/{backup_ts}/ (untouched state, nothing to restore)")
+                print(f"  Pre-upgrade backup: backups/{backup_ts}/ (nothing to restore)")
             self._release_op_lock(lock)
-            return
+            self._update_stage = "scripts"
+            return self._update_scripts_rc or RC_SCRIPTS_FAILED
 
         # ---- Re-exec: the git pull may have overwritten this very file. ----
         # CPython loaded the OLD code at startup; steps 3-6 must run the NEW
@@ -5384,7 +5638,12 @@ Type 'registrar <subcommand> help' for more details.
 
     def _verify_stack(self, project_dir, timeout=120):
         """Poll compose health until no container is starting/unhealthy, then
-        ping api-manager from a helper container on the compose network."""
+        ping api-manager from a helper container on the compose network. The
+        ping runs even when containers are unhealthy. Returns True only when
+        both are fine; the exit code is recorded in self._verify_rc."""
+        self._verify_rc = 0
+        self._verify_bad = 0
+        self._verify_ping = "skipped"
         deadline = time.time() + timeout
         bad = []
         while time.time() < deadline:
@@ -5420,13 +5679,15 @@ Type 'registrar <subcommand> help' for more details.
             time.sleep(5)
         print()
 
+        self._verify_bad = len(bad)
         if bad:
             print(f"  {red('✗')} Timed out after {timeout}s. Problem containers:")
             for name, why in bad:
                 print(f"    - {name}: {why}")
             print("  Inspect why with: docker compose logs --tail 50 <service>")
-            return False
-        print(f"  {green('✓')} All containers healthy (or no healthcheck defined)")
+            print("  (The API ping below is still attempted so its result is visible.)")
+        else:
+            print(f"  {green('✓')} All containers healthy (or no healthcheck defined)")
 
         # API ping from a helper container on the compose network
         # (the bin-api-manager image may lack curl).
@@ -5447,13 +5708,26 @@ Type 'registrar <subcommand> help' for more details.
             shell=True, capture_output=True, text=True, cwd=project_dir,
         )
         code = (result.stdout or "").strip()
-        if result.returncode == 0 and code and code != "000":
+        ping_ok = result.returncode == 0 and code and code != "000"
+        if ping_ok:
             print(f"  {green('✓')} api-manager /ping responded (HTTP {code})")
-            return True
-        print(f"  {red('✗')} api-manager /ping failed (curl exit {result.returncode}, HTTP '{code or '-'}')")
-        if result.stderr:
-            print(f"    {result.stderr.strip().splitlines()[-1]}")
-        return False
+            self._verify_ping = "ok"
+        else:
+            print(f"  {red('✗')} api-manager /ping failed (curl exit {result.returncode}, HTTP '{code or '-'}')")
+            if result.stderr:
+                print(f"    {result.stderr.strip().splitlines()[-1]}")
+            self._verify_ping = "fail"
+        # 17 containers only, 18 ping only, 19 both (a container problem must
+        # not mask an API outage).
+        if bad and not ping_ok:
+            self._verify_rc = RC_VERIFY_BOTH
+        elif bad:
+            self._verify_rc = RC_VERIFY_CONTAINERS
+        elif not ping_ok:
+            self._verify_rc = RC_VERIFY_PING
+        else:
+            self._verify_rc = 0
+        return self._verify_rc == 0
 
     # -------------------------------------------------------------------------
     # Backup / Restore (design §3.4)
@@ -5497,6 +5771,7 @@ Type 'registrar <subcommand> help' for more details.
             fd = os.open(lock_path, os.O_CREAT | os.O_EXCL | os.O_WRONLY)
             os.write(fd, f"{op} pid={os.getpid()} {time.strftime('%F %T')}\n".encode())
             os.close(fd)
+            _match_parent_owner(lock_path)
             return lock_path
         except FileExistsError:
             try:
@@ -6027,7 +6302,8 @@ Type 'registrar <subcommand> help' for more details.
 
         def run_migrations():
             """Run database migrations via the containerized migrate.sh
-            (no host alembic needed; non-interactive by design)."""
+            (no host alembic needed; non-interactive by design). The pinned
+            schema revision source is resolved by migrate.sh."""
             # migrate.sh resolves the dbscheme pin from versions.lock. On a
             # genuinely unpinned repo there is no lock to migrate against -
             # skip with guidance instead of guaranteed failure.
@@ -6132,40 +6408,135 @@ Type 'registrar <subcommand> help' for more details.
         lines.append("")
         return "\n".join(lines)
 
-    def _update_scripts(self, project_dir, check_only=False):
-        """Update scripts and configs from GitHub.
+    # Exit code recorded by _update_scripts on failure (its return value stays a
+    # bool so `if not self._update_scripts(...)` keeps its meaning).
+    _update_scripts_rc = RC_SCRIPTS_FAILED
+    last_update_rc = 0
+    _update_stage = "init"
+    _verify_rc = 0
+    _verify_bad = 0
+    _verify_ping = "skipped"
 
-        Returns True on success (including already-up-to-date), False on failure
-        so upgrade callers can abort."""
+    def _scripts_fail(self, message, *hints):
+        print(red(message))
+        for h in hints:
+            print(h)
+        self._update_scripts_rc = RC_SCRIPTS_FAILED
+        return False
+
+    def _update_scripts(self, project_dir, check_only=False):
+        """Update scripts and configs from the git remote.
+
+        Returns True on success (including already-up-to-date), False on
+        failure so upgrade callers can abort. Success is decided by git exit
+        codes, never by scanning output text. On failure the exit code is left
+        in self._update_scripts_rc (11)."""
+        self._update_scripts_rc = RC_SCRIPTS_FAILED
         print(f"\n{bold('Script Update from GitHub')}")
         print("=" * 50)
 
         os.chdir(project_dir)
+        project_dir = os.path.realpath(project_dir)
 
-        if not os.path.exists(".git"):
-            print(red("Error: Not a git repository."))
-            print("This command requires the sandbox to be cloned from GitHub.")
-            return False
+        found = _find_git_marker(project_dir)
+        if not found:
+            return self._scripts_fail(
+                "Error: Not a git repository.",
+                "This command requires the sandbox to be cloned from GitHub "
+                "(the checkout may sit in a parent directory of install/).")
+        _, git_marker, marker_stat = found
+        owner = _git_owner(marker_stat)
+
+        try:
+            return self._update_scripts_git(project_dir, git_marker, owner, check_only)
+        except GitOwnerError as e:
+            return self._scripts_fail(
+                f"Error: cannot run git as the repository owner: {e}.",
+                "  Fix the ownership of the checkout (sudo chown -R <user> <repo>) and retry.")
+
+    def _update_scripts_git(self, project_dir, git_marker, owner, check_only):
+        def git(*args):
+            return _git(project_dir, *args, owner=owner)
+
+        top_res = git("rev-parse", "--show-toplevel")
+        prefix_res = git("rev-parse", "--show-prefix")
+        if top_res.returncode != 0 or prefix_res.returncode != 0:
+            return self._scripts_fail(
+                "Error: git could not open the repository.",
+                f"  {(top_res.stderr or prefix_res.stderr or '').strip()}")
+        top = top_res.stdout.strip()
+        prefix = prefix_res.stdout.strip()
+
+        # The repository found above must actually track this install directory
+        # (guards against an unrelated repository in a parent directory).
+        tracked_probe = git("ls-files", "--error-unmatch", "versions.lock.dist")
+        if tracked_probe.returncode != 0:
+            return self._scripts_fail(
+                "Error: the enclosing git repository does not track this install directory.",
+                f"  Found a repository at {top}, but it has no versions.lock.dist here.")
+
+        if owner:
+            # --full-name: paths relative to the repository root (not to the
+            # install directory this command runs in), matching `top`.
+            ls = git("ls-files", "-z", "--full-name")
+            tracked = [t for t in (ls.stdout or "").split("\0") if t]
+            if os.path.isdir(git_marker):
+                git_dir = git_marker
+                extra_dirs = []
+            else:
+                # .git is a file (linked worktree): check the real git
+                # directory and the shared one it points to.
+                gd = git("rev-parse", "--absolute-git-dir")
+                cd = git("rev-parse", "--git-common-dir")
+                git_dir = (gd.stdout or "").strip() or os.path.join(top, ".git")
+                common = (cd.stdout or "").strip()
+                if common and not os.path.isabs(common):
+                    common = os.path.join(project_dir, common)
+                extra_dirs = [os.path.normpath(common)] if common else []
+            offenders = _ownership_offenders(owner, git_dir, top, tracked)
+            for extra in extra_dirs:
+                if extra != git_dir:
+                    offenders = sorted(set(offenders) | set(_ownership_offenders(owner, extra, top, [])))
+            if offenders:
+                print(red("Error: the checkout contains files this tool cannot update as its owner:"))
+                for path in offenders[:10]:
+                    print(f"  {path}")
+                if len(offenders) > 10:
+                    print(f"  ... and {len(offenders) - 10} more")
+                print("  Nothing was changed. A previous 'sudo git' run probably left them behind;")
+                print(f"  repair with: sudo chown -R {owner[0]}:{owner[1]} {top}")
+                self._update_scripts_rc = RC_SCRIPTS_FAILED
+                return False
 
         print(f"\n{blue('==>')} Fetching from remote...")
-        fetch_result = run_cmd("git fetch origin 2>&1")
-        if "error" in fetch_result.lower() or "fatal" in fetch_result.lower():
-            print(red(f"  Error fetching: {fetch_result}"))
-            return False
+        fetch = git("fetch", "origin")
+        if fetch.returncode != 0:
+            return self._scripts_fail(f"  Error fetching: {(fetch.stderr or fetch.stdout or '').strip()}")
         print(green("  ✓ Fetched latest"))
 
-        current_branch = run_cmd("git rev-parse --abbrev-ref HEAD")
+        branch_res = git("symbolic-ref", "-q", "--short", "HEAD")
+        current_branch = (branch_res.stdout or "").strip()
+        if branch_res.returncode != 0 or not current_branch:
+            return self._scripts_fail(
+                "Error: HEAD is detached.",
+                "  Check out a branch (git checkout <branch>) and retry.")
         print(f"  Current branch: {current_branch}")
+        remote_ref = f"origin/{current_branch}"
+        if git("rev-parse", "-q", "--verify", remote_ref).returncode != 0:
+            return self._scripts_fail(
+                f"Error: remote branch {remote_ref} does not exist.",
+                "  Set the upstream (git branch -u origin/<branch>) or check out a branch that exists on origin.")
 
-        status = run_cmd("git status --porcelain")
-        local_changes = [line for line in status.split('\n') if line.strip()] if status else []
-
+        status = git("status", "--porcelain", "-z")
+        if status.returncode != 0:
+            return self._scripts_fail(f"  Error reading git status: {(status.stderr or '').strip()}")
         significant_changes = []
-        for change in local_changes:
-            file_path = change[3:] if len(change) > 3 else change
-            is_protected = any(file_path.startswith(p.rstrip('/')) for p in PROTECTED_PATHS)
-            if not is_protected:
-                significant_changes.append(change)
+        for xy, path in _parse_porcelain_z(status.stdout or ""):
+            rel = path[len(prefix):] if prefix and path.startswith(prefix) else path
+            if prefix and not path.startswith(prefix):
+                rel = "../" + path  # outside install/: never protected
+            if not _is_protected_path(rel):
+                significant_changes.append(f"{xy} {path}")
 
         if significant_changes:
             print(f"\n{yellow('Local changes detected:')}")
@@ -6175,21 +6546,28 @@ Type 'registrar <subcommand> help' for more details.
                 print(f"  ... and {len(significant_changes) - 10} more")
 
         print(f"\n{blue('==>')} Checking for updates...")
-        diff_stat = run_cmd(f"git diff HEAD..origin/{current_branch} --stat 2>/dev/null")
-
-        if not diff_stat:
+        behind = git("rev-list", "--count", f"HEAD..{remote_ref}")
+        try:
+            behind_n = int((behind.stdout or "").strip())
+        except ValueError:
+            behind_n = -1
+        if behind.returncode != 0 or behind_n < 0:
+            return self._scripts_fail(
+                f"  Error comparing HEAD with {remote_ref}: {(behind.stderr or '').strip()}")
+        if behind_n == 0:
             print(green("  Already up to date!"))
             return True
 
+        diff_stat = git("diff", f"HEAD..{remote_ref}", "--stat").stdout or ""
         print(f"\n{yellow('Changes available:')}")
-        for line in diff_stat.split('\n')[-20:]:
+        for line in diff_stat.strip().split('\n')[-20:]:
             print(f"  {line}")
 
         print(f"\n{blue('==>')} Changes in tracked files:")
-        for tracked in TRACKED_PATHS:
-            diff = run_cmd(f"git diff HEAD..origin/{current_branch} --stat -- {tracked} 2>/dev/null")
+        for tracked_path in TRACKED_PATHS:
+            diff = (git("diff", f"HEAD..{remote_ref}", "--stat", "--", tracked_path).stdout or "").strip()
             if diff:
-                print(f"  {tracked}:")
+                print(f"  {tracked_path}:")
                 for line in diff.split('\n')[:5]:
                     if line.strip():
                         print(f"    {line}")
@@ -6199,37 +6577,65 @@ Type 'registrar <subcommand> help' for more details.
             print("Run 'update scripts' without --check to apply updates.")
             return True
 
-        backup_path = self._create_backup(project_dir, significant_changes)
+        backup_path = self._create_backup(project_dir, significant_changes, repo_root=top)
         if backup_path:
             print(f"\n{green('✓')} Backup created: {backup_path}")
 
         stashed = False
         if significant_changes:
             print(f"\n{blue('==>')} Stashing local changes...")
-            stash_result = run_cmd("git stash push -m 'voipbin-cli auto-stash before update'")
-            if "No local changes" not in stash_result:
-                stashed = True
+            before = (git("rev-parse", "-q", "--verify", "refs/stash").stdout or "").strip()
+            stash = git("-c", "user.name=voipbin-cli", "-c", "user.email=voipbin-cli@localhost",
+                        "stash", "push", "-m", "voipbin-cli auto-stash before update")
+            if stash.returncode != 0:
+                return self._scripts_fail(
+                    f"  Error stashing local changes: {(stash.stderr or stash.stdout or '').strip()}",
+                    "  Nothing was pulled.")
+            after = (git("rev-parse", "-q", "--verify", "refs/stash").stdout or "").strip()
+            # rc 0 also covers "No local changes to save" (untracked files only);
+            # only a changed refs/stash means there is something to pop later.
+            stashed = bool(after) and after != before
+            if stashed:
                 print(green("  ✓ Changes stashed"))
 
+        def restore_stash():
+            pop = git("stash", "pop")
+            return pop.returncode == 0 and "CONFLICT" not in ((pop.stdout or "") + (pop.stderr or ""))
+
+        def restore_stash_after_failure():
+            if not restore_stash():
+                print(yellow("  ! Restoring your local changes failed; the stash is still kept."))
+                print("  Run 'git stash list' to check it and 'git stash pop' once the problem is resolved.")
+
         print(f"\n{blue('==>')} Pulling updates...")
-        pull_result = run_cmd(f"git pull origin {current_branch} 2>&1")
-        if "error" in pull_result.lower() or "fatal" in pull_result.lower():
-            print(red(f"  Error: {pull_result}"))
+        pull = git("pull", "--ff-only", "origin", current_branch)
+        if pull.returncode != 0:
+            print(red(f"  Error: {(pull.stderr or pull.stdout or '').strip()}"))
             if stashed:
                 print(f"\n{blue('==>')} Restoring stashed changes...")
-                run_cmd("git stash pop")
+                restore_stash_after_failure()
+            self._update_scripts_rc = RC_SCRIPTS_FAILED
+            return False
+
+        # Accept a HEAD that already contains the remote branch (local commits
+        # ahead); reject one that is behind or diverged.
+        if git("merge-base", "--is-ancestor", remote_ref, "HEAD").returncode != 0:
+            print(red(f"  Error: after pull, {remote_ref} is not an ancestor of HEAD."))
+            if stashed:
+                restore_stash_after_failure()
+            self._update_scripts_rc = RC_SCRIPTS_FAILED
             return False
 
         print(green("  ✓ Updated successfully"))
 
         if stashed:
             print(f"\n{blue('==>')} Restoring local changes...")
-            pop_result = run_cmd("git stash pop 2>&1")
-            if "CONFLICT" in pop_result:
-                print(yellow("  ! Merge conflicts detected. Please resolve manually."))
-                print(f"  Run 'git status' to see conflicts.")
-            else:
-                print(green("  ✓ Local changes restored"))
+            if not restore_stash():
+                print(yellow("  ! Scripts were updated, but restoring your local changes conflicted."))
+                print("  The conflict is left in the working tree; run 'git status' to resolve it.")
+                self._update_scripts_rc = RC_SCRIPTS_FAILED
+                return False
+            print(green("  ✓ Local changes restored"))
 
         self._cleanup_old_backups(project_dir)
 
@@ -6237,10 +6643,13 @@ Type 'registrar <subcommand> help' for more details.
         print("Run 'status' to check service status.")
         return True
 
-    def _create_backup(self, project_dir, changed_files):
-        """Create a backup of modified files before updating"""
+    def _create_backup(self, project_dir, changed_files, repo_root=None):
+        """Create a backup of modified files before updating. Paths in
+        `changed_files` are relative to the repository root (`repo_root`,
+        default project_dir)."""
         if not changed_files:
             return None
+        repo_root = repo_root or project_dir
 
         timestamp = datetime.now().strftime("%Y-%m-%d-%H%M%S")
         backup_path = os.path.join(project_dir, BACKUP_DIR, timestamp)
@@ -6260,7 +6669,7 @@ Type 'registrar <subcommand> help' for more details.
                 status = change[:2]
                 file_path = change[3:]
 
-                src_path = os.path.join(project_dir, file_path)
+                src_path = os.path.join(repo_root, file_path)
                 if not os.path.exists(src_path):
                     continue
 
@@ -6869,6 +7278,18 @@ Note: This CLI requires sudo for network and DNS operations.
 
 
 def main():
+    try:
+        _main()
+    except KeyboardInterrupt:
+        print()
+        sys.exit(RC_INTERRUPTED)
+    except Exception as e:
+        print(red(f"Unexpected error: {type(e).__name__}: {e}"))
+        traceback.print_exc(file=sys.stderr)
+        sys.exit(RC_UNEXPECTED)
+
+
+def _main():
     # Require root/sudo
     check_root()
 
@@ -6898,6 +7319,10 @@ def main():
             # the prompt instead.
             if cmd == "doctor" and cli.last_doctor_rc:
                 sys.exit(cli.last_doctor_rc)
+            # `update` exit codes (0 ok, 11 scripts, ... 64 usage) are a
+            # machine contract for scripted callers.
+            if cmd == "update" and cli.last_update_rc:
+                sys.exit(cli.last_update_rc)
         else:
             print(red(f"Unknown command: {cmd}"))
             print("Run 'sudo ./voipbin --help' for usage.")

@@ -36,3 +36,9 @@ config/rabbitmq/plugins/*.ez
 # this, bump-image-digest.sh/sync-compose-images.sh running against the
 # tracked .dist files leaves an untracked *.flock file behind.
 *.flock
+# Temp file written by sync-compose-images.sh before the atomic rename
+# (left behind only if a run is interrupted).
+docker-compose.yml.tmp
+# Copies kept by hand before merging upstream changes (see README)
+.env.pre-merge
+docker-compose.yml.pre-merge

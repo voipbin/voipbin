@@ -1007,3 +1007,339 @@ acquire_file_lock() {
         return 1
     fi
 }
+
+# =============================================================================
+# Service-owned schema state (start.sh, doctor.sh, init_database.sh)
+# =============================================================================
+#
+# The services own the bin_manager schema: each applies its own embedded
+# migrations on start and records them in <prefix>_schema_migrations
+# (golang-migrate: one row, columns version/dirty). The installer only
+# creates the empty databases and runs the asterisk (PJSIP) Alembic stream.
+#
+# A service counts as "applied" when its version table exists, holds exactly
+# one row and that row has dirty=0. A missing table, an empty table (created
+# on open before anything is applied, or emptied by `force`) and dirty=1
+# (in progress or failed) are all "not applied".
+#
+# Every function below returns explicit codes and is meant to be called from
+# an `if` or `||` context so `set -e` callers never die on a "no" answer.
+
+# "<version-table>:<compose-service>" for every service that ships embedded
+# migrations. Plain array assignment (no declare) so that sourcing this file
+# from inside a function (the bats loaders) still yields a global.
+SERVICE_SCHEMA_TABLES=(
+    "agent_schema_migrations:agent-manager"
+    "ai_schema_migrations:ai-manager"
+    "billing_schema_migrations:billing-manager"
+    "call_schema_migrations:call-manager"
+    "campaign_schema_migrations:campaign-manager"
+    "contact_schema_migrations:contact-manager"
+    "conference_schema_migrations:conference-manager"
+    "conversation_schema_migrations:conversation-manager"
+    "customer_schema_migrations:customer-manager"
+    "direct_schema_migrations:direct-manager"
+    "email_schema_migrations:email-manager"
+    "flow_schema_migrations:flow-manager"
+    "message_schema_migrations:message-manager"
+    "number_schema_migrations:number-manager"
+    "outdial_schema_migrations:outdial-manager"
+    "pipecat_schema_migrations:pipecat-manager"
+    "queue_schema_migrations:queue-manager"
+    "registrar_schema_migrations:registrar-manager"
+    "route_schema_migrations:route-manager"
+    "schedule_schema_migrations:schedule-manager"
+    "storage_schema_migrations:storage-manager"
+    "tag_schema_migrations:tag-manager"
+    "talk_schema_migrations:talk-manager"
+    "transcribe_schema_migrations:transcribe-manager"
+    "tts_schema_migrations:tts-manager"
+    "webchat_schema_migrations:webchat-manager"
+)
+
+# Matches log lines that show a service stopping because a credential or key
+# is not configured (the only crash reason that ends the schema gate early).
+SCHEMA_GATE_KEY_MISSING='Check TTS provider credentials|(credential|api[_ -]?key|token|secret).{0,80}(missing|not set|empty|required|invalid)'
+
+# Matches log lines that show a migration or connection problem. A recent log
+# window containing any of these never counts as a missing-key crash. Plain
+# "migrations applied" / "no pending migrations" lines do not match.
+SCHEMA_GATE_CRASH_EXCLUDE='migrat[a-z]*.{0,60}(fail|error|dirty)|could not (run|apply) migrat|dirty database|too many connections|error 1[0-9]{3}|connection refused'
+
+# The mysql client reads the root password from the CONTAINER environment so
+# it never appears on the host argv. The SQL text is passed as $1.
+SCHEMA_MYSQL_IN_DB='exec mysql -u"$0" -p"${MYSQL_ROOT_PASSWORD:-root_password}" -N -e "$1"'
+
+# schema_mysql <db-container> <sql>
+# Prints the result rows (tab separated, no header). Non-zero when the query
+# or the exec itself fails.
+schema_mysql() {
+    local container="$1" sql="$2"
+    docker exec "$container" sh -c "$SCHEMA_MYSQL_IN_DB" root "$sql" 2>/dev/null
+}
+
+# schema_service_table_in_list
+# Prints the quoted, comma separated table names for an SQL IN (...) list.
+schema_service_table_in_list() {
+    local entry out=""
+    for entry in "${SERVICE_SCHEMA_TABLES[@]}"; do
+        out+="${out:+,}'${entry%%:*}'"
+    done
+    printf '%s' "$out"
+}
+
+# schema_service_for_table <table>
+# Prints the compose service that owns the table, or the table name itself
+# when it is not in SERVICE_SCHEMA_TABLES.
+schema_service_for_table() {
+    local table="$1" entry
+    for entry in "${SERVICE_SCHEMA_TABLES[@]}"; do
+        if [ "${entry%%:*}" = "$table" ]; then
+            printf '%s' "${entry#*:}"
+            return 0
+        fi
+    done
+    printf '%s' "$table"
+}
+
+# schema_table_status <db-container>
+# Prints "<table>\t<rows>\t<dirty-rows>" for every existing version table: the
+# exact names in SERVICE_SCHEMA_TABLES plus any other table ending in
+# schema_migrations (so an unlisted dirty table is still seen). Existing
+# tables are listed first and only those are SELECTed, because a session
+# stops at the first error for a table that does not exist yet. Returns 1
+# when a query fails.
+schema_table_status() {
+    local container="$1" listing name union="" part
+    # Only tables that have a "dirty" column are listed, so an unrelated table
+    # whose name merely ends in schema_migrations cannot break the combined
+    # status query.
+    listing="$(schema_mysql "$container" "SELECT DISTINCT TABLE_NAME FROM information_schema.COLUMNS WHERE TABLE_SCHEMA='bin_manager' AND COLUMN_NAME='dirty' AND (TABLE_NAME IN ($(schema_service_table_in_list)) OR TABLE_NAME LIKE '%schema\\_migrations') ORDER BY TABLE_NAME;")" || return 1
+    while IFS= read -r name; do
+        [[ "$name" =~ ^[A-Za-z0-9_]+$ ]] || continue
+        part="SELECT '$name' AS t, COUNT(*) AS c, COALESCE(SUM(dirty),0) AS d FROM bin_manager.\`$name\`"
+        union+="${union:+ UNION ALL }$part"
+    done <<< "$listing"
+    [ -n "$union" ] || return 0
+    schema_mysql "$container" "$union;" || return 1
+}
+
+# schema_table_applied <table> <status-text>
+# 0 when the status text (schema_table_status output) shows the table with
+# exactly one row and dirty=0.
+schema_table_applied() {
+    local want="$1" status="$2" t c d
+    while IFS=$'\t' read -r t c d; do
+        if [ "$t" = "$want" ] && [ "$c" = "1" ] && [ "$d" = "0" ]; then
+            return 0
+        fi
+    done <<< "$status"
+    return 1
+}
+
+# schema_unapplied_services <status-text>
+# Prints the comma separated compose services that are not applied.
+schema_unapplied_services() {
+    local status="$1" entry out=""
+    for entry in "${SERVICE_SCHEMA_TABLES[@]}"; do
+        if ! schema_table_applied "${entry%%:*}" "$status"; then
+            out+="${out:+,}${entry#*:}"
+        fi
+    done
+    printf '%s' "$out"
+}
+
+# schema_dirty_services <status-text>
+# Prints the comma separated owners (service, or table name when unlisted) of
+# every version table with a dirty row.
+schema_dirty_services() {
+    local status="$1" t c d out=""
+    while IFS=$'\t' read -r t c d; do
+        [ -n "$t" ] || continue
+        if [[ "$d" =~ ^[0-9]+$ ]] && [ "$d" -gt 0 ]; then
+            out+="${out:+,}$(schema_service_for_table "$t")"
+        fi
+    done <<< "$status"
+    printf '%s' "$out"
+}
+
+# db_schema_initialized <db-container>
+# True when the database holds a complete first install: bin_manager has
+# tables, asterisk.alembic_version has a row, and at least one service has
+# created its *schema_migrations table. A half-migrated install (bin_manager
+# tables but the asterisk stream never ran) is NOT initialized.
+db_schema_initialized() {
+    local container="$1" tables ast svc_tables
+    tables="$(schema_mysql "$container" "SELECT COUNT(*) FROM information_schema.TABLES WHERE TABLE_SCHEMA = 'bin_manager';")" || tables=0
+    [[ "$tables" =~ ^[0-9]+$ ]] && [ "$tables" -gt 0 ] || return 1
+
+    ast="$(schema_mysql "$container" "SELECT version_num FROM asterisk.alembic_version LIMIT 1;")" || ast=""
+    [ -n "$ast" ] || return 1
+
+    svc_tables="$(schema_mysql "$container" "SELECT COUNT(*) FROM information_schema.TABLES WHERE TABLE_SCHEMA='bin_manager' AND TABLE_NAME LIKE '%schema\\_migrations';")" || svc_tables=0
+    [[ "$svc_tables" =~ ^[0-9]+$ ]] && [ "$svc_tables" -gt 0 ] || return 1
+    return 0
+}
+
+# --- schema completion gate (start.sh) ---------------------------------------
+
+# Seams the tests replace so the gate runs without real sleeping.
+schema_gate_sleep() { sleep "$1"; }
+schema_gate_now() { date +%s; }
+
+# schema_gate_container_id <compose-service>
+# First container id (running or not) of a compose service. Looked up by
+# service, not by name: several services have no fixed container_name.
+schema_gate_container_id() {
+    local service="$1" out
+    out="$(cd "${PROJECT_DIR:-.}" && docker compose ps -a -q "$service" 2>/dev/null)" || return 1
+    printf '%s' "${out%%$'\n'*}"
+}
+
+# schema_gate_log_shows_missing_key <log-text>
+# 0 when the text shows a missing credential/key and none of the migration or
+# connection problem patterns.
+schema_gate_log_shows_missing_key() {
+    local text="$1"
+    grep -Eiq -- "$SCHEMA_GATE_KEY_MISSING" <<< "$text" || return 1
+    if grep -Eiq -- "$SCHEMA_GATE_CRASH_EXCLUDE" <<< "$text"; then
+        return 1
+    fi
+    return 0
+}
+
+# schema_gate_service_missing_key <compose-service>
+# Positive evidence that the service is crash looping on a missing key: it has
+# a container, that container restarted at least 3 times, and its last 50 log
+# lines pass schema_gate_log_shows_missing_key. Anything else is "unknown".
+schema_gate_service_missing_key() {
+    local id restarts logs
+    id="$(schema_gate_container_id "$1")" || return 1
+    [ -n "$id" ] || return 1
+    restarts="$(docker inspect -f '{{.RestartCount}}' "$id" 2>/dev/null)" || return 1
+    [[ "$restarts" =~ ^[0-9]+$ ]] && [ "$restarts" -ge 3 ] || return 1
+    logs="$(docker logs --tail 50 "$id" 2>&1)" || return 1
+    schema_gate_log_shows_missing_key "$logs"
+}
+
+# schema_gate_backup_listed
+# 0 when schedule-manager lists the database-backup schedule.
+schema_gate_backup_listed() {
+    local id out
+    id="$(schema_gate_container_id schedule-manager)" || return 1
+    [ -n "$id" ] || return 1
+    out="$(docker exec "$id" /app/bin/schedule-control schedule list 2>/dev/null)" || return 1
+    [[ "$out" == *"database-backup"* ]]
+}
+
+# wait_for_service_schema <db-container>
+# Waits until every service has applied its own migrations, then returns 0.
+# Never fails the caller: on timeout or an early exit it prints a warning
+# naming the services still missing and returns 0.
+#
+# Output (stdout, one line each):
+#   SCHEMA_GATE waiting done=<n>/<total> missing=<service,...>   (every 10s)
+#   SCHEMA_GATE complete elapsed=<seconds>
+#   SCHEMA_GATE incomplete elapsed=<seconds> services=<service,...>[ schedule=pending]
+#
+# "Done" needs two consecutive polls (10s apart) with every service applied
+# and the database-backup schedule listed; this is a time heuristic for
+# services whose migrations are several files with a gap between them.
+# The wait ends early only on positive evidence: every missing service has a
+# container that restarted 3+ times with a missing-key log line (see
+# schema_gate_service_missing_key) and the applied set did not change since
+# the previous poll. The limit is SCHEMA_GATE_TIMEOUT_SECONDS (default 300;
+# the last sleep is shortened so the wait does not run past it;
+# a non-positive-integer value falls back to 300, it is not an off switch).
+wait_for_service_schema() {
+    local db="$1"
+    local timeout="${SCHEMA_GATE_TIMEOUT_SECONDS:-300}"
+    [[ "$timeout" =~ ^[1-9][0-9]*$ ]] || timeout=300
+    local interval=10
+    local total=${#SERVICE_SCHEMA_TABLES[@]}
+
+    local start elapsed status entry svc nap
+    local applied missing done_n backup_ok
+    local prev_applied="" have_prev=0 streak=0
+    start="$(schema_gate_now)"
+
+    while true; do
+        status=""
+        if status="$(schema_table_status "$db")"; then
+            applied=""
+            missing=""
+            done_n=0
+            for entry in "${SERVICE_SCHEMA_TABLES[@]}"; do
+                svc="${entry#*:}"
+                if schema_table_applied "${entry%%:*}" "$status"; then
+                    applied+="${applied:+,}$svc"
+                    done_n=$((done_n + 1))
+                else
+                    missing+="${missing:+,}$svc"
+                fi
+            done
+            backup_ok=0
+            if schema_gate_backup_listed; then backup_ok=1; fi
+
+            elapsed=$(( $(schema_gate_now) - start ))
+
+            if [ -z "$missing" ] && [ "$backup_ok" = "1" ]; then
+                streak=$((streak + 1))
+            else
+                streak=0
+            fi
+            # Everything applied on the very poll that reaches the limit counts
+            # as complete: the limit only matters while something is missing.
+            if [ "$streak" -ge 2 ] || { [ -z "$missing" ] && [ "$backup_ok" = "1" ] && [ "$elapsed" -ge "$timeout" ]; }; then
+                echo "SCHEMA_GATE complete elapsed=$elapsed"
+                return 0
+            fi
+
+            if [ -n "$missing" ] && [ "$have_prev" = "1" ] && [ "$applied" = "$prev_applied" ] \
+                && schema_gate_all_missing_keys "$missing"; then
+                echo "SCHEMA_GATE incomplete elapsed=$elapsed services=$missing"
+                log_warn "Services crash-looping on a missing key do not block startup: $missing"
+                return 0
+            fi
+
+            if [ "$elapsed" -ge "$timeout" ]; then
+                echo "SCHEMA_GATE incomplete elapsed=$elapsed services=$missing$([ "$backup_ok" = "1" ] || printf ' schedule=pending')"
+                log_warn "Schema gate gave up after ${elapsed}s. Services still without applied migrations: ${missing:-none (database-backup schedule not listed)}"
+                return 0
+            fi
+
+            echo "SCHEMA_GATE waiting done=$done_n/$total missing=$missing$([ "$backup_ok" = "1" ] || printf ' schedule=pending')"
+            prev_applied="$applied"
+            have_prev=1
+        else
+            elapsed=$(( $(schema_gate_now) - start ))
+            if [ "$elapsed" -ge "$timeout" ]; then
+                echo "SCHEMA_GATE incomplete elapsed=$elapsed services=unknown"
+                log_warn "Schema gate could not read the database state within ${elapsed}s; continuing."
+                return 0
+            fi
+            # An unreadable poll breaks the "consecutive polls" requirement.
+            streak=0
+            echo "SCHEMA_GATE waiting state=unknown"
+        fi
+
+        # Never sleep past the limit: elapsed < timeout here, so the last nap
+        # is shortened to the time that is left.
+        nap=$((timeout - elapsed))
+        if [ "$nap" -gt "$interval" ]; then nap=$interval; fi
+        schema_gate_sleep "$nap"
+    done
+}
+
+# schema_gate_all_missing_keys <service,service,...>
+# 0 only when EVERY listed service shows positive missing-key evidence.
+schema_gate_all_missing_keys() {
+    local list="$1" svc
+    local -a services=()
+    [ -n "$list" ] || return 1
+    IFS=',' read -ra services <<< "$list"
+    for svc in "${services[@]}"; do
+        schema_gate_service_missing_key "$svc" || return 1
+    done
+    return 0
+}

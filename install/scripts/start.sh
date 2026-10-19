@@ -408,19 +408,16 @@ check_host_prereqs() {
     return 0
 }
 
-# Check if database is initialized. Mirrors doctor.sh's check_database(): a
-# partial migration (bin_manager gets some tables, then alembic aborts before
-# the asterisk_config stream ever runs) must NOT be mistaken for "done", or
-# every subsequent start.sh run silently skips migrate.sh forever and the
-# asterisk schema (e.g. ps_aors, needed for extension/AOR creation) never
-# gets created.
+# Check if database is initialized. The rule lives in common.sh
+# (db_schema_initialized, shared with init_database.sh): bin_manager has
+# tables, asterisk.alembic_version has a row, and at least one service has
+# created its *schema_migrations table. A partial migration (bin_manager gets
+# some tables, then the asterisk stream never runs) must NOT be mistaken for
+# "done", or every subsequent start.sh run silently skips migrate.sh forever
+# and the asterisk schema (e.g. ps_aors, needed for extension/AOR creation)
+# never gets created.
 check_database_initialized() {
-    local tables alembic_bin alembic_ast
-    tables=$(docker exec voipbin-db sh -c "$START_MYSQL_IN_DB -N -e \"SELECT COUNT(*) FROM information_schema.TABLES WHERE TABLE_SCHEMA = 'bin_manager';\"" root 2>/dev/null || echo "0")
-    alembic_bin=$(docker exec voipbin-db sh -c "$START_MYSQL_IN_DB -N -e 'SELECT version_num FROM bin_manager.alembic_version LIMIT 1;'" root 2>/dev/null)
-    alembic_ast=$(docker exec voipbin-db sh -c "$START_MYSQL_IN_DB -N -e 'SELECT version_num FROM asterisk.alembic_version LIMIT 1;'" root 2>/dev/null)
-
-    if [[ "$tables" =~ ^[0-9]+$ ]] && [ "$tables" -gt "0" ] && [ -n "$alembic_bin" ] && [ -n "$alembic_ast" ]; then
+    if db_schema_initialized voipbin-db; then
         return 0
     fi
     return 1
@@ -538,8 +535,8 @@ wait_for_admin_agent() {
 }
 
 # Enable the scheduler's in-stack DB backup (VOIP-1281). It ships disabled
-# upstream (bin-dbscheme-manager seed migration a5e6f559299c: "production
-# uses managed Cloud SQL backups; self-hosted installs enable it"), since a
+# upstream (the schedule-manager seed migration: "production uses managed
+# Cloud SQL backups; self-hosted installs enable it"), since a
 # self-hosted sandbox has no managed-backup equivalent. Idempotent: a no-op
 # if already enabled (re-runs of start.sh, restarts).
 ensure_scheduled_backup_enabled() {
@@ -828,8 +825,10 @@ main() {
         log_info "Database is already initialized"
     else
         log_warn "Database not initialized. Running containerized migration (migrate.sh)..."
-        # migrate.sh runs alembic inside a python:3.11-slim container on the
-        # compose network — no host pip/alembic required (design §3.3).
+        # migrate.sh creates the databases and runs the asterisk alembic
+        # stream inside a python:3.11-slim container on the compose network
+        # (no host pip/alembic required); the services then create their own
+        # bin_manager tables.
         if ! "$SCRIPT_DIR/migrate.sh"; then
             log_error "Database migration failed!"
             log_error "Check the output above, then re-run: voipbin> start"
@@ -906,6 +905,11 @@ main() {
     # Step 10: Wait for services to stabilize
     log_step "Waiting for services to stabilize..."
     sleep 5
+
+    # Step 10a: Wait for the services to apply their own schema migrations.
+    # Never fails the start: on timeout it prints which services are still
+    # missing.
+    wait_for_service_schema "voipbin-db" || true
 
     # Step 10b: Enable the scheduler's in-stack DB backup (VOIP-1281) — ships
     # disabled upstream, self-hosted installs turn it on.

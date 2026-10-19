@@ -230,6 +230,9 @@ exit 0'
 stub_docker_doctor() {
     local scenario="${1:-healthy}"
     local domain_ext="${2:-registrar.voipbin.test}"
+    # Healthy default: every service has applied its migrations. Tests that
+    # need another state rewrite these files after calling this stub.
+    write_service_owned_schema "" ""
     mock_command_script "docker" '
 scenario="'"$scenario"'"
 
@@ -296,6 +299,18 @@ if [[ "$1" == "exec" ]]; then
         echo "mysqld is alive"
         exit 0
     fi
+    # Schema probes (version-table listing, version-table rows). Each is
+    # answered from a file written by the test; with no file the generic
+    # answers below apply.
+    if [[ "$body" == *"TABLE_NAME IN ("* && -f "'"$TEST_TEMP_DIR"'/schema_listing" ]]; then
+        cat "'"$TEST_TEMP_DIR"'/schema_listing"
+        exit 0
+    fi
+    if [[ "$body" == *"UNION ALL"* || "$body" == *" AS t, COUNT"* ]]; then
+        [[ -f "'"$TEST_TEMP_DIR"'/schema_status_fail" ]] && exit 1
+        [[ -f "'"$TEST_TEMP_DIR"'/schema_status" ]] && cat "'"$TEST_TEMP_DIR"'/schema_status"
+        exit 0
+    fi
     if [[ "$body" == *"information_schema.TABLES"* ]]; then
         if [[ "$scenario" == "db-empty" || "$scenario" == "marker-stale" ]]; then
             echo "0"
@@ -306,6 +321,7 @@ if [[ "$1" == "exec" ]]; then
     fi
     if [[ "$body" == *"alembic_version"* ]]; then
         [[ "$scenario" == "db-empty" ]] && exit 1
+        [[ "$scenario" == "asterisk-row-missing" && "$body" == *"asterisk.alembic_version"* ]] && exit 0
         echo "head123"
         exit 0
     fi
@@ -1071,7 +1087,108 @@ exit 0'
 
     [[ "$status" -eq 1 ]]
     [[ "$output" == *'DOCTOR database: fail'* ]]
-    [[ "$output" == *'FIX database: ./scripts/migrate.sh'* ]]
+    [[ "$output" == *'FIX database: ./scripts/start.sh'* ]]
+}
+
+# --- database check: service version tables (applied, missing, dirty) ---
+
+# Writes the schema probe files for an install. $1 = comma list
+# of services to leave unapplied, $2 = comma list of services to mark dirty.
+write_service_owned_schema() {
+    load_common
+    local missing="$1" dirty="$2" e svc
+    : > "$TEST_TEMP_DIR/schema_listing"
+    : > "$TEST_TEMP_DIR/schema_status"
+    for e in "${SERVICE_SCHEMA_TABLES[@]}"; do
+        svc="${e#*:}"
+        echo "${e%%:*}" >> "$TEST_TEMP_DIR/schema_listing"
+        if [[ ",$missing," == *",$svc,"* ]]; then continue; fi
+        if [[ ",$dirty," == *",$svc,"* ]]; then
+            printf '%s\t1\t1\n' "${e%%:*}" >> "$TEST_TEMP_DIR/schema_status"
+        else
+            printf '%s\t1\t0\n' "${e%%:*}" >> "$TEST_TEMP_DIR/schema_status"
+        fi
+    done
+}
+
+@test "database check passes when all 26 services are applied" {
+    setup_healthy_internal
+    stub_docker_doctor healthy
+    write_service_owned_schema "" ""
+
+    run_doctor
+
+    [[ "$status" -eq 0 ]]
+    [[ "$output" == *'DOCTOR database: pass'* ]]
+    [[ "$output" == *'service migrations applied for all 26 services'* ]]
+}
+
+@test "database check lists the services whose migrations are missing" {
+    setup_healthy_internal
+    stub_docker_doctor healthy
+    write_service_owned_schema "tag-manager,billing-manager" ""
+
+    run_doctor
+
+    [[ "$status" -eq 1 ]]
+    [[ "$output" == *'DOCTOR database: fail'* ]]
+    [[ "$output" == *'services=billing-manager,tag-manager'* ]]
+    [[ "$output" == *'FIX database: for each service in [billing-manager,tag-manager]'* ]]
+    [[ "$output" == *'migrate status'* ]]
+    [[ "$output" == *'docker compose logs'* ]]
+}
+
+@test "database check fails on a dirty version table and says it may be in progress" {
+    setup_healthy_internal
+    stub_docker_doctor healthy
+    write_service_owned_schema "" "tag-manager"
+
+    run_doctor
+
+    [[ "$status" -eq 1 ]]
+    [[ "$output" == *'DOCTOR database: fail'* ]]
+    [[ "$output" == *'dirty'* ]]
+    [[ "$output" == *'services=tag-manager'* ]]
+    [[ "$output" == *'retry shortly'* ]]
+}
+
+@test "database check fails when the asterisk alembic stream has no version row" {
+    setup_healthy_internal
+    stub_docker_doctor asterisk-row-missing
+    write_service_owned_schema "" ""
+
+    run_doctor
+
+    [[ "$status" -eq 1 ]]
+    [[ "$output" == *'DOCTOR database: fail'* ]]
+    [[ "$output" == *'schema not initialized'* ]]
+    [[ "$output" == *'asterisk alembic=none'* ]]
+    [[ "$output" == *'FIX database: ./scripts/start.sh'* ]]
+}
+
+@test "database check reports 'cannot determine' (a failure) when the version-table query fails" {
+    setup_healthy_internal
+    stub_docker_doctor healthy
+    write_service_owned_schema "" ""
+    touch "$TEST_TEMP_DIR/schema_status_fail"
+
+    run_doctor
+
+    [[ "$status" -eq 1 ]]
+    [[ "$output" == *'DOCTOR database: fail'* ]]
+    [[ "$output" == *'cannot determine'* ]]
+}
+
+@test "database check still fails an empty schema first, whatever the version tables say" {
+    setup_healthy_internal
+    stub_docker_doctor db-empty
+    write_service_owned_schema "" ""
+
+    run_doctor
+
+    [[ "$status" -eq 1 ]]
+    [[ "$output" == *'schema not initialized'* ]]
+    [[ "$output" == *'FIX database: ./scripts/start.sh'* ]]
 }
 
 @test "realm mismatch fails with the recreate remedy" {

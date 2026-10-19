@@ -59,6 +59,17 @@
 # exits non-zero and versions.lock is NOT written. Established entries are
 # unaffected and keep the fallback behavior described above.
 #
+# Service-owned schema check: the services own the bin_manager schema, so
+# every image that ships embedded migrations (<service>/migrations/embed.go at
+# the target) must be pinned to an image built from a commit that already
+# contained the migration runner (the first commit calling
+# migrationhandler.Run in the service's cmd/ directory) or a later one, and
+# must carry the same migrations/ files as the target. A violation, or a
+# service that falls back to its current pin ("keeping current pin"), fails
+# the run with a non-zero exit and nothing is written. The check only READS
+# MONOREPO_PATH (it never fetches) and finds the introduction commit in the
+# target's own history, so it does not depend on the checkout's remotes.
+#
 # Idempotency: two runs against the same target with no new commits produce a
 # byte-identical versions.lock apart from the "generated" timestamp.
 #
@@ -207,6 +218,59 @@ print(digest)
 }
 
 # =============================================================================
+# Service-owned schema check (see the header)
+# =============================================================================
+# verify_service_migration_pins <target-commit> <resolved-file> <images>
+# <resolved-file> holds "image<TAB>sha<TAB>digest" lines for the images that
+# resolved to a registry tag; <images> is the newline separated image list.
+# Returns 0 when all checks pass, 1 otherwise.
+verify_service_migration_pins() {
+    local target="$1" resolved_file="$2" images="$3"
+
+    log_step "Checking service-owned schema pins"
+    local image service_dir sha intro failed=0 checked=0
+    while IFS= read -r image; do
+        [[ -n "$image" ]] || continue
+        service_dir="${image#voipbin/}"
+        if ! git -C "$MONOREPO_PATH" cat-file -e "$target:$service_dir/migrations/embed.go" 2> /dev/null; then
+            continue
+        fi
+        checked=$((checked + 1))
+
+        sha=$(awk -F'\t' -v img="$image" '$1 == img { print $2 }' "$resolved_file")
+        if [[ -z "$sha" ]]; then
+            log_error "$image: no registry tag resolved at $target (would keep its current pin), but this service owns its schema"
+            failed=1
+            continue
+        fi
+
+        intro=$(git -C "$MONOREPO_PATH" log --no-renames -S'migrationhandler.Run' --format='%H' "$target" -- "$service_dir/cmd" 2> /dev/null | tail -n 1)
+        if [[ -z "$intro" ]]; then
+            log_error "$image: cannot find the commit that first called migrationhandler.Run in $service_dir/cmd at $target"
+            failed=1
+            continue
+        fi
+        if ! git -C "$MONOREPO_PATH" merge-base --is-ancestor "$intro" "$sha" 2> /dev/null; then
+            log_error "$image: pinned tag ${sha:0:12} predates the migration runner (introduced in ${intro:0:12})"
+            failed=1
+            continue
+        fi
+        if ! git -C "$MONOREPO_PATH" diff --quiet "$sha" "$target" -- "$service_dir/migrations" 2> /dev/null; then
+            log_error "$image: pinned tag ${sha:0:12} has different $service_dir/migrations files than the target"
+            failed=1
+            continue
+        fi
+    done <<< "$images"
+
+    if [[ $failed -ne 0 ]]; then
+        log_error "Service-owned schema check failed; $OUTPUT_FILE was NOT written."
+        return 1
+    fi
+    log_info "Service-owned schema check passed ($checked services with embedded migrations)"
+    return 0
+}
+
+# =============================================================================
 # Main
 # =============================================================================
 main() {
@@ -348,6 +412,8 @@ for name, digest in sorted(lock.get('images', {}).items()):
     done <<< "$images"
 
     echo ""
+    verify_service_migration_pins "$target_commit" "$resolved_file" "$images" || exit 1
+
     log_step "Writing $OUTPUT_FILE"
 
     # Locked (VOIP-1334): OUTPUT_FILE defaults to LOCK_FILE, so a full
@@ -413,6 +479,8 @@ new["_comment"] = old.get(
 new["pin_strategy"] = old.get("pin_strategy", "ancestry-based single commit")
 new["target_commit"] = target_commit
 new["target_commit_desc"] = target_desc
+# Every full regeneration moves the schema pin to the target together with the
+# image pins. The migrate step reads this value from the committed template.
 new["dbscheme_monorepo_commit"] = target_commit
 new["generated"] = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.%fZ")
 new["generated_by"] = "scripts/generate-versions-lock.sh"

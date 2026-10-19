@@ -143,7 +143,7 @@ docker compose up -d db redis rabbitmq
 
 ### Database Management
 
-The database uses vanilla MySQL with schema managed by alembic migrations from the monorepo.
+The database uses vanilla MySQL. The asterisk schema is managed by alembic migrations from the monorepo (`bin-dbscheme-manager/asterisk_config`). The bin_manager schema is owned by the services: each applies its own embedded migrations on start (version tables `<name>_schema_migrations`), and the installer never runs alembic against it. Installs that predate this are not supported (reinstall; see README).
 
 ```bash
 # Initialize database (first time or after volume reset)
@@ -160,8 +160,8 @@ docker exec -it voipbin-db mysql -uroot -p"$(grep MYSQL_ROOT_PASSWORD .env | cut
 The `init_database.sh` script's `main()`:
 1. Provisions the dedicated `asterisk-registrar` realtime DB user (VOIP-1328, see below) — runs before the "already initialized?" check, so it's not skipped by answering "N" to the re-run-migrations prompt
 2. Creates `bin_manager` and `asterisk` databases
-3. Downloads schema from monorepo's `bin-dbscheme-manager`
-4. Runs alembic migrations to create all tables
+3. Downloads schema from monorepo's `bin-dbscheme-manager` (the pin comes from `versions.lock.dist`, falling back to the live `versions.lock` only when the template is absent)
+4. Runs the asterisk alembic stream (the `DBSCHEME_PIN` line in the output records the schema pin used); bin_manager tables are created by the services
 
 **Note:** Migrations run inside a container (`scripts/migrate.sh`, python:3.11-slim
 on the compose network). No host `alembic`/`mysqlclient` installation is needed.
