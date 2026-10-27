@@ -176,7 +176,7 @@ List your numbers:
 curl "$VOIPBIN_API/numbers?accesskey=$VOIPBIN_ACCESSKEY"
 ```
 
-Create an AI voice assistant. `engine_model` takes a model ID from `GET /ai_models`; `engine_key` is your key for that model's provider. On a self-hosted install, the speech providers used here also need their keys in `.env`.
+Create an AI voice assistant. `engine_model` takes a model ID from `GET /ai_models`; For direct-provider models such as this one, `engine_key` is your key for that model's provider. On a self-hosted install, the speech providers used here also need their keys in `.env`.
 
 ```bash
 curl -X POST "$VOIPBIN_API/ais?accesskey=$VOIPBIN_ACCESSKEY" \
@@ -245,7 +245,7 @@ The backend source lives in [voipbin/monorepo](https://github.com/voipbin/monore
 ## Data and security
 
 - **Runs where you put it.** On a self-hosted install, the databases run on your own host, and call recordings and other files are stored in a bucket in your own Google Cloud project.
-- **External services are your choice.** Carriers, LLM, speech, and email providers, and the Google Cloud project used for file storage, knowledge bases, and speech, receive data only when you configure them with your own credentials.
+- **External services are your choice.** Carriers, LLM, speech, and email providers, and the Google Cloud project used for file storage, knowledge bases, and speech, are services you pick and connect with your own credentials.
 - **Encrypted transport.** TLS for the API, TLS and WebSocket Secure for SIP signaling, and SRTP support for media. The web apps are plain HTTP by default; put them behind TLS with `--web-reverse-proxy` in external mode or your own reverse proxy.
 - **Per-customer isolation.** Every resource is scoped to a customer account, and access is checked per role.
 - **Auditable.** The backend services, API definition, and installer are MIT licensed and public.
