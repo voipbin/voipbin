@@ -32,7 +32,7 @@
 </p>
 
 <p align="center">
-  <img src="docs/images/dashboard-tour.gif" alt="VoIPBin Admin Console tour" width="800" />
+  <img src="docs/images/hero.gif" alt="VoIPBin Admin Console: building a flow with AI voice agents" width="800" />
 </p>
 
 ## Why VoIPBin
@@ -94,18 +94,29 @@ To look around before installing, use the hosted instance. It is meant for evalu
 
 A guest account is available on the Admin Console login page. Outbound PSTN calls and phone number purchases require an identity-verified customer account. On a self-hosted install you are the operator: you manage account verification and connect your own carriers.
 
-<table>
-<tr>
-<td width="33%"><img src="docs/images/admin-slideshow.gif" alt="Admin Console" /></td>
-<td width="33%"><img src="docs/images/talk-slideshow.gif" alt="Talk" /></td>
-<td width="33%"><img src="docs/images/meet-slideshow.gif" alt="Meet" /></td>
-</tr>
-<tr>
-<td align="center"><sub>Admin Console</sub></td>
-<td align="center"><sub>Talk</sub></td>
-<td align="center"><sub>Meet</sub></td>
-</tr>
-</table>
+<p align="center">
+  <img src="docs/images/admin.gif" alt="Admin Console" width="800" />
+  <br />
+  <b>Admin Console</b>
+  <br />
+  <sub>Build flows, manage numbers, agents, AI assistants, and watch dashboards.</sub>
+</p>
+
+<p align="center">
+  <img src="docs/images/talk.gif" alt="Talk" width="800" />
+  <br />
+  <b>Talk</b>
+  <br />
+  <sub>Workspace for agents: channels and threads, calls, cases, and contacts.</sub>
+</p>
+
+<p align="center">
+  <img src="docs/images/meet.gif" alt="Meet" width="800" />
+  <br />
+  <b>Meet</b>
+  <br />
+  <sub>Browser-based audio conferencing.</sub>
+</p>
 
 ## What you get
 
