@@ -14,16 +14,16 @@
    ██████████████████████   
 ```
 
-**Your Private AI-Powered CPaaS Laboratory** — A complete Docker Compose environment for building AI voice agents and communications applications. Deploy the full VoIPBin stack with built-in AI capabilities: real-time speech-to-text, text-to-speech, LLM-powered conversations, and programmable voice workflows.
+**Self-host the VoIPBin CPaaS stack on one server.** This directory is the Docker Compose installer for VoIPBin: the API, the backend services, the SIP and media servers (Kamailio, Asterisk, RTPEngine), the databases, and the three web apps, all on a single Linux or macOS host.
 
-### Why VoIPBin Install?
+### What you get
 
-- **AI Voice Agents** — Build conversational AI agents with OpenAI, Deepgram, ElevenLabs, and Cartesia
-- **Real-time Transcription** — Live speech-to-text during calls with AWS Transcribe or Google Speech
-- **Text-to-Speech** — Natural voice synthesis with multiple provider support
-- **Programmable Voice** — Visual flow builder for IVR, call routing, and automation
-- **Full VoIP Stack** — Production-grade SIP proxy, media servers, and conferencing
-- **Web Applications** — Admin console, agent team messenger (Talk), and voice conferencing (Meet)
+- **Voice and messaging.** PSTN, SIP, and WebRTC calls, conferences, SMS, email, web chat, and social messaging behind one REST API.
+- **Programmable flows.** Call and message handling built from actions in the visual flow editor or through the API.
+- **AI voice agents.** AI assistants that join live calls, with your choice of LLM, speech-to-text, and text-to-speech provider.
+- **Real-time transcription and text-to-speech.** Live transcription of calls and text-to-speech prompts, using the speech providers you configure.
+- **Web applications.** Admin Console, Talk (agent workspace), and Meet (audio conferencing).
+- **Operations built in.** Internal and external install modes, backup and restore, version pinning and rollback, and the `voipbin` CLI.
 
 ---
 
@@ -1557,8 +1557,7 @@ Admin/Talk/Meet credentials below require opt-in test-account seeding
 
 ## Service Reference
 
-Full list of all 33 backend Go services: see the [main repo's Repositories
-table](https://github.com/voipbin/voipbin#-repositories) or run
+Backend source: [voipbin/monorepo](https://github.com/voipbin/monorepo). To list the services in this install, run
 `docker compose config --services`.
 
 ### Infrastructure Services
