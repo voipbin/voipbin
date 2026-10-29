@@ -188,6 +188,47 @@ conflict markers).
 
 After the merge, `docker compose config -q` should print nothing.
 
+#### Adopting the encryption keys, local LLM and timeline analysis settings
+
+Newer `docker-compose.yml.dist` and `.env.template` files carry settings that an
+older live `docker-compose.yml` does not have. The CLI never merges them (see
+above), so add them by hand before running `update all`. Until you do,
+everything keeps running as before, with these exceptions: ai-manager cannot
+store MCP server secrets or the API keys customers keep for their own LLM
+endpoints, and timeline-manager serves no analysis endpoints.
+
+Do **not** run `init.sh --yes` or `init.sh --force-reinit` to get the new
+keys: they regenerate the database and RabbitMQ passwords, which no longer
+match your existing volumes.
+
+1. In `docker-compose.yml`, copy these from `docker-compose.yml.dist`:
+   - `timeline-manager`: the `DATABASE_DSN` line (the same line other services
+     use, with your `DB_HOST`/`DB_PORT` settings if you changed them) and `db` with `condition: service_healthy` under `depends_on`.
+   - `pipecat-script-runner`: `GOOGLE_APPLICATION_CREDENTIALS`,
+     `LOCAL_LLM_ENDPOINTS` and the `volumes:` entry for the credentials file.
+   - `pipecat-manager`: `LOCAL_LLM_MODELS`.
+   - `ai-manager`: `MCP_SECRET_ENCRYPTION_KEYS`, `ENGINE_BASE_KEY_ENCRYPTION_KEYS`
+     and `LOCAL_LLM_MODELS`.
+2. Create the two encryption keys in `.env` if they are not there yet (a line
+   with an empty or quoted-empty value counts as not there). This appends
+   them without printing them:
+
+   ```bash
+   for k in MCP_SECRET_ENCRYPTION_KEYS ENGINE_BASE_KEY_ENCRYPTION_KEYS; do
+     grep -Eq "^${k}=[^[:space:]\"']" .env || printf '\n%s=1:%s\n' "$k" "$(openssl rand -base64 32)" >> .env
+   done
+   ```
+
+3. `docker compose config -q` should print nothing, then continue with
+   `git pull --ff-only` and `sudo ./voipbin update all` as above.
+
+Back up `.env` (`voipbin backup` includes it). A lost encryption key cannot be
+recovered: whatever was stored under it becomes unreadable and has to be
+entered again. A malformed value stops ai-manager from starting; the format is
+`<version>:<base64 of 32 random bytes>`, comma separated for several versions.
+A fresh install gets both keys from `init.sh`, and re-running `init.sh`
+keeps the values already in `.env`.
+
 #### Exit codes of `update all`
 
 | Code | Meaning |
@@ -414,7 +455,9 @@ of its own).
    regenerating `JWT_KEY`, `MYSQL_ROOT_PASSWORD`, `RABBITMQ_DEFAULT_PASS`,
    `DATABASE_ASTERISK_PASSWORD`, and `POSTGRES_PASSWORD` with brand-new
    random values (`AMI_PASSWORD` is the one exception since VOIP-1329 — it's
-   always the fixed `asterisk`, never regenerated). Those new values will
+   always the fixed `asterisk`, never regenerated; an existing valid
+   `MCP_SECRET_ENCRYPTION_KEYS` / `ENGINE_BASE_KEY_ENCRYPTION_KEYS` is also kept).
+   Those new values will
    not match the credentials already baked into your existing database and
    RabbitMQ Docker volumes, so your services will fail to authenticate
    against your own (otherwise intact) data. There is no dedicated flag to
@@ -964,6 +1007,7 @@ mkcert -install
 > | Admin Account (opt-in, `VOIPBIN_SANDBOX_DEV_SEED=true`) | `admin@localhost` / `admin@localhost` |
 > | Extensions (opt-in, `VOIPBIN_SANDBOX_DEV_SEED=true`) | `1000` / `pass1000`, `2000` / `pass2000`, `3000` / `pass3000` |
 > | JWT Secret | Auto-generated in `.env` |
+> | Stored-secret encryption keys (ai-manager) | Randomly generated per install, in `.env` (`MCP_SECRET_ENCRYPTION_KEYS`, `ENGINE_BASE_KEY_ENCRYPTION_KEYS`). Back up `.env`: a lost key cannot be recovered |
 >
 > The admin/extension credentials above are a dev/test seed account, off by default. It is only
 > created if you explicitly set `VOIPBIN_SANDBOX_DEV_SEED=true` in `.env`. Never set this on an
@@ -1844,6 +1888,7 @@ email [support@voipbin.net](mailto:support@voipbin.net).
 | `GOOGLE_API_KEY` | Google AI (pipecat-script-runner's Gemini access) |
 | `OPENROUTER_API_KEY` | OpenRouter (pipecat-script-runner, platform-managed models such as Claude, Llama, DeepSeek, Qwen, Mistral). The installer pins `pipecat-script-runner` by image digest, so the key only takes effect after the runner image that contains the `platform_openrouter` branch is adopted (`scripts/sync-compose-images.sh`). Empty key: these models fail at runner init with `OpenRouter is not configured`. Invalid non-empty key: OpenRouter's 401 is classified as an authentication error. |
 | `GOOGLE_APPLICATION_CREDENTIALS` | GCP service account JSON path |
+| `LOCAL_LLM_ENDPOINTS`, `LOCAL_LLM_MODELS` | Self-hosted OpenAI-compatible LLM servers (off by default, format and enabling order in `.env.template`) |
 | `TWILIO_SID`, `TWILIO_API_KEY` | Twilio (phone numbers) |
 | `TELNYX_API_KEY` | Telnyx (telephony) |
 | `SENDGRID_API_KEY` | SendGrid (email) |

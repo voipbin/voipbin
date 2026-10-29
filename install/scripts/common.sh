@@ -1025,6 +1025,19 @@ acquire_file_lock() {
 # Every function below returns explicit codes and is meant to be called from
 # an `if` or `||` context so `set -e` callers never die on a "no" answer.
 
+# timeline-manager is deliberately not listed, although it applies its own
+# MySQL migrations (version table timeline_schema_migrations, set up only when
+# its DATABASE_DSN is configured). This list is read by the start.sh schema
+# gate and by doctor, and common.sh arrives with a git pull while an existing
+# install's live docker-compose.yml does not (it is never rewritten). Listing
+# timeline-manager would make the gate wait out SCHEMA_GATE_TIMEOUT_SECONDS on
+# every start, and doctor report it as unapplied, on any install whose compose
+# file has no DATABASE_DSN for it yet. A dirty timeline_schema_migrations table
+# is still found: schema_table_status also reads every table ending in
+# schema_migrations. Add it here (and extend check-schema-table-list.sh to read
+# bin-timeline-manager/migrations/mysql/embed.go) once installs without the
+# DSN no longer need to be supported.
+#
 # "<version-table>:<compose-service>" for every service that ships embedded
 # migrations. Plain array assignment (no declare) so that sourcing this file
 # from inside a function (the bats loaders) still yields a global.

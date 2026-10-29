@@ -51,6 +51,11 @@ INIT_SCRIPTS=(
 # and the entry has been removed rather than left inert. The category is empty
 # today; re-add it with a fresh rationale if a genuinely aspirational variable
 # shows up again.
+#
+# 4. optional-feature-default - docker-compose.yml reads these as
+#    ${VAR:-default} with a default matching the template (feature off), and
+#    init.sh does not write them because they are an operator opt-in:
+#    LOCAL_LLM_MODELS ([]) and LOCAL_LLM_ENDPOINTS ({}).
 TEMPLATE_ONLY_VARS=(
     # compose-internal-default
     DB_HOST
@@ -67,6 +72,9 @@ TEMPLATE_ONLY_VARS=(
     SCHEDULE_BACKUP_HOST_DIR
     # dead
     RTPENGINE_INTERFACE
+    # optional-feature-default
+    LOCAL_LLM_MODELS
+    LOCAL_LLM_ENDPOINTS
 )
 
 is_excluded() {
