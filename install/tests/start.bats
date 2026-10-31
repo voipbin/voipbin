@@ -1145,7 +1145,12 @@ for b in blocks:
         dsn_services.add(name)
 # Services that connect to the database but ship no migrations.
 no_migrations = {'api-manager', 'hook-manager', 'transfer-manager', 'webhook-manager'}
-expected = dsn_services - no_migrations
+# Applies migrations but is kept out of the list on purpose: an existing
+# install's live compose file has no DATABASE_DSN for it, so the gate would wait
+# for a table that never appears. The reason is recorded in common.sh next to
+# SERVICE_SCHEMA_TABLES (schema-state.bats pins that comment).
+deliberately_unlisted = {'timeline-manager'}
+expected = dsn_services - no_migrations - deliberately_unlisted
 listed = {e.split(':', 1)[1] for e in entries}
 tables = [e.split(':', 1)[0] for e in entries]
 errors = []

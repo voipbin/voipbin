@@ -383,3 +383,137 @@ teardown() {
     # Kamailio should reference the internal IP for the internal network
     assert_file_contains "$PROJECT_ROOT/docker-compose.yml.dist" "KAMAILIO_INTERNAL_ADDR=10.100.0.200"
 }
+
+# =============================================================================
+# docker-compose.yml.dist - env keys the full stack needs
+# (timeline-manager DSN, runner Google credentials, local LLM, encryption keys)
+# =============================================================================
+
+# compose_service_block <service>: the text of one top-level service block.
+compose_service_block() {
+    awk -v svc="$1" '
+        $0 == "  " svc ":" { in_block = 1; print; next }
+        in_block && /^  [A-Za-z0-9_-]+:[[:space:]]*$/ { exit }
+        in_block && /^[^ #]/ { exit }
+        in_block { print }
+    ' "$PROJECT_ROOT/docker-compose.yml.dist"
+}
+
+@test "docker-compose.yml.dist timeline-manager has the shared DATABASE_DSN and waits for db" {
+    local block
+    block="$(compose_service_block timeline-manager)"
+    [[ -n "$block" ]]
+    grep -qF -- '- DATABASE_DSN=root:${MYSQL_ROOT_PASSWORD}@tcp(${DB_HOST:-db}:${DB_PORT:-3306})/bin_manager' <<< "$block"
+    # depends_on db with service_healthy (alongside the existing rabbitmq and clickhouse gates)
+    grep -Eq '^      db:$' <<< "$block"
+    local after_db
+    after_db="$(awk '/^      db:$/ {getline; print; exit}' <<< "$block")"
+    [[ "$after_db" == "        condition: service_healthy" ]]
+    grep -Eq '^      clickhouse:$' <<< "$block"
+    grep -Eq '^      rabbitmq:$' <<< "$block"
+}
+
+@test "docker-compose.yml.dist pipecat-script-runner gets GOOGLE_APPLICATION_CREDENTIALS and the dummy-file mount" {
+    local block
+    block="$(compose_service_block pipecat-script-runner)"
+    [[ -n "$block" ]]
+    grep -qF -- '- GOOGLE_APPLICATION_CREDENTIALS=/tmp/google_service_account.json' <<< "$block"
+    grep -qF -- '- ${GOOGLE_APPLICATION_CREDENTIALS:-./config/dummy-gcp-credentials.json}:/tmp/google_service_account.json:ro' <<< "$block"
+    # The Gemini key stays.
+    grep -qF -- '- GOOGLE_API_KEY=${GOOGLE_API_KEY:-}' <<< "$block"
+}
+
+@test "docker-compose.yml.dist local LLM variables default to disabled and sit on the right services" {
+    grep -qF -- '- LOCAL_LLM_MODELS=${LOCAL_LLM_MODELS:-[]}' <<< "$(compose_service_block ai-manager)"
+    grep -qF -- '- LOCAL_LLM_MODELS=${LOCAL_LLM_MODELS:-[]}' <<< "$(compose_service_block pipecat-manager)"
+    grep -qF -- '- LOCAL_LLM_ENDPOINTS=${LOCAL_LLM_ENDPOINTS:-{}}' <<< "$(compose_service_block pipecat-script-runner)"
+    # The endpoints carry URLs and keys: only the runner gets them.
+    if grep -q 'LOCAL_LLM_ENDPOINTS' <<< "$(compose_service_block pipecat-manager)"; then return 1; fi
+    if grep -q 'LOCAL_LLM_ENDPOINTS' <<< "$(compose_service_block ai-manager)"; then return 1; fi
+    if grep -q 'LOCAL_LLM_MODELS' <<< "$(compose_service_block pipecat-script-runner)"; then return 1; fi
+}
+
+@test "docker-compose.yml.dist ai-manager reads both encryption keys with an empty default, and only ai-manager does" {
+    local block
+    block="$(compose_service_block ai-manager)"
+    grep -qF -- '- MCP_SECRET_ENCRYPTION_KEYS=${MCP_SECRET_ENCRYPTION_KEYS:-}' <<< "$block"
+    grep -qF -- '- ENGINE_BASE_KEY_ENCRYPTION_KEYS=${ENGINE_BASE_KEY_ENCRYPTION_KEYS:-}' <<< "$block"
+    local count
+    count="$(grep -cE 'MCP_SECRET_ENCRYPTION_KEYS|ENGINE_BASE_KEY_ENCRYPTION_KEYS' "$PROJECT_ROOT/docker-compose.yml.dist")"
+    [[ "$count" -eq 2 ]]
+}
+
+@test "docker-compose.yml.dist carries no key-shaped or URL-shaped literal for the new variables" {
+    # Values must be \${...} references or the empty defaults, never a literal.
+    if grep -E '(MCP_SECRET_ENCRYPTION_KEYS|ENGINE_BASE_KEY_ENCRYPTION_KEYS)=[^$]' "$PROJECT_ROOT/docker-compose.yml.dist"; then return 1; fi
+    if grep -E 'LOCAL_LLM_(MODELS|ENDPOINTS)=[^$]' "$PROJECT_ROOT/docker-compose.yml.dist"; then return 1; fi
+    if grep -Eq '[0-9]+:[A-Za-z0-9+/]{43}=' "$PROJECT_ROOT/docker-compose.yml.dist"; then return 1; fi
+}
+
+# compose_render_new_keys <env-file>: render the .dist with the given env file
+# and no same-named shell variables; stdout and stderr go to separate files.
+compose_render_new_keys() {
+    env -u MCP_SECRET_ENCRYPTION_KEYS -u ENGINE_BASE_KEY_ENCRYPTION_KEYS \
+        -u LOCAL_LLM_MODELS -u LOCAL_LLM_ENDPOINTS \
+        docker compose --env-file "$1" -f "$PROJECT_ROOT/docker-compose.yml.dist" config \
+        > "$TEST_TEMP_DIR/render.out" 2> "$TEST_TEMP_DIR/render.err"
+}
+
+# A fixture .env that fills every reference the .dist has no default for, with
+# throwaway values generated here.
+compose_write_fixture_env() {
+    cat > "$TEST_TEMP_DIR/fixture.env" <<EOF
+MYSQL_ROOT_PASSWORD=$(openssl rand -hex 8)
+POSTGRES_PASSWORD=$(openssl rand -hex 8)
+RABBITMQ_DEFAULT_USER=fixture
+RABBITMQ_DEFAULT_PASS=$(openssl rand -hex 8)
+AMI_USERNAME=fixture
+AMI_PASSWORD=$(openssl rand -hex 8)
+EOF
+}
+
+@test "docker compose config renders the new keys with disabled defaults and no warning when the .env lacks them" {
+    if ! command -v docker &> /dev/null || ! docker compose version &> /dev/null; then
+        skip "docker compose not available"
+    fi
+    compose_write_fixture_env
+
+    run compose_render_new_keys "$TEST_TEMP_DIR/fixture.env"
+
+    [[ "$status" -eq 0 ]]
+    # No warning mentions any of the four new variables (the older references
+    # without defaults are filled by the fixture).
+    if grep -Eq 'MCP_SECRET_ENCRYPTION_KEYS|ENGINE_BASE_KEY_ENCRYPTION_KEYS|LOCAL_LLM' "$TEST_TEMP_DIR/render.err"; then return 1; fi
+    [[ "$(grep -c 'LOCAL_LLM_MODELS:' "$TEST_TEMP_DIR/render.out")" -eq 2 ]]
+    grep -Eq "LOCAL_LLM_MODELS: '?\[\]'?$" "$TEST_TEMP_DIR/render.out"
+    grep -Eq "LOCAL_LLM_ENDPOINTS: '?\{\}'?$" "$TEST_TEMP_DIR/render.out"
+    # Empty keys render as an empty value, so ai-manager starts with its warning.
+    grep -Eq "MCP_SECRET_ENCRYPTION_KEYS: (\"\"|'')$" "$TEST_TEMP_DIR/render.out"
+    grep -Eq "ENGINE_BASE_KEY_ENCRYPTION_KEYS: (\"\"|'')$" "$TEST_TEMP_DIR/render.out"
+    grep -q 'GOOGLE_APPLICATION_CREDENTIALS: /tmp/google_service_account.json' "$TEST_TEMP_DIR/render.out"
+    grep -Eq 'DATABASE_DSN: root:.*@tcp\(db:3306\)/bin_manager' "$TEST_TEMP_DIR/render.out"
+}
+
+@test "docker compose config passes through values set in .env (keys, JSON models and endpoints)" {
+    if ! command -v docker &> /dev/null || ! docker compose version &> /dev/null; then
+        skip "docker compose not available"
+    fi
+    compose_write_fixture_env
+    local mcp engine
+    mcp="1:$(openssl rand -base64 32)"; engine="1:$(openssl rand -base64 32)"
+    {
+        cat "$TEST_TEMP_DIR/fixture.env"
+        echo "MCP_SECRET_ENCRYPTION_KEYS=$mcp"
+        echo "ENGINE_BASE_KEY_ENCRYPTION_KEYS=$engine"
+        echo 'LOCAL_LLM_MODELS=[{"endpoint":"lab","id":"m1","label":"M1"}]'
+        echo 'LOCAL_LLM_ENDPOINTS={"lab":{"base_url":"http://llm.example.invalid:8000/v1","api_key":""}}'
+    } > "$TEST_TEMP_DIR/set.env"
+
+    run compose_render_new_keys "$TEST_TEMP_DIR/set.env"
+
+    [[ "$status" -eq 0 ]]
+    grep -qF "$mcp" "$TEST_TEMP_DIR/render.out"
+    grep -qF "$engine" "$TEST_TEMP_DIR/render.out"
+    grep -qF 'llm.example.invalid:8000/v1' "$TEST_TEMP_DIR/render.out"
+    grep -qF '"endpoint":"lab"' "$TEST_TEMP_DIR/render.out"
+}

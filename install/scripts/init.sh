@@ -577,6 +577,116 @@ generate_random_key_short() {
     openssl rand -hex 16
 }
 
+# --- Encryption keys for ai-manager ------------------------------------------
+# MCP_SECRET_ENCRYPTION_KEYS and ENGINE_BASE_KEY_ENCRYPTION_KEYS protect secrets
+# that ai-manager stores in the database. Each is a comma separated list of
+# <version>:<base64 of 32 bytes>; the highest version encrypts and every
+# listed version decrypts. They are generated here at install time and written
+# to .env only (never to the repository). A key that is lost cannot be
+# recovered, so an existing value is reused on every path that rewrites .env.
+
+# is_valid_encryption_keys <value>
+# Same rule as ai-manager's parser: each non-empty item, once trimmed, is
+# <positive integer>:<base64 of exactly 32 bytes> and no version repeats.
+# Versions are limited to 9 digits (the parser's integer range is wider; being
+# stricter only ever keeps a value instead of reusing it). Returns 1 for an
+# empty list.
+is_valid_encryption_keys() {
+    local value="$1" item version count=0
+    local -a items=()
+    local -A seen=()
+    IFS=',' read -ra items <<< "$value"
+    for item in "${items[@]}"; do
+        item="${item#"${item%%[![:space:]]*}"}"
+        item="${item%"${item##*[![:space:]]}"}"
+        [[ -z "$item" ]] && continue
+        [[ "$item" =~ ^([1-9][0-9]{0,8}):[A-Za-z0-9+/]{43}=$ ]] || return 1
+        version="${BASH_REMATCH[1]}"
+        [[ -n "${seen[$version]:-}" ]] && return 1
+        seen[$version]=1
+        count=$((count + 1))
+    done
+    [[ $count -gt 0 ]]
+}
+
+# resolve_encryption_key <VAR_NAME>
+# Sets _REK_RESULT to the value to write for VAR_NAME and always returns 0
+# unless it dies. The result goes through a variable, not stdout, so log lines
+# can never end up inside the key. The value is never logged.
+#   - existing valid value: reused (spaces between items removed, so the
+#     rewritten .env stays safe for start.sh to `source`)
+#   - missing or empty: a new "1:<base64 32 random bytes>"
+#   - anything else: kept as it is and a warning printed. ai-manager refuses to
+#     start on a malformed value, so the operator must fix it; overwriting it
+#     could destroy a key they still need. A value with shell metacharacters is
+#     single-quoted because start.sh sources .env; one containing a single quote
+#     cannot be preserved safely and stops the run (before anything is written).
+resolve_encryption_key() {
+    local _rek_name="$1" _rek_cur _rek_item _rek_out _rek_joined=""
+    local -a _rek_items=()
+    _REK_RESULT=""
+    _rek_cur="$(get_env_var "$ENV_FILE" "$_rek_name")"
+
+    # get_env_var only reads lines that start with NAME=. A line with leading
+    # spaces or an `export` prefix is valid for `source` and compose but would
+    # look like "not set" here, and a new key would silently replace it.
+    if [[ -z "$_rek_cur" && -f "$ENV_FILE" ]] \
+        && grep -Eq "^[[:space:]]*(export[[:space:]]+)?${_rek_name}=[[:space:]]*[^[:space:]\"']" "$ENV_FILE"; then
+        die 1 "$_rek_name in the existing .env is written with leading spaces or an export prefix, which init.sh cannot read; change it to a plain $_rek_name=<value> line and re-run init.sh"
+    fi
+
+    if [[ -z "$_rek_cur" ]]; then
+        if ! _rek_out="$(openssl rand -base64 32 2>/dev/null)"; then
+            die 2 "could not generate the encryption key for $_rek_name (openssl rand failed)"
+        fi
+        if [[ ! "$_rek_out" =~ ^[A-Za-z0-9+/]{43}=$ ]]; then
+            die 2 "could not generate the encryption key for $_rek_name (unexpected openssl output)"
+        fi
+        _REK_RESULT="1:$_rek_out"
+        log_info "  Generated $_rek_name"
+        return 0
+    fi
+
+    if is_valid_encryption_keys "$_rek_cur"; then
+        IFS=',' read -ra _rek_items <<< "$_rek_cur"
+        for _rek_item in "${_rek_items[@]}"; do
+            _rek_item="${_rek_item#"${_rek_item%%[![:space:]]*}"}"
+            _rek_item="${_rek_item%"${_rek_item##*[![:space:]]}"}"
+            [[ -z "$_rek_item" ]] && continue
+            _rek_joined+="${_rek_joined:+,}$_rek_item"
+        done
+        _REK_RESULT="$_rek_joined"
+        log_info "  Kept existing $_rek_name"
+        return 0
+    fi
+
+    if [[ "$_rek_cur" == *\'* ]]; then
+        die 1 "$_rek_name in the existing .env is not a valid key list and contains a single quote, so it cannot be kept safely; fix or remove that line and re-run init.sh"
+    fi
+    log_warn "  $_rek_name in the existing .env is not a valid key list and was kept unchanged; ai-manager will refuse to start until you fix it or clear the line and re-run init.sh"
+    if [[ "$_rek_cur" =~ ^[A-Za-z0-9+/=:,._-]*$ ]]; then
+        _REK_RESULT="$_rek_cur"
+    else
+        _REK_RESULT="'$_rek_cur'"
+    fi
+    return 0
+}
+
+# ensure_encryption_keys
+# Resolves both keys into MCP_SECRET_ENCRYPTION_KEYS and
+# ENGINE_BASE_KEY_ENCRYPTION_KEYS. Called from main() right after
+# check_existing_env_compat (which includes the overwrite prompt: answering N
+# exits there) and before anything is written, so the old values are still
+# readable and a failure here changes nothing.
+ensure_encryption_keys() {
+    log_step "Resolving encryption keys..."
+    resolve_encryption_key MCP_SECRET_ENCRYPTION_KEYS
+    MCP_SECRET_ENCRYPTION_KEYS="$_REK_RESULT"
+    resolve_encryption_key ENGINE_BASE_KEY_ENCRYPTION_KEYS
+    ENGINE_BASE_KEY_ENCRYPTION_KEYS="$_REK_RESULT"
+    echo ""
+}
+
 # Generate sequential external IPs for services
 # Uses a fixed offset from host IP to ensure unique, predictable IPs
 generate_service_ips() {
@@ -637,6 +747,11 @@ main() {
 
     # Existing-.env compatibility: refuse mode/domain switches (§2.7)
     check_existing_env_compat
+
+    # Encryption keys are resolved here, before certificates or .env are
+    # touched: the existing values must still be readable, and a failure
+    # must leave everything as it was.
+    ensure_encryption_keys
 
     # Step 1: Resolve TLS mode / check certificate tools
     log_step "Checking certificate tools..."
@@ -971,6 +1086,11 @@ AWS_SECRET_KEY=
 # ==============================================================================
 JWT_KEY=$JWT_KEY
 MYSQL_ROOT_PASSWORD=$MYSQL_ROOT_PASSWORD
+# Encryption keys for secrets ai-manager stores in the database. Generated once
+# and reused when init.sh is re-run. Back up this file: a lost key cannot be
+# recovered and the secrets stored under it become unreadable.
+MCP_SECRET_ENCRYPTION_KEYS=$MCP_SECRET_ENCRYPTION_KEYS
+ENGINE_BASE_KEY_ENCRYPTION_KEYS=$ENGINE_BASE_KEY_ENCRYPTION_KEYS
 DATABASE_ASTERISK_USERNAME=$DATABASE_ASTERISK_USERNAME
 DATABASE_ASTERISK_PASSWORD=$DATABASE_ASTERISK_PASSWORD
 RABBITMQ_DEFAULT_USER=$RABBITMQ_DEFAULT_USER

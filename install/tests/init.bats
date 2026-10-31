@@ -1673,3 +1673,321 @@ exit 0'
     mode="$(stat -c '%a' "$TEST_TEMP_DIR/.env")"
     [[ "$mode" == "600" ]]
 }
+
+# =============================================================================
+# Encryption keys for ai-manager (MCP_SECRET_ENCRYPTION_KEYS and
+# ENGINE_BASE_KEY_ENCRYPTION_KEYS): init.sh generates them at install time and
+# writes them to .env only. They protect stored secrets, so an existing valid
+# value is reused on every path that rewrites .env (--yes overwrite and
+# --force-reinit). Every key in these tests is generated at run time.
+# =============================================================================
+
+# Stubs shared by the end-to-end init runs below (same pattern as the
+# docker-compose.yml.dist tests above).
+enc_prepare() {
+    load_init_functions
+    mock_ip_route "192.168.1.100"
+    mock_command_script "mkcert" '
+while [[ $# -gt 0 ]]; do
+    case "$1" in
+        -cert-file) echo "stub-cert" > "$2"; shift 2 ;;
+        -key-file) echo "stub-key" > "$2"; shift 2 ;;
+        -CAROOT) echo "/stub/caroot"; exit 0 ;;
+        -check) exit 0 ;;
+        -install) exit 0 ;;
+        *) shift ;;
+    esac
+done
+exit 0'
+    setup_mkcert_ca() { :; }
+    setup_dns() { :; }
+    # A shell variable of the same name would shadow nothing in init.sh, but
+    # keep the process clean so the tests only see what .env says.
+    unset MCP_SECRET_ENCRYPTION_KEYS ENGINE_BASE_KEY_ENCRYPTION_KEYS LOCAL_LLM_MODELS LOCAL_LLM_ENDPOINTS
+}
+
+# A fresh, valid single key: "1:" + base64 of 32 random bytes.
+enc_new_key() {
+    printf '1:%s' "$(openssl rand -base64 32)"
+}
+
+# enc_env_value <VAR>: the value as init.sh/get_env_var reads it.
+enc_env_value() {
+    get_env_var "$TEST_TEMP_DIR/.env" "$1"
+}
+
+# enc_write_env <MCP value> <ENGINE value>: a minimal existing install .env
+# (domain/mode match the defaults so --yes and --force-reinit are accepted).
+enc_write_env() {
+    cat > "$TEST_TEMP_DIR/.env" <<EOF
+DOMAIN_MODE=internal
+BASE_DOMAIN=voipbin.test
+JWT_KEY=old-jwt-key
+MCP_SECRET_ENCRYPTION_KEYS=$1
+ENGINE_BASE_KEY_ENCRYPTION_KEYS=$2
+EOF
+}
+
+@test "init.sh generates two different 1:<base64 32 bytes> encryption keys on a fresh install" {
+    enc_prepare
+
+    run main --yes
+
+    [[ "$status" -eq 0 ]]
+    local mcp engine
+    mcp="$(enc_env_value MCP_SECRET_ENCRYPTION_KEYS)"
+    engine="$(enc_env_value ENGINE_BASE_KEY_ENCRYPTION_KEYS)"
+    [[ "$mcp" =~ ^1:[A-Za-z0-9+/]{43}=$ ]]
+    [[ "$engine" =~ ^1:[A-Za-z0-9+/]{43}=$ ]]
+    [[ "$mcp" != "$engine" ]]
+    [[ "$(printf '%s' "${mcp#1:}" | base64 -d | wc -c)" -eq 32 ]]
+    [[ "$(printf '%s' "${engine#1:}" | base64 -d | wc -c)" -eq 32 ]]
+}
+
+@test "init.sh never prints the encryption keys (stdout/stderr and result line)" {
+    enc_prepare
+
+    run main --yes
+
+    [[ "$status" -eq 0 ]]
+    local mcp engine
+    mcp="$(enc_env_value MCP_SECRET_ENCRYPTION_KEYS)"
+    engine="$(enc_env_value ENGINE_BASE_KEY_ENCRYPTION_KEYS)"
+    [[ -n "$mcp" && -n "$engine" ]]
+    [[ "$output" != *"$mcp"* ]]
+    [[ "$output" != *"$engine"* ]]
+    [[ "$output" != *"${mcp#1:}"* ]]
+    [[ "$output" != *"${engine#1:}"* ]]
+}
+
+@test "init.sh --yes overwrite keeps existing valid encryption keys (other generated values change)" {
+    enc_prepare
+    local mcp engine
+    mcp="$(enc_new_key)"; engine="$(enc_new_key)"
+    enc_write_env "$mcp" "$engine"
+
+    run main --yes
+
+    [[ "$status" -eq 0 ]]
+    [[ "$(enc_env_value MCP_SECRET_ENCRYPTION_KEYS)" == "$mcp" ]]
+    [[ "$(enc_env_value ENGINE_BASE_KEY_ENCRYPTION_KEYS)" == "$engine" ]]
+    # The rewrite really happened: the JWT key is regenerated as before.
+    [[ "$(enc_env_value JWT_KEY)" != "old-jwt-key" ]]
+    [[ "$output" != *"$mcp"* ]]
+    [[ "$output" != *"$engine"* ]]
+}
+
+@test "init.sh --force-reinit keeps existing valid encryption keys" {
+    enc_prepare
+    local mcp engine
+    mcp="$(enc_new_key)"; engine="$(enc_new_key)"
+    enc_write_env "$mcp" "$engine"
+
+    run main --force-reinit --yes
+
+    [[ "$status" -eq 0 ]]
+    [[ "$(enc_env_value MCP_SECRET_ENCRYPTION_KEYS)" == "$mcp" ]]
+    [[ "$(enc_env_value ENGINE_BASE_KEY_ENCRYPTION_KEYS)" == "$engine" ]]
+    [[ "$(enc_env_value JWT_KEY)" != "old-jwt-key" ]]
+}
+
+@test "init.sh re-run twice keeps the same encryption keys" {
+    enc_prepare
+    run main --yes
+    [[ "$status" -eq 0 ]]
+    local mcp engine
+    mcp="$(enc_env_value MCP_SECRET_ENCRYPTION_KEYS)"
+    engine="$(enc_env_value ENGINE_BASE_KEY_ENCRYPTION_KEYS)"
+    [[ -n "$mcp" && -n "$engine" ]]
+
+    run main --yes
+
+    [[ "$status" -eq 0 ]]
+    [[ "$(enc_env_value MCP_SECRET_ENCRYPTION_KEYS)" == "$mcp" ]]
+    [[ "$(enc_env_value ENGINE_BASE_KEY_ENCRYPTION_KEYS)" == "$engine" ]]
+}
+
+@test "init.sh generates only the missing key when one is present, empty or absent" {
+    enc_prepare
+    local mcp
+    mcp="$(enc_new_key)"
+    # ENGINE line present but empty.
+    enc_write_env "$mcp" ""
+
+    run main --yes
+
+    [[ "$status" -eq 0 ]]
+    [[ "$(enc_env_value MCP_SECRET_ENCRYPTION_KEYS)" == "$mcp" ]]
+    [[ "$(enc_env_value ENGINE_BASE_KEY_ENCRYPTION_KEYS)" =~ ^1:[A-Za-z0-9+/]{43}=$ ]]
+    [[ "$(enc_env_value ENGINE_BASE_KEY_ENCRYPTION_KEYS)" != "$mcp" ]]
+
+    # ENGINE only, MCP line absent altogether.
+    cat > "$TEST_TEMP_DIR/.env" <<EOF
+DOMAIN_MODE=internal
+BASE_DOMAIN=voipbin.test
+ENGINE_BASE_KEY_ENCRYPTION_KEYS=$mcp
+EOF
+    run main --yes
+    [[ "$status" -eq 0 ]]
+    [[ "$(enc_env_value ENGINE_BASE_KEY_ENCRYPTION_KEYS)" == "$mcp" ]]
+    [[ "$(enc_env_value MCP_SECRET_ENCRYPTION_KEYS)" =~ ^1:[A-Za-z0-9+/]{43}=$ ]]
+    [[ "$(enc_env_value MCP_SECRET_ENCRYPTION_KEYS)" != "$mcp" ]]
+}
+
+@test "init.sh reuses a valid multi-key list, trimming spaces so source .env stays safe" {
+    enc_prepare
+    local k1 k2 k3
+    k1="$(enc_new_key)"; k2="2:$(openssl rand -base64 32)"; k3="$(enc_new_key)"
+    enc_write_env "\"$k1, $k2\"" "$k3"
+
+    run main --yes
+
+    [[ "$status" -eq 0 ]]
+    [[ "$(enc_env_value MCP_SECRET_ENCRYPTION_KEYS)" == "$k1,$k2" ]]
+    [[ "$(enc_env_value ENGINE_BASE_KEY_ENCRYPTION_KEYS)" == "$k3" ]]
+    # start.sh sources .env: the rewritten file must load without errors.
+    run bash -c "set -a; source '$TEST_TEMP_DIR/.env'; printf '%s' \"\$MCP_SECRET_ENCRYPTION_KEYS\""
+    [[ "$status" -eq 0 ]]
+    [[ "$output" == "$k1,$k2" ]]
+}
+
+@test "init.sh rewrites a quoted valid key without quotes" {
+    enc_prepare
+    local mcp engine
+    mcp="$(enc_new_key)"; engine="$(enc_new_key)"
+    enc_write_env "'$mcp'" "\"$engine\""
+
+    run main --yes
+
+    [[ "$status" -eq 0 ]]
+    grep -qx "MCP_SECRET_ENCRYPTION_KEYS=$mcp" "$TEST_TEMP_DIR/.env"
+    grep -qx "ENGINE_BASE_KEY_ENCRYPTION_KEYS=$engine" "$TEST_TEMP_DIR/.env"
+}
+
+@test "init.sh keeps a malformed encryption key unchanged, warns without the value, generates the other" {
+    enc_prepare
+    local good bad_value
+    good="$(enc_new_key)"
+    local -a bad_values=(
+        "$(openssl rand -base64 32)"                 # no version prefix
+        "1:$(openssl rand -base64 16)"               # 16 bytes
+        "$good,${good}"                              # duplicate version
+        "0:$(openssl rand -base64 32)"               # version 0
+        "1234567890:$(openssl rand -base64 32)"      # 10 digit version
+        "1:not-base64!"                              # not base64
+        ","                                          # no key at all
+    )
+    for bad_value in "${bad_values[@]}"; do
+        enc_write_env "$bad_value" "$good"
+
+        run main --yes
+
+        [[ "$status" -eq 0 ]]
+        [[ "$(enc_env_value MCP_SECRET_ENCRYPTION_KEYS)" == "$bad_value" ]]
+        [[ "$(enc_env_value ENGINE_BASE_KEY_ENCRYPTION_KEYS)" == "$good" ]]
+        [[ "$output" == *"MCP_SECRET_ENCRYPTION_KEYS"* ]]
+        [[ "$output" == *"ai-manager"* ]]
+        # A one character value such as "," would match any output; the
+        # value check only means something for real key-length strings.
+        if [[ ${#bad_value} -gt 8 ]]; then
+            [[ "$output" != *"$bad_value"* ]]
+        fi
+        [[ "$output" != *"$good"* ]]
+    done
+}
+
+@test "init.sh single-quotes a malformed key with shell metacharacters so source .env runs nothing" {
+    enc_prepare
+    local good sentinel
+    good="$(enc_new_key)"
+    sentinel="$TEST_TEMP_DIR/sentinel"
+    # get_env_var strips the outer double quotes, leaving the raw $(...) text.
+    enc_write_env "\"\$(touch $sentinel)\"" "$good"
+
+    run main --yes
+
+    [[ "$status" -eq 0 ]]
+    [[ "$(enc_env_value MCP_SECRET_ENCRYPTION_KEYS)" == "\$(touch $sentinel)" ]]
+    run bash -c "set -a; source '$TEST_TEMP_DIR/.env'"
+    [[ "$status" -eq 0 ]]
+    [[ ! -e "$sentinel" ]]
+}
+
+@test "init.sh refuses a malformed key that contains a single quote, before touching certs or .env" {
+    enc_prepare
+    local good
+    good="$(enc_new_key)"
+    enc_write_env "bad'value" "$good"
+    cp "$TEST_TEMP_DIR/.env" "$TEST_TEMP_DIR/.env.before"
+
+    run main --yes
+
+    [[ "$status" -ne 0 ]]
+    [[ "$output" == *"VOIPBIN_INIT: status=error"* ]]
+    [[ "$output" != *"bad'value"* ]]
+    cmp "$TEST_TEMP_DIR/.env" "$TEST_TEMP_DIR/.env.before"
+    # Certificates are generated after the key step, so none exist yet.
+    [[ -z "$(ls -A "$TEST_TEMP_DIR/certs" 2>/dev/null)" ]]
+}
+
+@test "init.sh stops with an error when openssl cannot generate a key, before certs or .env" {
+    enc_prepare
+    local real_openssl
+    real_openssl="$(command -v openssl)"
+    # Fail only for `rand -base64`; everything else (JWT_KEY uses `rand -hex`)
+    # goes to the real openssl, so the encryption-key path is what fails.
+    mock_command_script "openssl" "
+if [[ \"\$1\" == rand && \"\$2\" == -base64 ]]; then exit 1; fi
+exec '$real_openssl' \"\$@\""
+
+    run main --yes
+
+    [[ "$status" -ne 0 ]]
+    [[ "$output" == *"VOIPBIN_INIT: status=error"* ]]
+    [[ "$output" == *"encryption key"* ]]
+    [[ ! -e "$TEST_TEMP_DIR/.env" ]]
+    [[ -z "$(ls -A "$TEST_TEMP_DIR/certs" 2>/dev/null)" ]]
+}
+
+@test "init.sh refuses to replace an encryption key written as an indented or export line" {
+    enc_prepare
+    local k variant
+    for variant in "  MCP_SECRET_ENCRYPTION_KEYS=" "export MCP_SECRET_ENCRYPTION_KEYS="; do
+        k="$(enc_new_key)"
+        cat > "$TEST_TEMP_DIR/.env" <<EOF
+DOMAIN_MODE=internal
+BASE_DOMAIN=voipbin.test
+${variant}${k}
+EOF
+        cp "$TEST_TEMP_DIR/.env" "$TEST_TEMP_DIR/.env.before"
+
+        run main --yes
+
+        [[ "$status" -ne 0 ]]
+        [[ "$output" == *"VOIPBIN_INIT: status=error"* ]]
+        [[ "$output" == *"MCP_SECRET_ENCRYPTION_KEYS"* ]]
+        [[ "$output" != *"$k"* ]]
+        cmp "$TEST_TEMP_DIR/.env" "$TEST_TEMP_DIR/.env.before"
+    done
+}
+
+@test "init.sh keeps .env untouched when the operator declines the overwrite" {
+    enc_prepare
+    local mcp engine
+    mcp="$(enc_new_key)"; engine="$(enc_new_key)"
+    enc_write_env "$mcp" "$engine"
+    cp "$TEST_TEMP_DIR/.env" "$TEST_TEMP_DIR/.env.before"
+
+    run main <<< "n"
+
+    [[ "$status" -eq 0 ]]
+    cmp "$TEST_TEMP_DIR/.env" "$TEST_TEMP_DIR/.env.before"
+}
+
+@test ".env.template documents the encryption keys without any value" {
+    local tmpl="$PROJECT_ROOT/.env.template"
+    grep -qx 'MCP_SECRET_ENCRYPTION_KEYS=' "$tmpl"
+    grep -qx 'ENGINE_BASE_KEY_ENCRYPTION_KEYS=' "$tmpl"
+    # No key-shaped literal anywhere in the template.
+    if grep -Eq '(^|[=:,[:space:]])[0-9]+:[A-Za-z0-9+/]{43}=' "$tmpl"; then return 1; fi
+}

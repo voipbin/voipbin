@@ -635,6 +635,16 @@ services:
       - ENGINE_KEY_CHATGPT=${OPENAI_API_KEY:-}
       # Summaries, analysis and the assistant builder use Gemini by default.
       - GOOGLE_API_KEY=${GOOGLE_API_KEY:-}
+      # Encryption keys for secrets stored in the database (MCP server secrets
+      # and the keys customers store for their own LLM endpoints). init.sh
+      # generates both at install time and writes them to .env only. Empty
+      # still starts ai-manager (it warns), but storing such a secret then
+      # fails. Back up .env: a lost key cannot be recovered.
+      - MCP_SECRET_ENCRYPTION_KEYS=${MCP_SECRET_ENCRYPTION_KEYS:-}
+      - ENGINE_BASE_KEY_ENCRYPTION_KEYS=${ENGINE_BASE_KEY_ENCRYPTION_KEYS:-}
+      # Self-hosted OpenAI-compatible models; [] disables them. Must match
+      # pipecat-manager's value. See .env.template for the format.
+      - LOCAL_LLM_MODELS=${LOCAL_LLM_MODELS:-[]}
     command: ./ai-manager
 
   api-manager:
@@ -1108,6 +1118,8 @@ services:
       - DEEPGRAM_API_KEY=${DEEPGRAM_API_KEY:-}
       - XAI_API_KEY=${XAI_API_KEY:-}
       - POD_IP=${POD_IP:-pipecat-manager}
+      # Same value as ai-manager's (the model list the two services agree on).
+      - LOCAL_LLM_MODELS=${LOCAL_LLM_MODELS:-[]}
     command: ./pipecat-manager
 
   # pipecat-script-runner: the Python Pipecat pipeline sidecar (FastAPI/uvicorn
@@ -1142,6 +1154,15 @@ services:
       - XAI_API_KEY=${XAI_API_KEY:-}
       - GOOGLE_API_KEY=${GOOGLE_API_KEY:-}
       - OPENROUTER_API_KEY=${OPENROUTER_API_KEY:-}
+      # Self-hosted OpenAI-compatible endpoints ({name: {base_url, api_key}});
+      # {} disables them. Holds URLs and keys, so only this container gets it.
+      - LOCAL_LLM_ENDPOINTS=${LOCAL_LLM_ENDPOINTS:-{}}
+      # Google speech services read their credentials from this file. The
+      # default is the dummy file init.sh creates (not a valid credential); set
+      # GOOGLE_APPLICATION_CREDENTIALS in .env to a real service account file.
+      - GOOGLE_APPLICATION_CREDENTIALS=/tmp/google_service_account.json
+    volumes:
+      - ${GOOGLE_APPLICATION_CREDENTIALS:-./config/dummy-gcp-credentials.json}:/tmp/google_service_account.json:ro
     command: ["python", "/app/scripts/pipecat/main.py"]
 
   queue-manager:
@@ -1423,12 +1444,21 @@ services:
     # timeline-manager always runs its migrations at boot and a migration failure
     # is fatal (os.Exit(1)). Racing ClickHouse to readiness would make it exit
     # non-zero on every fresh `up` and only recover via restart: always.
+    # The db gate is required for the same reason: with DATABASE_DSN set (the
+    # analysis store), a failed MySQL connection or MySQL migration at boot is
+    # fatal too.
     depends_on:
+      db:
+        condition: service_healthy
       rabbitmq:
         condition: service_healthy
       clickhouse:
         condition: service_healthy
     environment:
+      # The analysis store (bin_manager.timeline_schema_migrations and its
+      # tables). Without this line timeline-manager still starts but serves no
+      # analysis endpoints.
+      - DATABASE_DSN=root:${MYSQL_ROOT_PASSWORD}@tcp(${DB_HOST:-db}:${DB_PORT:-3306})/bin_manager
       - RABBITMQ_ADDRESS=amqp://${RABBITMQ_DEFAULT_USER}:${RABBITMQ_DEFAULT_PASS}@${RABBITMQ_HOST:-rabbitmq}:${RABBITMQ_PORT:-5672}
       # 9000 is ClickHouse's native protocol port (clickhouse-go/v2), not HTTP.
       - CLICKHOUSE_ADDRESS=${CLICKHOUSE_ADDRESS:-clickhouse:9000}

@@ -46,6 +46,15 @@ status_text() {
     [[ "$(printf '%s\n' "${SERVICE_SCHEMA_TABLES[@]}" | sort -u | wc -l)" -eq 26 ]]
 }
 
+@test "common.sh records why timeline-manager is deliberately absent from SERVICE_SCHEMA_TABLES" {
+    # The list is read by start.sh and doctor but common.sh arrives with a git
+    # pull while the live docker-compose.yml does not. A listed timeline-manager
+    # would be waited for and reported as unapplied on an install whose compose
+    # has no DATABASE_DSN for it. The reason must stay next to the list.
+    grep -q 'timeline-manager is deliberately not listed' "$SCRIPTS_DIR/common.sh"
+    grep -q 'timeline_schema_migrations' "$SCRIPTS_DIR/common.sh"
+}
+
 @test "schema_service_table_in_list quotes every table for an IN (...) list" {
     run schema_service_table_in_list
 
