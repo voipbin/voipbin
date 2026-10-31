@@ -15,6 +15,8 @@ RED='\033[0;31m'
 GREEN='\033[0;32m'
 YELLOW='\033[1;33m'
 NC='\033[0m' # No Color
+# NO_COLOR (https://no-color.org): any non-empty value disables color.
+if [ -n "${NO_COLOR:-}" ]; then RED=''; GREEN=''; YELLOW=''; NC=''; fi
 
 log_info() {
     echo -e "${GREEN}[INFO]${NC} $1"

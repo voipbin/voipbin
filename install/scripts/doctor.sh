@@ -605,11 +605,27 @@ check_containers() {
     local rows fix="docker compose logs --tail 50 <service> then docker compose restart <service>"
     rows=$(cd "$PROJECT_DIR" && COMPOSE_PROFILES="$DOCTOR_PROFILES" docker compose ps -a --format '{{.Name}}\t{{.State}}\t{{.Status}}' 2>/dev/null)
     if [[ -z "$rows" ]]; then doctor_fail containers "docker compose ps -a returned nothing" "$fix"; return; fi
-    local bad=() detail_lines=() total=0 name state status why lastlog
+    local bad=() detail_lines=() total=0 known=0 optional=() name state status why lastlog kind
     while IFS=$'\t' read -r name state status; do
         [[ -z "$name" ]] && continue
         total=$((total + 1))
         if [[ "$state" != "running" || "$status" == *"unhealthy"* ]]; then
+            # container_issue_kind (common.sh): a missing healthcheck binary
+            # is a known non-fault; tts-manager without TTS credentials is an
+            # optional feature that is not configured. Both stay out of the
+            # failure list. compose ps -a reports a restarting container
+            # with state "restarting".
+            if [[ "$state" == "restarting" ]]; then
+                kind=$(container_issue_kind "$name" "Restarting")
+            elif [[ "$state" == "running" ]]; then
+                kind=$(container_issue_kind "$name" "$status")
+            else
+                kind="fail"
+            fi
+            case "$kind" in
+                known-healthcheck) known=$((known + 1)); continue ;;
+                optional-tts) optional+=("$name"); continue ;;
+            esac
             why="$state"
             [[ "$status" == *"unhealthy"* ]] && why="unhealthy"
             bad+=("$name($why)")
@@ -618,10 +634,18 @@ check_containers() {
             [[ -n "$lastlog" ]] && detail_lines+=("  $name: $lastlog")
         fi
     done <<< "$rows"
+    local notes=""
+    [[ "$known" -gt 0 ]] && notes+="; $known with no healthcheck binary (known, not a fault)"
     if [[ ${#bad[@]} -gt 0 ]]; then
         # detail lines print AFTER the DOCTOR/FIX pair (they attach to this check)
-        doctor_fail containers "not running/unhealthy: ${bad[*]}" "$fix"
+        doctor_fail containers "not running/unhealthy: ${bad[*]}${notes}" "$fix"
         [[ ${#detail_lines[@]} -gt 0 ]] && printf '%s\n' "${detail_lines[@]}"
+    elif [[ ${#optional[@]} -gt 0 ]]; then
+        # Optional feature, not a fault: warn without a FIX line (FIX lines
+        # are recovery commands).
+        doctor_result containers warn "optional feature not configured: ${optional[*]} restarts until TTS credentials are added to .env${notes}"
+    elif [[ "$known" -gt 0 ]]; then
+        doctor_result containers pass "all $total containers running${notes}"
     else
         doctor_result containers pass "all $total containers running, none unhealthy"
     fi
@@ -805,7 +829,7 @@ check_test_data() {
         if [[ "$seed" == "true" ]]; then
             doctor_result test-data warn "schema present but no .test_data_initialized marker (start.sh will re-seed test data on its next run)"
         else
-            doctor_result test-data pass "dev seed is off (VOIPBIN_SANDBOX_DEV_SEED is not true), no marker expected"
+            doctor_result test-data pass "dev seed is off, no marker expected"
         fi
     elif [[ -f "$marker" ]]; then
         doctor_result test-data pass "marker present and the bin_manager schema is populated"

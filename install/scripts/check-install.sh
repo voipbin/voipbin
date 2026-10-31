@@ -86,24 +86,44 @@ check_compose_profiles() {
 # with the identical environment and the .env-sourced COMPOSE_PROFILES —
 # the count only means something if both apply the same profile filter.
 check_services() {
-    local expected running unhealthy
+    local expected running rows name status kind
+    local bad=() known=0 optional=()
     expected=$(cd "$PROJECT_DIR" && COMPOSE_PROFILES="$CHECK_PROFILES" docker compose config --services 2>/dev/null | grep -c .)
     running=$(cd "$PROJECT_DIR" && COMPOSE_PROFILES="$CHECK_PROFILES" docker compose ps --status running -q 2>/dev/null | grep -c .)
-    unhealthy=$(cd "$PROJECT_DIR" && COMPOSE_PROFILES="$CHECK_PROFILES" docker compose ps --format '{{.Name}}\t{{.Status}}' 2>/dev/null | grep -iE 'unhealthy|restarting|exited' || true)
+    rows=$(cd "$PROJECT_DIR" && COMPOSE_PROFILES="$CHECK_PROFILES" docker compose ps --format '{{.Name}}\t{{.Status}}' 2>/dev/null || true)
 
     if [[ "$expected" -eq 0 ]]; then
         check_result services fail "docker compose config --services returned nothing (docker unavailable?)"
         return
     fi
-    if [[ -n "$unhealthy" ]]; then
-        check_result services fail "unhealthy/restarting/exited: $(echo "$unhealthy" | cut -f1 | tr '\n' ' ' | sed 's/ $//')"
+    # Classify every unhealthy/restarting/exited row (container_issue_kind,
+    # common.sh): a missing healthcheck binary is a known non-fault, and
+    # tts-manager without TTS credentials is an optional feature that is
+    # not configured; it is also left out of the running-count comparison.
+    while IFS=$'\t' read -r name status; do
+        [[ -z "$name" ]] && continue
+        echo "$status" | grep -qiE 'unhealthy|restarting|exited' || continue
+        kind=$(container_issue_kind "$name" "$status")
+        case "$kind" in
+            known-healthcheck) known=$((known + 1)) ;;
+            optional-tts) optional+=("$name") ;;
+            ok) ;;
+            *) bad+=("$name") ;;
+        esac
+    done <<< "$rows"
+    if [[ ${#bad[@]} -gt 0 ]]; then
+        check_result services fail "unhealthy/restarting/exited: ${bad[*]}"
         return
     fi
+    expected=$((expected - ${#optional[@]}))
     if [[ "$running" -ne "$expected" ]]; then
         check_result services fail "running=$running expected=$expected (docker compose ps for details)"
         return
     fi
-    check_result services pass "running=$running/$expected, none unhealthy"
+    local detail="running=$running/$expected, none unhealthy"
+    [[ "$known" -gt 0 ]] && detail="running=$running/$expected, $known with no healthcheck binary (known, not a fault)"
+    [[ ${#optional[@]} -gt 0 ]] && detail+="; optional feature not configured: ${optional[*]} (add TTS credentials to .env to enable)"
+    check_result services pass "$detail"
 }
 
 # Cert trust chain.

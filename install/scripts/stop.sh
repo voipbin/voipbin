@@ -17,7 +17,7 @@ source "$SCRIPT_DIR/common.sh"
 show_usage() {
     echo "Usage: voipbin> stop"
     echo ""
-    echo "Stops all VoIPBin sandbox services. Data is preserved in volumes."
+    echo "Stops all VoIPBin services. Data is preserved in volumes."
     echo ""
     echo "For cleanup operations:"
     echo "  voipbin> clean --volumes   # Remove docker volumes"

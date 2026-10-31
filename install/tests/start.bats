@@ -418,13 +418,16 @@ exit 0
 # =============================================================================
 
 # Shared docker stub covering every `docker exec` call setup_test_customer
-# makes, other than extension creation (that's over curl, not docker).
+# makes (directly and through create-admin.sh), other than extension
+# creation (that's over curl, not docker).
 stub_docker_for_test_customer() {
+    export VOIPBIN_ADMIN_POLL_INTERVAL=0
     mock_command_script "docker" '
 case "$*" in
     *"customer-control customer create"*) exit 0 ;;
     *"customer-control customer list"*) echo "[{\"email\":\"admin@localhost\",\"id\":\"cust-1\"}]" ;;
-    *"agent-control agent list"*) echo "[{\"id\":\"agent-1\"}]" ;;
+    *"customer-control customer get"*) echo "{\"id\":\"cust-1\",\"billing_account_id\":\"bill-1\"}" ;;
+    *"agent-control agent list"*) echo "[{\"id\":\"agent-1\",\"username\":\"admin@localhost\"}]" ;;
     *"agent-control agent update-password"*) exit 0 ;;
     *"customer-control accesskey create"*) echo "token: fake-accesskey" ;;
     *"billing-control account update-plan-type"*) exit 0 ;;

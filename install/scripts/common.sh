@@ -17,6 +17,8 @@ GREEN='\033[0;32m'
 YELLOW='\033[1;33m'
 BLUE='\033[0;34m'
 NC='\033[0m' # No Color
+# NO_COLOR (https://no-color.org): any non-empty value disables color.
+if [ -n "${NO_COLOR:-}" ]; then RED=''; GREEN=''; YELLOW=''; BLUE=''; NC=''; fi
 
 # =============================================================================
 # Logging Functions
@@ -1355,4 +1357,50 @@ schema_gate_all_missing_keys() {
         schema_gate_service_missing_key "$svc" || return 1
     done
     return 0
+}
+
+# =============================================================================
+# Container health classification (shared by check-install.sh, doctor.sh)
+# =============================================================================
+
+# Log line tts-manager exits with when no TTS provider credentials are set
+# (the default install has none). It then restarts until credentials are
+# added to .env: an optional feature that is not configured, not a fault.
+TTS_CREDENTIALS_MISSING_LOG="Check TTS provider credentials"
+
+# container_issue_kind <container-name> <docker-compose-ps-Status>
+# Prints one of:
+#   ok                 running, not unhealthy
+#   known-healthcheck  unhealthy only because the image has no healthcheck
+#                      binary (the last health probe output says
+#                      "executable file not found"); the service itself runs
+#   optional-tts       tts-manager restarting because TTS credentials are
+#                      not configured (its recent log has the line above)
+#   fail               anything else (exited, other restarts, other unhealthy)
+container_issue_kind() {
+    local name="$1" status="$2" last_probe
+    case "$status" in
+        Restarting*|restarting*)
+            if [ "$name" = "voipbin-tts-mgr" ] && \
+               docker logs --tail 200 "$name" 2>&1 | grep -qF "$TTS_CREDENTIALS_MISSING_LOG"; then
+                echo "optional-tts"
+            else
+                echo "fail"
+            fi
+            return 0
+            ;;
+        Up*|up*|running*) ;;
+        *) echo "fail"; return 0 ;;
+    esac
+    if [[ "$status" != *"unhealthy"* ]]; then
+        echo "ok"
+        return 0
+    fi
+    # %q keeps each probe output on one line, so tail -1 is the last probe.
+    last_probe=$(docker inspect --format '{{range .State.Health.Log}}{{printf "%q" .Output}}{{"\n"}}{{end}}' "$name" 2>/dev/null | grep -v '^$' | tail -1)
+    if [[ "$last_probe" == *"executable file not found"* ]]; then
+        echo "known-healthcheck"
+    else
+        echo "fail"
+    fi
 }

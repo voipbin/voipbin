@@ -124,6 +124,12 @@ main() {
         log_info "Removing test data marker (.test_data_initialized)..."
         rm -f "$PROJECT_DIR/.test_data_initialized"
     fi
+    # The guided-install completion marker also describes DB state (the
+    # admin account), so it goes with --volumes and with --purge.
+    if { [ "$CLEAN_VOLUMES" = true ] || [ "$PURGE" = true ]; } && [ -f "$PROJECT_DIR/.voipbin-installed" ]; then
+        log_info "Removing install marker (.voipbin-installed)..."
+        rm -f "$PROJECT_DIR/.voipbin-installed"
+    fi
 
     # Step 2: Remove docker images if requested
     if [ "$CLEAN_IMAGES" = true ]; then
@@ -281,6 +287,10 @@ main() {
     done
 
     echo ""
+    if [ "$CLEAN_VOLUMES" = true ] && [ "$TEARDOWN_NETWORK" = false ] && \
+       { [ -e /sys/class/net/kamailio-int ] || [ -e /sys/class/net/rtpengine-int ]; }; then
+        log_warn "The VoIP network interfaces were kept. Before installing again, remove them: $0 --network"
+    fi
     log_info "Run 'init' to initialize, then 'start' to begin."
     echo ""
 }

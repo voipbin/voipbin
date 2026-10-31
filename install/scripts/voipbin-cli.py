@@ -2,7 +2,7 @@
 """
 VoIPBin Install Interactive CLI
 
-An interactive command-line interface for managing VoIPBin sandbox,
+An interactive command-line interface for installing and managing VoIPBin,
 inspired by Asterisk CLI and Claude Code.
 
 This CLI requires sudo for full functionality (network setup, DNS config, etc.)
@@ -16,6 +16,7 @@ import os
 import pwd
 import readline
 import re
+import secrets
 import shlex
 import shutil
 import signal
@@ -34,7 +35,7 @@ from pathlib import Path
 def check_root():
     """Check if running as root, exit if not"""
     if os.geteuid() != 0:
-        print("\033[91m[ERROR]\033[0m This CLI requires sudo for full functionality.")
+        print(f"{red('[ERROR]')} This CLI requires sudo for full functionality.")
         print("")
         print("  Usage: sudo ./voipbin")
         print("")
@@ -162,6 +163,18 @@ def dim(text):
     return f"{Colors.DIM}{text}{Colors.RESET}"
 
 
+def color_wanted(stream=None):
+    """False when NO_COLOR is set (any non-empty value) or stdout is not a
+    terminal, so piped and logged output carries no escape codes."""
+    stream = stream or sys.stdout
+    if os.environ.get("NO_COLOR"):
+        return False
+    try:
+        return stream.isatty()
+    except (AttributeError, ValueError):
+        return False
+
+
 # =============================================================================
 # Welcome Dashboard
 # =============================================================================
@@ -176,7 +189,7 @@ LOGO_LINES = [
     (" ██                      ██ ", "   \\ V / (_) | ||  __/| |_) | | | | |"),
     ("  ██    ██   ██   ██    ██  ", "    \\_/ \\___/___|_|   |____/|_|_| |_|"),
     ("  ██    ██   ██   ██    ██  ", "        Connect & Collaborate for all"),
-    ("  ██    ██   ██   ██    ██  ", "              S A N D B O X"),
+    ("  ██    ██   ██   ██    ██  ", ""),
     ("  ██    ██   ██   ██    ██  ", ""),
     ("   ██   ██   ██   ██   ██   ", ""),
     ("   ██████████████████████   ", ""),
@@ -1051,8 +1064,6 @@ def get_logo():
     for icon_part, text_part in LOGO_LINES:
         if "Connect & Collaborate" in text_part:
             combined.append(f"{white(icon_part)}{gray(text_part)}")
-        elif "S A N D B O X" in text_part:
-            combined.append(f"{white(icon_part)}{bold(gray(text_part))}")
         elif text_part:
             combined.append(f"{white(icon_part)}{bold(text_part)}")
         else:
@@ -1149,13 +1160,12 @@ def show_welcome_dashboard():
     if state == "not_initialized":
         # Warning triangle in yellow
         warning = f"""{yellow("      /\\")}
-{yellow("     /  \\")}       Not initialized. Let's get started:
+{yellow("     /  \\")}       No installation found in this directory.
 {yellow("    / !! \\")}
-{yellow("   /______\\")}        1. {bold("init")}          Generate .env and SSL certificates
-                   2. {bold("nano .env")}     Add your API keys (GCP, OpenAI, etc.)
-                   3. {bold("start")}         Launch all services
+{yellow("   /______\\")}        {bold("install")}       Guided install (checks, configuration, host setup,
+                                 services, admin account). Nothing to edit first.
 
-                Quick start: {green("init")} → {green("nano .env")} → {green("start")}"""
+                AI provider keys are optional: add them to .env later, then 'restart'."""
         print(warning)
         print()
         print(separator)
@@ -1223,6 +1233,229 @@ def show_welcome_dashboard():
         print(f"Type '{bold('help')}' for all commands, '{bold('status')}' for details, '{bold('exit')}' to quit.")
 
     print()
+
+
+# Optional provider keys `status` reports as set/empty (from .env.template's
+# OPTIONAL sections). Grouped keys count as set only when all are set.
+OPTIONAL_PROVIDER_KEYS = (
+    ("OPENAI_API_KEY",), ("GOOGLE_API_KEY",), ("XAI_API_KEY",), ("OPENROUTER_API_KEY",),
+    ("ELEVENLABS_API_KEY",), ("CARTESIA_API_KEY",), ("DEEPGRAM_API_KEY",),
+    ("AWS_ACCESS_KEY", "AWS_SECRET_KEY"), ("TWILIO_SID", "TWILIO_API_KEY"),
+    ("TELNYX_API_KEY",), ("SENDGRID_API_KEY",), ("MAILGUN_API_KEY",),
+)
+
+# =============================================================================
+# Guided install helpers (module level so tests can call them directly)
+# =============================================================================
+
+INSTALL_MARKER = ".voipbin-installed"
+INSTALL_STEPS = 6
+INSTALL_INIT_VALUE_FLAGS = ("--mode", "--domain", "--tls", "--cert", "--key",
+                            "--kamailio-ip", "--rtpengine-ip")
+INSTALL_INIT_BOOL_FLAGS = ("--web-reverse-proxy",)
+# doctor.sh checks that block the install when they fail. Every other
+# doctor check describes something a later install step creates.
+INSTALL_PREFLIGHT_BLOCKING = ("docker", "compose-version", "tools", "ports", "disk-space")
+INSTALL_MIN_MEMORY_KIB = 4 * 1024 * 1024
+INSTALL_REACHABILITY_URLS = (
+    ("Docker Hub", "https://registry-1.docker.io/v2/"),
+    ("GitHub", "https://github.com"),
+)
+INSTALL_TTS_CONTAINER = "voipbin-tts-mgr"
+INSTALL_VOIP_INTERFACES = ("kamailio-int", "rtpengine-int")  # scripts/setup-voip-network.sh
+INSTALL_TTS_CREDENTIALS_MISSING_LOG = "Check TTS provider credentials"
+INSTALL_HEALTHCHECK_BINARY_MISSING = "executable file not found"
+INSTALL_EMAIL_RE = re.compile(r"^[^@\s\"']+@[^@\s\"']+\.[^@\s\"']+$|^[^@\s\"']+@localhost$")
+# Files init/start/install create; fix_install_ownership() hands them to the
+# invoking user (directories recursively).
+INSTALL_OWNED_PATHS = (
+    ".env", "certs", os.path.join("config", "coredns"), os.path.join("config", "caddy"),
+    os.path.join("config", "dummy-gcp-credentials.json"), "docker-compose.yml",
+    "versions.lock", "docker-compose.override.yml", ".voipbin-versions",
+    ".test_data_initialized", INSTALL_MARKER, "tmp",
+)
+
+
+class InstallAbort(Exception):
+    """Stops `install` with an exit code and the three-part error message."""
+
+    def __init__(self, rc, step, reason, next_cmd="", why="", quiet=False):
+        super().__init__(reason)
+        self.quiet = quiet
+        self.rc = rc
+        self.step = step
+        self.reason = reason
+        self.next_cmd = next_cmd
+        self.why = why
+
+
+def clamp_script_rc(rc):
+    """init/start/setup-host use 0/1/2; anything else (signals, set -e
+    aborts with other codes) is reported as an environment error."""
+    return rc if rc in (1, 2) else 2
+
+
+def resolve_install_owner(project_dir):
+    """(uid, gid, name) that generated files should belong to, or None.
+    Order: SUDO_USER (when not root), then the owner of project_dir (when
+    not root); None when both are root."""
+    sudo_user = os.environ.get("SUDO_USER", "")
+    if sudo_user:
+        try:
+            pw = pwd.getpwnam(sudo_user)
+            if pw.pw_uid != 0:
+                return (pw.pw_uid, pw.pw_gid, sudo_user)
+        except KeyError:
+            pass
+    try:
+        st = os.stat(project_dir)
+    except OSError:
+        return None
+    if st.st_uid != 0:
+        try:
+            name = pwd.getpwuid(st.st_uid).pw_name
+        except KeyError:
+            name = str(st.st_uid)
+        return (st.st_uid, st.st_gid, name)
+    return None
+
+
+def install_user_caroot(run=subprocess.run):
+    """mkcert CA directory of the sudo-invoking user, created by that user, or None.
+
+    Under sudo, init.sh and start.sh would otherwise create and use a CA in
+    root's home while setup-host.sh trusts the invoking user's CA directory
+    (as the unprivileged flow expects), so the certificates and the trusted
+    CA would not match. Passing this directory as CAROOT to init.sh and
+    start.sh keeps one CA. mkcert may not be installed yet (setup-host.sh
+    installs it); its Linux default directory is used then.
+    """
+    sudo_user = os.environ.get("SUDO_USER", "")
+    if os.geteuid() != 0 or not sudo_user:
+        return None
+    try:
+        pw = pwd.getpwnam(sudo_user)
+    except KeyError:
+        return None
+    if pw.pw_uid == 0:
+        return None
+    as_user = ["sudo", "-u", sudo_user, "-H"]
+    try:
+        caroot = os.path.join(pw.pw_dir, ".local", "share", "mkcert")
+        if shutil.which("mkcert"):
+            out = run(as_user + ["mkcert", "-CAROOT"], capture_output=True, text=True, timeout=30)
+            caroot = out.stdout.strip()
+            if out.returncode != 0 or not os.path.isabs(caroot):
+                return None
+        if run(as_user + ["mkdir", "-p", caroot], timeout=30).returncode != 0:
+            return None
+    except (OSError, subprocess.SubprocessError):
+        return None
+    return caroot
+
+
+def fix_caroot_ownership(caroot, owner, chown=None):
+    """Give CA files a root run of mkcert wrote back to their owner."""
+    if not caroot or owner is None or not os.path.isdir(caroot) or os.path.islink(caroot):
+        return
+    if chown is None:
+        if os.geteuid() != 0:
+            return
+        chown = lambda p, u, g: os.chown(p, u, g, follow_symlinks=False)
+    for name in os.listdir(caroot):
+        path = os.path.join(caroot, name)
+        if not os.path.islink(path):
+            try:
+                chown(path, owner[0], owner[1])
+            except OSError:
+                pass
+
+
+def fix_install_ownership(project_dir, owner=None, chown=None):
+    """Hand the files init/start/install generate to the invoking user, so a
+    `sudo ./voipbin ...` run does not leave root-owned files in the checkout.
+    Symlinks are never followed. Returns the number of paths changed."""
+    if chown is None:
+        if os.geteuid() != 0:
+            return 0
+        chown = lambda p, u, g: os.chown(p, u, g, follow_symlinks=False)
+    owner = owner or resolve_install_owner(project_dir)
+    if owner is None:
+        # stderr: callers' last stdout line is a VOIPBIN_* result line
+        print("  ! file ownership not changed: neither SUDO_USER nor the install directory owner is a regular user",
+              file=sys.stderr)
+        return 0
+    uid, gid = owner[0], owner[1]
+    changed = 0
+    real_root = os.path.realpath(project_dir)
+    for rel in INSTALL_OWNED_PATHS:
+        path = os.path.join(project_dir, rel)
+        if not os.path.lexists(path) or os.path.islink(path):
+            continue
+        # A symlinked parent (e.g. config -> elsewhere) would lead outside
+        # the checkout: skip unless the parent resolves to where it should.
+        if os.path.realpath(os.path.dirname(path)) != os.path.normpath(os.path.join(real_root, os.path.dirname(rel))):
+            continue
+        targets = [path]
+        if os.path.isdir(path):
+            for root, dirs, files in os.walk(path, followlinks=False):
+                targets += [os.path.join(root, n) for n in dirs + files]
+        for t in targets:
+            try:
+                chown(t, uid, gid)
+                changed += 1
+            except OSError:
+                pass
+    return changed
+
+
+def read_install_marker(path):
+    try:
+        with open(path) as f:
+            data = json.load(f)
+        return data if isinstance(data, dict) else {}
+    except (OSError, ValueError):
+        return {}
+
+
+def write_install_marker(path, admin_email):
+    with open(path, "w") as f:
+        json.dump({"admin_email": admin_email,
+                   "installed_at": datetime.now().astimezone().isoformat(timespec="seconds")}, f)
+        f.write("\n")
+
+
+def classify_install_containers(containers, baseline, tts_unconfigured):
+    """Step 5 verdict over a docker-inspect snapshot.
+
+    containers: dicts with name, status, restarting, health, last_probe,
+    restart_count. baseline: name -> RestartCount at the start of step 5.
+    tts_unconfigured(name) -> True when tts-manager is restarting only
+    because TTS credentials are not configured.
+    Returns {"fail": [(name, why)], "known": [...], "optional": [...],
+    "starting": [...]}.
+    """
+    verdict = {"fail": [], "known": [], "optional": [], "starting": []}
+    for c in containers:
+        name = c["name"]
+        restarted = c["restarting"] or c["restart_count"] > baseline.get(name, c["restart_count"])
+        if restarted:
+            if tts_unconfigured(name):
+                verdict["optional"].append(name)
+            else:
+                verdict["fail"].append((name, "restarting"))
+            continue
+        if c["status"] != "running":
+            verdict["fail"].append((name, c["status"] or "not running"))
+            continue
+        if c["health"] == "starting":
+            verdict["starting"].append(name)
+        elif c["health"] == "unhealthy":
+            if INSTALL_HEALTHCHECK_BINARY_MISSING in c["last_probe"]:
+                verdict["known"].append(name)
+            else:
+                verdict["fail"].append((name, "unhealthy"))
+    return verdict
 
 
 # =============================================================================
@@ -1932,6 +2165,10 @@ class VoIPBinCLI:
         # main() propagates it (the 0/1 exit code is part of the machine
         # contract for agents scripting `sudo ./voipbin doctor`, design §7).
         self.last_doctor_rc = 0
+        # Exit code of the last init/start/clean/install run, propagated by
+        # the non-interactive dispatch in _main() (0 ok, 1 user/validation
+        # error, 2 environment error; init/start pass their script's code).
+        self.last_rc = 0
 
         # Disable colors if configured
         if not self.config.get("colors", True):
@@ -1981,6 +2218,7 @@ class VoIPBinCLI:
             "dns": self.cmd_dns,
             "certs": self.cmd_certs,
             "network": self.cmd_network,
+            "install": self.cmd_install,
             "init": self.cmd_init,
             "clean": self.cmd_clean,
             "update": self.cmd_update,
@@ -1998,7 +2236,7 @@ class VoIPBinCLI:
             "status": ("Show service status", "status"),
             "ps": ("Alias for status", "ps"),
             "doctor": ("Diagnose install and runtime state (read-only)", "doctor\n  Runs scripts/doctor.sh at any stage (pre-install, pre-start, running).\n  Prints one 'DOCTOR <name>: pass|fail|warn|skip' line per check and a\n  'FIX <name>: <command>' prescription for every failure.\n  Exit code 0 only when no check failed."),
-            "start": ("Start services", "start [service] [--no-pin]\n  start              Start all services (pins versions on first run)\n  start --no-pin     Start without version pinning\n  start api-manager  Start specific service"),
+            "start": ("Start services", "start [service] [--no-pin]\n  start              Start all services (installs with versions.lock are already pinned)\n  start --no-pin     Start without creating an image override\n  start api-manager  Start specific service"),
             "stop": ("Stop services", "stop [service] [--all]\n  stop            Stop app services (keeps db/redis/mq/dns running)\n  stop kamailio   Stop specific service\n  stop --all      Stop all services including infrastructure"),
             "restart": ("Restart services (Asterisk owner+proxy sidecars always paired)", "restart [service]"),
             "logs": ("View service logs", "logs [-f] <service>\n  logs api-manager     Last 50 lines\n  logs -f api-manager  Follow logs (Ctrl+C to stop)"),
@@ -2032,9 +2270,10 @@ class VoIPBinCLI:
             "dns": ("DNS setup for SIP domains", "dns [status|list|setup|regenerate|test]\n  dns status       Check DNS configuration\n  dns list         List all DNS domains and their purposes\n  dns setup        Setup DNS forwarding to CoreDNS (requires sudo)\n  dns regenerate   Regenerate Corefile and restart CoreDNS (requires sudo)\n  dns test         Test domain resolution"),
             "certs": ("Manage SSL certificates", "certs [status|trust]\n  certs status   Check certificate configuration\n  certs trust    Install mkcert CA for browser-trusted certificates"),
             "network": ("Manage VoIP network interfaces", "network [status|setup|teardown]\n  network status                       Show current network configuration\n  network setup                        Setup VoIP network interfaces\n  network setup --external-ip X.X.X.X  Setup with fixed external IP\n  network teardown                     Remove VoIP network interfaces"),
-            "init": ("Initialize sandbox", "init\n  Runs initialization script to generate .env and certificates"),
-            "clean": ("Cleanup sandbox", "clean [options]\n  clean --containers  Remove app containers (keeps db/redis/mq/dns)\n  clean --volumes     Remove docker volumes (database, recordings, redis, rabbitmq)\n  clean --images      Remove docker images\n  clean --network     Teardown VoIP network interfaces\n  clean --dns         Remove DNS configuration\n  clean --purge       Remove generated files (.env, certs, configs)\n  clean --all         All of the above (full reset)"),
-            "update": ("Update sandbox", "update [subcommand] [--check] [--skip-backup]\n  update               Pull latest Docker images + restart services\n                       (pinned repo: pulls pinned digests only; real upgrades = 'update all')\n  update --check       Dry-run: show available image updates\n  update scripts       Update scripts/configs from GitHub (with backup)\n  update scripts --check  Dry-run: show what would change\n  update all           Full upgrade. Pinned repo: backup -> git pull -> compose pull\n                       -> migrate -> up -d -> verify (safe-ordered)\n  update all --skip-backup  Skip the automatic pre-upgrade backup (pinned repo)\n  update all --check   Dry-run: describe the upgrade plan, change nothing"),
+            "install": ("Guided install (checks, configuration, host setup, start, admin account)", "install [--yes] [--admin-email <email>] [--admin-password-file <path>]\n          [--mode internal|external --domain <d> --tls byo --cert <f> --key <f>]\n          [--web-reverse-proxy] [--resume] [--reset-admin-password]\n  install                     Interactive: asks before changing the host and for the admin email\n  install --yes --admin-email <e> --admin-password-file <path>\n                              Non-interactive; the generated admin password is written to <path> (0600,\n                              must not exist; a relative path is relative to this directory)\n  install --resume            Continue an install that stopped after the configuration step\n  --reset-admin-password      Set a new password when the admin account already exists\n  Last line: VOIPBIN_INSTALL: status=ok|error ...  Exit code 0 ok, 1 user/verification error, 2 environment error"),
+            "init": ("Generate configuration only (.env, certificates)", "init [init.sh options]\n  Runs scripts/init.sh with the given options (for example --yes, --mode external ...)\n  'install' runs this for you."),
+            "clean": ("Remove containers, data or generated files", "clean [options] [--force]\n  clean --containers  Remove app containers (keeps db/redis/mq/dns)\n  clean --volumes     Remove docker volumes (database, recordings, redis, rabbitmq)\n  clean --images      Remove docker images\n  clean --network     Teardown VoIP network interfaces\n  clean --dns         Remove DNS configuration\n  clean --purge       Remove generated files (.env, certs, configs, docker-compose.yml, versions.lock)\n  clean --all         All of the above (full reset)\n  --volumes/--images/--purge/--all list what will be removed and ask for 'yes';\n  --force skips the question (required when not run from a terminal)"),
+            "update": ("Update the install", "update [subcommand] [--check] [--skip-backup]\n  update               Pull latest Docker images + restart services\n                       (pinned repo: pulls pinned digests only; real upgrades = 'update all')\n  update --check       Dry-run: show available image updates\n  update scripts       Update scripts/configs from GitHub (with backup)\n  update scripts --check  Dry-run: show what would change\n  update all           Full upgrade. Pinned repo: backup -> git pull -> compose pull\n                       -> migrate -> up -d -> verify (safe-ordered)\n  update all --skip-backup  Skip the automatic pre-upgrade backup (pinned repo)\n  update all --check   Dry-run: describe the upgrade plan, change nothing"),
             "backup": ("Create a full data backup", "backup\n  Dumps MySQL (all databases), archives recording volumes, and copies\n  .env/certs/versions.lock into backups/<timestamp>/ (chmod 700/600).\n  Runs while services are up (mysqldump --single-transaction).\n  Retention: last 7 backups are kept.\n  NOTE: backups contain your full .env secrets in plaintext - copy them\n  off-host (rsync/rclone) for real disaster recovery."),
             "restore": ("Restore data from a backup (DESTRUCTIVE)", "restore <timestamp> --force\n  restore              List available backups\n  restore <ts> --force Restore MySQL dump + recordings + config from backups/<ts>/\n  DESTRUCTIVE: overwrites current DATA. Requires --force AND all services\n  stopped except db and redis. Flushes Redis after import.\n  (restore = DATA from backups/. rollback = image override history, unpinned repos only.)"),
             "rollback": ("Rollback to previous version", "rollback [N]\n  rollback             Interactive version selection\n  rollback N           Restore version by number (e.g., rollback 2)\n  rollback --list      Show available versions\n  NOTE: rollback replays docker-compose.override.yml IMAGE snapshots and only\n  applies to UNPINNED repos (refused when versions.lock exists).\n  For DATA restore use 'restore <ts>' instead."),
@@ -2098,9 +2337,12 @@ class VoIPBinCLI:
     # -------------------------------------------------------------------------
 
     def cmd_help(self, args):
-        """Show help"""
+        """Show help (also used for `--help`, see show_cli_usage)"""
         if args:
             cmd = args[0].lower()
+            if cmd == "api":
+                print(render_api_help())
+                return
             if cmd in self.help_text:
                 desc, usage = self.help_text[cmd]
                 print(f"\n{bold(cmd)} - {desc}\n")
@@ -2108,69 +2350,7 @@ class VoIPBinCLI:
             else:
                 print(f"Unknown command: {cmd}")
             return
-
-        print(f"""
-{bold('VoIPBin Install CLI')}
-
-{blue('Service Commands:')}
-  status, ps        Show service status
-  doctor            Diagnose install and runtime state (read-only)
-  start [service]   Start services
-  stop [--all]      Stop app services (--all for everything)
-  restart [service] Restart services
-  logs <service>    View logs (-f to follow)
-
-{blue('Setup & Cleanup:')}
-  init              Initialize sandbox (.env, certs)
-  update [options]  Update (scripts, all, --check) - 'update all' = full pinned upgrade
-  backup            Full data backup (MySQL + recordings + config) to backups/<ts>/
-  restore <ts>      Restore DATA from a backup (DESTRUCTIVE, requires --force + stopped services)
-  rollback          Rollback image override history (UNPINNED repos only, --list)
-  clean [options]   Cleanup (--containers, --volumes, --images, --network, --dns, --purge, --all)
-
-{blue('Contexts:')}
-  ast [cmd]         Asterisk CLI
-  kam [cmd]         Kamailio kamcmd
-  db [query]        MySQL queries
-  api               REST API client
-
-{blue('Data Management:')}
-  extension         Extension management
-  agent             Agent management
-  billing           Billing and account management
-  call              Call management
-  campaign          Campaign management
-  chat              Chat room management
-  conference        Conference management
-  conversation      Conversation and messaging
-  customer          Customer management
-  flow              Flow management
-  number            Phone number management
-  outdial           Outdial management
-  queue             Queue management
-  registrar         Extension and trunk management
-  route             Route management
-  storage           Storage and file management
-  tag               Tag management
-  talk              Talk chat management
-  transfer          Transfer management
-  tts               Text-to-speech
-  webhook           Webhook operations
-  hook              Test webhook operations
-
-{blue('Infrastructure:')}
-  dns               DNS setup for SIP domains
-  certs             Manage SSL certificates
-  network           Manage VoIP network interfaces
-
-{blue('Other:')}
-  config            View/set configuration
-  clear             Clear screen
-  help [command]    Show help
-  exit, quit        Exit CLI
-
-Type 'help <command>' for detailed usage.
-""")
+        print(render_help())
 
     # -------------------------------------------------------------------------
     # Mode awareness (dual-mode DNS, VOIP-1275 design §2.10). URLs and mode
@@ -2231,8 +2411,9 @@ Type 'help <command>' for detailed usage.
             }
         endpoint_services = {
             **web_endpoints,
-            "mq": ("RabbitMQ", "http://localhost:15672", f"{os.environ.get('RABBITMQ_DEFAULT_USER', 'guest')} / {os.environ.get('RABBITMQ_DEFAULT_PASS', 'guest')}"),
-            "db": ("MySQL", "localhost:3306", f"root / {os.environ.get('MYSQL_ROOT_PASSWORD', 'root_password')}"),
+            # Credentials are never printed here: they live in .env.
+            "mq": ("RabbitMQ", "http://localhost:15672", "credentials: see .env"),
+            "db": ("MySQL", "localhost:3306", "credentials: see .env"),
         }
 
         # SIP/VoIP endpoints (shown separately)
@@ -2330,89 +2511,23 @@ Type 'help <command>' for detailed usage.
             result = run_cmd(f"grep '^{var_name}=' .env 2>/dev/null | cut -d'=' -f2 | head -1")
             return result.strip() if result else ""
 
-        # Check GCP credentials
+        # Optional provider keys: whether each one is set, nothing more
+        # (none of them is needed for the stack to start).
+        print(f"  {gray('Optional provider keys (.env; restart the affected services after editing):')}")
         gcp_creds_path = get_env_var("GOOGLE_APPLICATION_CREDENTIALS")
-        if gcp_creds_path:
-            # Check if it's the dummy file
-            is_dummy = False
-            if "dummy" in gcp_creds_path.lower():
-                is_dummy = True
-            elif os.path.exists(gcp_creds_path):
-                # Check file contents for dummy marker
-                try:
-                    with open(gcp_creds_path, 'r') as f:
-                        content = f.read()
-                        if "dummy-project" in content:
-                            is_dummy = True
-                except:
-                    pass
-
-            if is_dummy:
-                print(f"  {yellow('!')} GCP Credentials:    {yellow('dummy')} {gray('(TTS/storage disabled)')}")
-            else:
-                print(f"  {green('●')} GCP Credentials:    {green('configured')}")
+        if not gcp_creds_path:
+            gcp_state = "empty"
+        elif "dummy" in gcp_creds_path.lower():
+            gcp_state = "placeholder"
         else:
-            print(f"  {gray('○')} GCP Credentials:    {gray('not set')}")
-
-        # AI Services
-        openai_key = get_env_var("OPENAI_API_KEY")
-        if openai_key:
-            print(f"  {green('●')} OpenAI:             {green('configured')}")
-        else:
-            print(f"  {gray('○')} OpenAI:             {gray('not set')}")
-
-        # Check other AI services (group them)
-        ai_services = []
-        if get_env_var("DEEPGRAM_API_KEY"):
-            ai_services.append("Deepgram")
-        if get_env_var("CARTESIA_API_KEY"):
-            ai_services.append("Cartesia")
-        if get_env_var("ELEVENLABS_API_KEY"):
-            ai_services.append("ElevenLabs")
-
-        if ai_services:
-            print(f"  {green('●')} AI Services:        {green(', '.join(ai_services))}")
-
-        # Telephony Providers
-        print(f"\n  {bold('Telephony')}")
-
-        twilio_sid = get_env_var("TWILIO_SID")
-        twilio_key = get_env_var("TWILIO_API_KEY")
-        if twilio_sid and twilio_key:
-            print(f"  {green('●')} Twilio:             {green('configured')}")
-        else:
-            print(f"  {gray('○')} Twilio:             {gray('not set')}")
-
-        telnyx_key = get_env_var("TELNYX_API_KEY")
-        if telnyx_key:
-            print(f"  {green('●')} Telnyx:             {green('configured')}")
-        else:
-            print(f"  {gray('○')} Telnyx:             {gray('not set')}")
-
-        # Email Providers
-        print(f"\n  {bold('Email')}")
-
-        sendgrid_key = get_env_var("SENDGRID_API_KEY")
-        if sendgrid_key:
-            print(f"  {green('●')} SendGrid:           {green('configured')}")
-        else:
-            print(f"  {gray('○')} SendGrid:           {gray('not set')}")
-
-        mailgun_key = get_env_var("MAILGUN_API_KEY")
-        if mailgun_key:
-            print(f"  {green('●')} Mailgun:            {green('configured')}")
-        else:
-            print(f"  {gray('○')} Mailgun:            {gray('not set')}")
-
-        # AWS (transcription)
-        print(f"\n  {bold('Cloud Services')}")
-
-        aws_access = get_env_var("AWS_ACCESS_KEY")
-        aws_secret = get_env_var("AWS_SECRET_KEY")
-        if aws_access and aws_secret:
-            print(f"  {green('●')} AWS:                {green('configured')} {gray('(transcription)')}")
-        else:
-            print(f"  {gray('○')} AWS:                {gray('not set')}")
+            gcp_state = "set"
+        rows = [("GOOGLE_APPLICATION_CREDENTIALS", gcp_state)]
+        for keys in OPTIONAL_PROVIDER_KEYS:
+            rows.append((" + ".join(keys), "set" if all(get_env_var(k) for k in keys) else "empty"))
+        for label, state in rows:
+            icon = green('●') if state == "set" else gray('○')
+            shown = green(state) if state == "set" else gray(state)
+            print(f"  {icon} {label:<36} {shown}")
 
         # DNS Configuration
         print(f"\n{bold('DNS Domains')} (*.{base_domain} → {host_ip})")
@@ -2563,21 +2678,31 @@ Type 'help <command>' for detailed usage.
 
         service = args[0] if args else ""
 
+        self.last_rc = 0
         if service:
             # Start specific service
             print(f"Starting {service}...")
-            result = run_cmd(f"docker compose up -d {service} 2>&1")
-            if result:
-                print(result)
-            print(green("✓ Done"))
+            proc = subprocess.run(["docker", "compose", "up", "-d", service],
+                                  stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
+            if proc.stdout:
+                print(proc.stdout.rstrip())
+            if proc.returncode == 0:
+                print(green("✓ Done"))
+            else:
+                print(red(f"✗ docker compose up -d {service} failed (exit {proc.returncode})"))
+                self.last_rc = 1
             self._check_ticker_replica_guard()
         else:
             # Full startup
             script_dir = self.config.get("project_dir", ".")
 
-            # Ensure version pinning on first start
+            # Image version pins for unpinned checkouts only. A versions.lock
+            # install already runs digest-pinned images (docker-compose.yml
+            # references @sha256 digests), so resolving tags here would only
+            # make external calls and could shadow those digests.
             override_file = os.path.join(script_dir, "docker-compose.override.yml")
-            if not os.path.exists(override_file) and not no_pin:
+            pinned = os.path.exists(os.path.join(script_dir, "versions.lock"))
+            if not os.path.exists(override_file) and not no_pin and not pinned:
                 print(f"\n{blue('==>')} First start detected - pinning image versions...")
                 try:
                     self._create_initial_version_pins(script_dir)
@@ -2592,7 +2717,10 @@ Type 'help <command>' for detailed usage.
 
             if os.path.exists(script_path):
                 print("Running full startup (network, DNS, services)...")
-                os.system(script_path)
+                # subprocess.call returns the real exit code (os.system's
+                # wait status was discarded before); _main() propagates it.
+                self.last_rc = subprocess.call(["bash", script_path], cwd=script_dir)
+                fix_install_ownership(script_dir)
             else:
                 # Fallback to docker compose
                 print("Starting all services...")
@@ -4358,7 +4486,7 @@ Type 'registrar <subcommand> help' for more details.
 
         print(f"\n{bold('DNS is operator-managed in external mode')}")
         print("-" * 70)
-        print("The sandbox does not run CoreDNS or touch resolv.conf in external")
+        print("This install does not run CoreDNS or touch resolv.conf in external")
         print("mode. Create these records at your DNS provider:")
         print()
         print(f"  {'Record':<28} {'Type':<6} {'Target':<18} Purpose")
@@ -4951,18 +5079,587 @@ Type 'registrar <subcommand> help' for more details.
         print(f"\n{bold('Tearing down VoIP network interfaces...')}\n")
         os.system(script_path)
 
+    # -------------------------------------------------------------------------
+    # Guided install (`sudo ./voipbin install`)
+    #
+    # Orchestrates the existing scripts (doctor.sh, init.sh, setup-host.sh,
+    # start.sh, create-admin.sh) in six steps and ends every path with one
+    # machine-parseable line:
+    #   VOIPBIN_INSTALL: status=ok state=installed|already-installed ...
+    #   VOIPBIN_INSTALL: status=error step=<n> reason="..." next="..."
+    # Exit codes: 0 ok; 1 user/validation error or failed verification;
+    # 2 environment error; init/start/setup-host failures propagate their own
+    # code (anything other than 1/2 maps to 2); 130 interrupted.
+    # -------------------------------------------------------------------------
+
+    def _install_parse_args(self, args):
+        opts = {
+            "yes": False, "resume": False, "admin_email": "", "admin_name": "Admin",
+            "password_file": "", "reset": False, "init_args": [],
+        }
+        i = 0
+        while i < len(args):
+            a = args[i]
+            if a in ("--yes", "-y"):
+                opts["yes"] = True
+            elif a == "--resume":
+                opts["resume"] = True
+            elif a == "--reset-admin-password":
+                opts["reset"] = True
+            elif a in INSTALL_INIT_BOOL_FLAGS:
+                opts["init_args"].append(a)
+            elif a in ("--admin-email", "--admin-name", "--admin-password-file") or a in INSTALL_INIT_VALUE_FLAGS:
+                if i + 1 >= len(args) or args[i + 1].startswith("--"):
+                    raise InstallAbort(1, 0, f"{a} requires a value", "sudo ./voipbin help install")
+                value = args[i + 1]
+                i += 1
+                if a == "--admin-email":
+                    opts["admin_email"] = value
+                elif a == "--admin-name":
+                    opts["admin_name"] = value
+                elif a == "--admin-password-file":
+                    opts["password_file"] = value
+                else:
+                    opts["init_args"] += [a, value]
+            else:
+                raise InstallAbort(1, 0, f"unknown argument: {a}", "sudo ./voipbin help install")
+            i += 1
+        if opts["resume"] and opts["init_args"]:
+            raise InstallAbort(1, 0, "--resume does not accept --mode/--domain/--tls/--cert/--key (the existing .env is kept)",
+                               "sudo ./voipbin install --resume")
+        return opts
+
+    def _install_result_line(self, rc, state=None, step=None, reason="", next_cmd="", admin="", url=""):
+        if rc == 0:
+            line = f"VOIPBIN_INSTALL: status=ok state={state}"
+            if admin:
+                line += f" admin={admin}"
+            if url:
+                line += f" url={url}"
+        else:
+            reason = reason.replace('"', "'")
+            line = f'VOIPBIN_INSTALL: status=error step={step} reason="{reason}"'
+            if next_cmd:
+                line += f' next="{next_cmd.replace(chr(34), chr(39))}"'
+        print(line)
+
+    def _install_child_env(self, extra=None):
+        env = dict(os.environ)
+        if env.get("NO_COLOR"):
+            # COMPOSE_PROGRESS only matters on Compose >= 2.36; COMPOSE_ANSI
+            # alone already keeps escape codes out of compose output.
+            env["COMPOSE_ANSI"] = "never"
+            env["COMPOSE_PROGRESS"] = "plain"
+        if extra:
+            env.update(extra)
+        return env
+
+    def _install_step(self, n, title):
+        print(f"\n{bold(f'[{n}/{INSTALL_STEPS}]')} {title}")
+
+    def _install_ask(self, interactive, prompt, default_yes=True):
+        if not interactive:
+            return True
+        suffix = "[Y/n]" if default_yes else "[y/N]"
+        try:
+            answer = input(f"  {prompt} {suffix} ").strip().lower()
+        except EOFError:
+            return False
+        if not answer:
+            return default_yes
+        return answer in ("y", "yes")
+
+    def _install_db_volume_exists(self, project_dir):
+        try:
+            name = f"{self._compose_project_name(project_dir)}_db_data"
+        except ValueError:
+            return False, ""
+        out = subprocess.run(["docker", "volume", "ls", "-q"], capture_output=True, text=True)
+        return name in out.stdout.split(), name
+
+    def _install_preflight(self, project_dir, resume):
+        """Step 1: doctor.sh's prerequisite checks plus memory and network
+        reachability. Returns the list of warning lines; raises on a block."""
+        warnings = []
+        doctor = os.path.join(project_dir, "scripts", "doctor.sh")
+        fails = []
+        if os.path.exists(doctor):
+            out = subprocess.run(["bash", doctor], cwd=project_dir, capture_output=True, text=True,
+                                 env=self._install_child_env()).stdout
+            fixes = {}
+            results = []
+            for line in out.splitlines():
+                m = re.match(r"^DOCTOR ([a-z0-9-]+): (pass|fail|warn|skip) ?(.*)$", line)
+                if m:
+                    results.append(m.groups())
+                    continue
+                m = re.match(r"^FIX ([a-z0-9-]+): (.*)$", line)
+                if m:
+                    fixes[m.group(1)] = m.group(2)
+            soft = ("ports", "tools") if resume else ()
+            for name, result, detail in results:
+                if name not in INSTALL_PREFLIGHT_BLOCKING:
+                    continue
+                if result == "fail" and name not in soft:
+                    fails.append((name, detail, fixes.get(name, "")))
+                elif result in ("fail", "warn"):
+                    warnings.append(f"{name}: {detail}")
+        else:
+            warnings.append("scripts/doctor.sh not found, prerequisite checks skipped")
+        if fails:
+            for name, detail, fix in fails:
+                print(f"  {red('x')} {name}: {detail}")
+                if fix:
+                    print(f"    FIX {name}: {fix}")
+            first = fails[0]
+            raise InstallAbort(2, 1, f"host check failed: {first[0]}: {first[1]}",
+                               first[2] or "sudo ./voipbin doctor",
+                               why="a prerequisite for running the stack is missing")
+        if not resume:
+            left = [n for n in INSTALL_VOIP_INTERFACES if os.path.exists(f"/sys/class/net/{n}")]
+            if left:
+                # Left by a removed install: next to a new compose network they
+                # cut container traffic (DNS lookups and downloads time out).
+                print(f"  {red('x')} VoIP network interfaces from a previous install: {', '.join(left)}")
+                raise InstallAbort(2, 1, "VoIP network interfaces from a previous install are still present",
+                                   "sudo ./voipbin clean --network --force, then run install again",
+                                   why="a new install next to them loses container network access")
+        try:
+            with open("/proc/meminfo") as f:
+                for line in f:
+                    if line.startswith("MemTotal:"):
+                        kib = int(line.split()[1])
+                        if kib < INSTALL_MIN_MEMORY_KIB:
+                            warnings.append(f"memory: {kib // 1024} MiB total, at least 4 GiB is recommended")
+                        break
+        except (OSError, ValueError, IndexError):
+            pass
+        for label, url in INSTALL_REACHABILITY_URLS:
+            try:
+                urllib.request.urlopen(urllib.request.Request(url, method="GET"), timeout=5).close()
+            except urllib.error.HTTPError:
+                pass  # an HTTP answer means the host is reachable
+            except Exception:
+                warnings.append(f"network: {label} ({url}) not reachable; image pulls or downloads may fail")
+        return warnings
+
+    def _install_check_init_outputs(self, project_dir, resume_cmd="sudo ./voipbin install --resume"):
+        """--resume: init is not re-run, so its outputs must already exist."""
+        missing = [p for p in ("docker-compose.yml", "versions.lock",
+                               os.path.join("certs", "api", "cert.pem"),
+                               os.path.join("certs", "api", "privkey.pem"))
+                   if not os.path.exists(os.path.join(project_dir, p))]
+        if not missing:
+            return
+        hint = []
+        if "docker-compose.yml" in missing:
+            hint.append("cp docker-compose.yml.dist docker-compose.yml")
+        if "versions.lock" in missing:
+            hint.append("cp versions.lock.dist versions.lock")
+        if any(m.startswith("certs") for m in missing):
+            if self._domain_mode() == "external":
+                hint.append("./scripts/install-certs.sh <fullchain.pem> <privkey.pem>")
+            else:
+                # not init.sh --force-reinit: it would generate new database
+                # passwords that no longer match an existing volume
+                hint.append("restore certs/ from backups/<timestamp>/ (or start over: sudo ./voipbin clean --all --force)")
+        raise InstallAbort(1, 2, f"files from a previous init are missing: {', '.join(missing)}",
+                           "; ".join(hint) + "; then " + resume_cmd,
+                           why="--resume does not re-run init")
+
+    def _install_host_notice(self):
+        print("  This step changes the host:")
+        if self._domain_mode() == "external":
+            print("    - creates the VoIP network interfaces (macvlan/veth) and the compose network")
+            print("  DNS and certificates stay operator-managed in external mode.")
+        else:
+            print(f"    - points /etc/resolv.conf at the bundled CoreDNS (backup: /etc/resolv.conf.voipbin-backup)")
+            print("      and restarts systemd-resolved / NetworkManager where present")
+            print("    - creates the VoIP network interfaces (veth pairs) and the compose network")
+            print("    - installs mkcert and trusts its local CA when available")
+        print("  To undo later: sudo ./voipbin clean --dns, sudo ./voipbin clean --network,")
+        print("                 sudo ./scripts/setup-dns.sh --uninstall")
+        print("  The VoIP interfaces do not survive a reboot; 'sudo ./voipbin start' recreates them.")
+
+    def _install_inspect_containers(self, project_dir):
+        ids = subprocess.run(["docker", "compose", "ps", "-a", "-q"], cwd=project_dir,
+                             capture_output=True, text=True).stdout.split()
+        if not ids:
+            return []
+        out = subprocess.run(["docker", "inspect"] + ids, capture_output=True, text=True).stdout
+        try:
+            data = json.loads(out or "[]")
+        except json.JSONDecodeError:
+            return []
+        result = []
+        for c in data:
+            state = c.get("State") or {}
+            health = state.get("Health") or {}
+            log = health.get("Log") or []
+            result.append({
+                "name": (c.get("Name") or "").lstrip("/"),
+                "status": state.get("Status", ""),
+                "restarting": bool(state.get("Restarting")),
+                "health": health.get("Status", ""),
+                "last_probe": (log[-1].get("Output") or "") if log else "",
+                "restart_count": int(c.get("RestartCount") or 0),
+            })
+        return result
+
+    def _install_tts_unconfigured(self, name):
+        if name != INSTALL_TTS_CONTAINER:
+            return False
+        out = subprocess.run(["docker", "logs", "--tail", "200", name], capture_output=True, text=True)
+        return INSTALL_TTS_CREDENTIALS_MISSING_LOG in (out.stdout + out.stderr)
+
+    def _install_wait_and_verify(self, project_dir, clock=time.monotonic, sleep=time.sleep,
+                                 ping=None, min_observe=30, limit=180, interval=5):
+        """Step 5. Polls until no container is still starting (at least
+        min_observe seconds, at most limit), then classifies. Returns
+        (ok, summary, optional_names, failures)."""
+        start = clock()
+        baseline = {c["name"]: c["restart_count"] for c in self._install_inspect_containers(project_dir)}
+        while True:
+            snapshot = self._install_inspect_containers(project_dir)
+            verdict = classify_install_containers(snapshot, baseline, self._install_tts_unconfigured)
+            elapsed = clock() - start
+            if (elapsed >= min_observe and not verdict["starting"]) or elapsed >= limit:
+                break
+            sleep(interval)
+        failures = list(verdict["fail"])
+        failures += [(n, f"still starting after {limit}s") for n in verdict["starting"]]
+        if not snapshot:
+            failures.append(("compose", "no containers found (docker compose ps -a)"))
+        ping = ping or self._install_ping
+        if not ping():
+            failures.append(("api-manager", "https://localhost:8443/ping did not answer 200"))
+        known = len(verdict["known"])
+        summary = f"{len(snapshot)} containers"
+        if known:
+            summary += f", {known} have no healthcheck binary (known, not a fault)"
+        return (not failures), summary, verdict["optional"], failures
+
+    def _install_ping(self, attempts=6, delay=5):
+        import ssl
+        ctx = ssl.create_default_context()
+        ctx.check_hostname = False
+        ctx.verify_mode = ssl.CERT_NONE
+        for i in range(attempts):
+            try:
+                with urllib.request.urlopen("https://localhost:8443/ping", timeout=5, context=ctx) as r:
+                    if r.status == 200:
+                        return True
+            except Exception:
+                pass
+            if i + 1 < attempts:
+                time.sleep(delay)
+        return False
+
+    def _install_admin_console_url(self):
+        base = self._base_domain()
+        if self._web_reverse_proxy():
+            return f"https://admin.{base}"
+        return f"http://admin.{base}:3003"
+
+    def _install_open_password_file(self, path):
+        if os.path.lexists(path):
+            raise InstallAbort(1, 0, f"--admin-password-file {path} already exists (choose a new path)",
+                               "sudo ./voipbin install ... --admin-password-file <new path>")
+        try:
+            fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)
+        except OSError as e:
+            raise InstallAbort(1, 0, f"cannot create --admin-password-file {path}: {e.strerror}",
+                               "pass a path in an existing, writable directory")
+        owner = resolve_install_owner(os.path.dirname(os.path.abspath(path)))
+        if owner and os.geteuid() == 0:
+            try:
+                os.fchown(fd, owner[0], owner[1])
+            except OSError:
+                pass
+        return fd
+
+    def _install_create_admin(self, project_dir, email, name, password, reset):
+        script = os.path.join(project_dir, "scripts", "create-admin.sh")
+        cmd = ["bash", script, "--email", email, "--name", name, "--wait", "60"]
+        if reset:
+            cmd.append("--reset")
+        proc = subprocess.run(cmd, cwd=project_dir, stdout=subprocess.PIPE, text=True,
+                              env=self._install_child_env({"VOIPBIN_ADMIN_PASSWORD": password}))
+        lines = [l for l in proc.stdout.splitlines() if l.strip()]
+        return proc.returncode, (lines[-1] if lines else "")
+
+    def cmd_install(self, args):
+        """Guided install: preflight, init, host setup, start, verify, admin."""
+        self.last_rc = 0
+        project_dir = self._project_dir()
+        marker = os.path.join(project_dir, INSTALL_MARKER)
+        env_path = os.path.join(project_dir, ".env")
+        pw_fd = None
+        pw_path = ""
+        pw_done = False
+        touched = False
+        step = 0
+        resume_cmd = "sudo ./voipbin install --resume"
+        try:
+            print()
+            print(bold("  VoIPBin Installer"))
+            print("  " + "─" * 42)
+            opts = self._install_parse_args(args)
+            interactive = (not opts["yes"]) and sys.stdin.isatty() and sys.stdout.isatty()
+
+            # Entry guards (nothing is changed before these pass)
+            if os.path.exists(env_path):
+                if opts["resume"]:
+                    if os.path.exists(marker):
+                        raise InstallAbort(1, 0, "this install already completed; nothing to resume",
+                                           "sudo ./voipbin status (or sudo ./voipbin doctor)")
+                else:
+                    print("  An existing configuration (.env) was found; nothing was changed.")
+                    print("  Check it with: sudo ./voipbin status  /  sudo ./voipbin doctor")
+                    if os.path.exists(marker):
+                        self._install_result_line(0, state="already-installed",
+                                                  admin=read_install_marker(marker).get("admin_email", ""),
+                                                  url=self._install_admin_console_url())
+                        return
+                    print("  If a previous 'install' did not finish, continue it with:")
+                    print("    sudo ./voipbin install --resume")
+                    print("  If this server is already running (installed with init/start), do not")
+                    print("  use --resume; use status and doctor instead.")
+                    raise InstallAbort(1, 0, "existing .env without a completed install",
+                                       "sudo ./voipbin install --resume (only if a previous install did not finish) or sudo ./voipbin status")
+            if subprocess.run(["docker", "info"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL).returncode != 0:
+                raise InstallAbort(2, 0, "docker is not installed or the daemon is not reachable",
+                                   "install docker (https://docs.docker.com/engine/install/) or sudo systemctl start docker")
+            if not os.path.exists(env_path):
+                exists, volume = self._install_db_volume_exists(project_dir)
+                if exists:
+                    print(f"  A database volume ({volume}) exists but there is no .env.")
+                    print("  Its passwords and encryption keys live in the missing .env, so a new")
+                    print("  configuration would not match the data. Choose one:")
+                    print("    - restore the .env from a backup: cp backups/<timestamp>/.env .env")
+                    print("    - or delete the old data first: sudo ./voipbin clean --volumes --force")
+                    raise InstallAbort(1, 0, f"database volume {volume} exists without .env",
+                                       "restore .env from backups/<timestamp>/ or sudo ./voipbin clean --volumes --force")
+                if opts["resume"]:
+                    raise InstallAbort(1, 0, "nothing to resume (no .env)", "sudo ./voipbin install")
+
+            # Argument checks that need no host change
+            if not opts["yes"] and not interactive:
+                raise InstallAbort(1, 0, "non-interactive run needs --yes",
+                                   "sudo ./voipbin install" + (" --resume" if opts["resume"] else "") +
+                                   " --yes --admin-email <email> --admin-password-file <path>")
+            if opts["admin_email"] and not INSTALL_EMAIL_RE.match(opts["admin_email"]):
+                raise InstallAbort(1, 0, f"invalid --admin-email: {opts['admin_email']}", "pass a valid email address")
+            if not interactive and not opts["admin_email"]:
+                raise InstallAbort(1, 0, "--admin-email is required with --yes",
+                                   "sudo ./voipbin install" + (" --resume" if opts["resume"] else "") +
+                                   " --yes --admin-email <email> --admin-password-file <path>")
+            if opts["password_file"]:
+                pw_fd = self._install_open_password_file(opts["password_file"])
+                # Set only once this run created the file: the cleanup in
+                # `finally` must never remove a file that existed before.
+                pw_path = opts["password_file"]
+            if not os.path.exists(env_path) and os.path.exists(marker):
+                os.remove(marker)  # left over from a removed install
+            # What to run after a failure: same mode (interactive or --yes)
+            resume_cmd = "sudo ./voipbin install --resume"
+            if opts["yes"]:
+                resume_cmd += f" --yes --admin-email {opts['admin_email']}"
+                if opts["password_file"]:
+                    resume_cmd += " --admin-password-file <new path>"
+
+            if interactive and not opts["resume"]:
+                print("  No installation found in this directory.")
+                if not self._install_ask(True, "Install now?"):
+                    raise InstallAbort(1, 0, "cancelled by the user", "sudo ./voipbin install", quiet=True)
+                print(gray("  (Everything is automatic. AI provider keys are optional and can be added later.)"))
+
+            owner = resolve_install_owner(project_dir)
+            # external mode brings its own certificate: no local CA
+            external = "external" in opts["init_args"] or (opts["resume"] and self._domain_mode() == "external")
+            caroot = None if external else install_user_caroot()
+            caroot_env = {"CAROOT": caroot} if caroot else None
+
+            # [1/6] preflight
+            step = 1
+            self._install_step(1, "Checking this host")
+            for w in self._install_preflight(project_dir, opts["resume"]):
+                print(f"  {yellow('!')} {w}")
+            print(f"  {green('ok')}")
+
+            # [2/6] configuration
+            step = 2
+            self._install_step(2, "Generating configuration")
+            if opts["resume"]:
+                self._install_check_init_outputs(project_dir, resume_cmd)
+                print(f"  {green('ok')} (existing configuration kept)")
+            else:
+                touched = True
+                try:
+                    rc = subprocess.call(["bash", os.path.join(project_dir, "scripts", "init.sh"), "--yes"] + opts["init_args"],
+                                         cwd=project_dir, env=self._install_child_env(caroot_env))
+                finally:
+                    fix_caroot_ownership(caroot, owner)
+                if rc != 0:
+                    resume = os.path.exists(env_path)
+                    raise InstallAbort(clamp_script_rc(rc), 2, f"init.sh failed (exit {rc})",
+                                       "fix the error above, then " + resume_cmd if resume
+                                       else "fix the error above, then sudo ./voipbin install",
+                                       why="see the VOIPBIN_INIT line above")
+                if (read_env_file_var(project_dir, "HOST_EXTERNAL_IP") or "") in ("", "127.0.0.1"):
+                    print(f"  {yellow('!')} host IP could not be detected (HOST_EXTERNAL_IP=127.0.0.1); "
+                          "SIP clients on other machines will not reach this host")
+                print(f"  {green('ok')}")
+            touched = True
+
+            # [3/6] host
+            step = 3
+            self._install_step(3, "Preparing the host (DNS, network, certificates)")
+            self._install_host_notice()
+            if not self._install_ask(interactive, "Apply these host changes?"):
+                raise InstallAbort(1, 3, "host changes not approved", resume_cmd)
+            rc = subprocess.call(["bash", os.path.join(project_dir, "scripts", "setup-host.sh")],
+                                 cwd=project_dir, env=self._install_child_env())
+            if rc != 0:
+                raise InstallAbort(clamp_script_rc(rc), 3, f"setup-host.sh failed (exit {rc})",
+                                   "fix the error above, then " + resume_cmd,
+                                   why="see the VOIPBIN_SETUP_HOST line above")
+            print(f"  {green('ok')}")
+
+            # [4/6] start
+            step = 4
+            services = subprocess.run(["docker", "compose", "config", "--services"], cwd=project_dir,
+                                      capture_output=True, text=True).stdout.split()
+            self._install_step(4, f"Starting services ({len(services)} services, this can take several minutes)")
+            try:
+                rc = subprocess.call(["bash", os.path.join(project_dir, "scripts", "start.sh")],
+                                     cwd=project_dir, env=self._install_child_env(caroot_env))
+            finally:
+                fix_caroot_ownership(caroot, owner)
+            if rc != 0:
+                raise InstallAbort(clamp_script_rc(rc), 4, f"start.sh failed (exit {rc})",
+                                   "fix the error above, then " + resume_cmd,
+                                   why="see the VOIPBIN_START line above")
+            print(f"  {green('ok')}")
+
+            # [5/6] verify
+            step = 5
+            self._install_step(5, "Verifying the install (waits for health checks, up to 3 minutes)")
+            ok, summary, optional, failures = self._install_wait_and_verify(project_dir)
+            for name in optional:
+                print(f"  {yellow('!')} {name}: optional feature not configured "
+                      "(add TTS provider credentials to .env, then 'sudo ./voipbin restart tts-manager')")
+            if not ok:
+                for name, why in failures:
+                    print(f"  {red('x')} {name}: {why}")
+                raise InstallAbort(1, 5, f"{len(failures)} service problem(s): " + ", ".join(n for n, _ in failures),
+                                   "sudo ./voipbin doctor, fix, then " + resume_cmd,
+                                   why="a service is not running or not healthy")
+            print(f"  {green('ok')} ({summary})")
+
+            # [6/6] admin account
+            step = 6
+            self._install_step(6, "Creating the admin account")
+            email = opts["admin_email"]
+            while not email:
+                try:
+                    email = input("  email: ").strip()
+                except EOFError:
+                    raise InstallAbort(1, 6, "no admin email given", resume_cmd)
+                if email and not INSTALL_EMAIL_RE.match(email):
+                    print(f"  {red('x')} not a valid email address")
+                    email = ""
+            password = secrets.token_urlsafe(18)
+            if pw_fd is not None:
+                os.write(pw_fd, (password + "\n").encode())
+                os.fsync(pw_fd)
+            rc, line = self._install_create_admin(project_dir, email, opts["admin_name"], password, opts["reset"])
+            if rc == 3:
+                if interactive and self._install_ask(True, f"An account for {email} already exists. Set a new password for it?", default_yes=False):
+                    rc, line = self._install_create_admin(project_dir, email, opts["admin_name"], password, True)
+                else:
+                    raise InstallAbort(1, 6, f"an account for {email} already exists",
+                                       resume_cmd + " --reset-admin-password")
+            if rc != 0:
+                m = re.search(r'reason="([^"]*)"', line)
+                raise InstallAbort(1, 6, "admin account setup failed: " + (m.group(1) if m else (line or f"exit {rc}")),
+                                   resume_cmd + " (add --reset-admin-password if the account exists)",
+                                   why="see the [admin] lines above")
+            pw_done = True
+            if pw_fd is not None:
+                os.close(pw_fd)
+                pw_fd = None
+            write_install_marker(marker, email)
+
+            url = self._install_admin_console_url()
+            print()
+            print(f"  {bold('VoIPBin is running.')}")
+            print(f"  Admin console   {blue(url)}")
+            if pw_path:
+                print(f"  Sign in         {email} / password in {pw_path}")
+            else:
+                print(f"  Sign in         {email} / (shown once below)")
+            print(f"  Next steps      add AI provider keys (optional): edit .env, then 'sudo ./voipbin restart'")
+            print(f"                  check health anytime: sudo ./voipbin doctor")
+            print(f"                  undo host changes: sudo ./voipbin clean --dns / --network")
+            if optional:
+                print(f"  TTS             add provider credentials to .env to enable")
+            if not pw_path:
+                print()
+                if not interactive:
+                    print(yellow("  WARNING: the password below is printed once; it ends up in any log that captures this output."))
+                print(f"  Admin password  {password}")
+            print()
+            self._install_result_line(0, state="installed", admin=email, url=url)
+        except InstallAbort as e:
+            self.last_rc = e.rc
+            print()
+            if e.quiet:
+                print("  Nothing was changed. Type 'install' (or run 'sudo ./voipbin install') to start it later.")
+            else:
+                print(f"  {red('What failed:')} {e.reason}")
+                if e.why:
+                    print(f"  {red('Why:')}         {e.why}")
+                if e.next_cmd:
+                    print(f"  {red('Next:')}        {e.next_cmd}")
+            self._install_result_line(e.rc, step=e.step or step, reason=e.reason, next_cmd=e.next_cmd)
+        except KeyboardInterrupt:
+            self.last_rc = RC_INTERRUPTED
+            print()
+            self._install_result_line(RC_INTERRUPTED, step=step, reason="interrupted",
+                                      next_cmd=resume_cmd if os.path.exists(env_path) else "sudo ./voipbin install")
+        except Exception as e:
+            self.last_rc = RC_UNEXPECTED
+            traceback.print_exc(file=sys.stderr)
+            self._install_result_line(RC_UNEXPECTED, step=step, reason=f"unexpected error: {type(e).__name__}: {e}",
+                                      next_cmd="sudo ./voipbin doctor")
+        finally:
+            if pw_fd is not None:
+                os.close(pw_fd)
+            if pw_path and not pw_done and os.path.exists(pw_path):
+                try:
+                    os.remove(pw_path)
+                except OSError:
+                    pass
+            if touched:
+                fix_install_ownership(project_dir)
+
     def cmd_init(self, args):
-        """Initialize sandbox"""
+        """Generate configuration (.env, certificates) via scripts/init.sh"""
         script_dir = self.config.get("project_dir", ".")
         script_path = os.path.join(script_dir, "scripts", "init.sh")
 
         if not os.path.exists(script_path):
             print(red(f"Init script not found: {script_path}"))
+            self.last_rc = 2
             return
 
         print("Running initialization script...")
         print("This will generate .env and certificates.\n")
-        os.system(script_path)
+        # Arguments go through to init.sh (--yes, --mode, --domain, ...);
+        # the exit code is kept for _main() to propagate.
+        self.last_rc = subprocess.call(["bash", script_path] + list(args), cwd=script_dir)
+        fix_install_ownership(script_dir)
 
     def cmd_doctor(self, args):
         """Run the install doctor (diagnose and prescribe, read-only)"""
@@ -4983,9 +5680,10 @@ Type 'registrar <subcommand> help' for more details.
         self.last_doctor_rc = subprocess.call(["bash", script_path], cwd=script_dir)
 
     def cmd_clean(self, args):
-        """Cleanup sandbox"""
-        if not args:
-            print("Usage: clean [--containers] [--volumes] [--images] [--network] [--dns] [--purge] [--all]")
+        """Remove containers, data or generated files"""
+        self.last_rc = 0
+        if not [a for a in args if a != "--force"]:
+            print("Usage: clean [--containers] [--volumes] [--images] [--network] [--dns] [--purge] [--all] [--force]")
             print("")
             print("Options:")
             print("  --containers  Remove app containers (keeps infrastructure: db, redis, mq, dns)")
@@ -4993,8 +5691,9 @@ Type 'registrar <subcommand> help' for more details.
             print("  --images      Remove docker images")
             print("  --network     Teardown VoIP network interfaces")
             print("  --dns         Remove DNS configuration")
-            print("  --purge       Remove generated files (.env, certs, configs)")
+            print("  --purge       Remove generated files (.env, certs, configs, docker-compose.yml, versions.lock)")
             print("  --all         All of the above (full reset)")
+            print("  --force       Do not ask for confirmation (required when not run from a terminal)")
             return
 
         # Infrastructure services to keep when using --containers
@@ -5011,6 +5710,39 @@ Type 'registrar <subcommand> help' for more details.
         project_dir = self.config.get("project_dir", ".")
         scripts_dir = os.path.join(project_dir, "scripts")
 
+        # Data-destroying options list their targets and need an explicit
+        # 'yes' (or --force) before anything runs.
+        if clean_volumes or clean_images or purge:
+            print(bold("This will permanently remove:"))
+            if clean_volumes:
+                print("  - all containers and docker volumes: database, recordings, redis and rabbitmq state")
+            if clean_images:
+                print("  - the docker images of this stack")
+            if purge:
+                print("  - generated files: .env (passwords and encryption keys), certs/, config/coredns,")
+                print("    docker-compose.yml, versions.lock, version pins and the install marker")
+            if teardown_network:
+                print("  - the VoIP network interfaces")
+            if teardown_dns:
+                print("  - the DNS configuration (resolv.conf is restored)")
+            print("  backups/ is not touched.")
+            if purge and not clean_volumes:
+                print(yellow("  WARNING: the database volume stays, but its passwords and encryption keys are in .env."))
+                print(yellow("           Keep a copy of .env (or use --volumes too), or the data cannot be used again."))
+            if "--force" not in args:
+                if not sys.stdin.isatty():
+                    print(red("Refusing to delete without confirmation: re-run with --force (non-interactive)."))
+                    self.last_rc = 1
+                    return
+                try:
+                    answer = input("Type 'yes' to continue: ").strip()
+                except EOFError:
+                    answer = ""
+                if answer != "yes":
+                    print("Aborted. Nothing was removed.")
+                    self.last_rc = 1
+                    return
+
         # Stop and remove containers/volumes
         if clean_volumes:
             print("Stopping all services and removing volumes...")
@@ -5022,6 +5754,12 @@ Type 'registrar <subcommand> help' for more details.
             if os.path.exists(marker_path):
                 os.remove(marker_path)
                 print("  Removed test data marker")
+            # Same for the guided-install marker (it records the admin
+            # account, which lives in the database).
+            install_marker = os.path.join(project_dir, INSTALL_MARKER)
+            if os.path.exists(install_marker):
+                os.remove(install_marker)
+                print("  Removed install marker")
             print(green("✓ All containers and volumes removed"))
         elif clean_containers:
             # Remove only app containers, keep infrastructure
@@ -5056,7 +5794,7 @@ Type 'registrar <subcommand> help' for more details.
             compose_images = run_cmd("docker compose config --images 2>/dev/null") or ""
             # Get voipbin images
             voipbin_images = run_cmd("docker images --format '{{.Repository}}:{{.Tag}}' | grep -E '^voipbin/' 2>/dev/null") or ""
-            # Get other sandbox images
+            # Get the stack's third-party images
             other_images = run_cmd("docker images --format '{{.Repository}}:{{.Tag}}' | grep -E '^(mysql|redis|rabbitmq|coredns/)' 2>/dev/null") or ""
 
             # Combine and deduplicate
@@ -5111,6 +5849,15 @@ Type 'registrar <subcommand> help' for more details.
                 ("tmp", "tmp directory"),
                 ("docker-compose.override.yml", "version pins"),
                 (".voipbin-versions", "rollback history"),
+                # Same set as scripts/clean.sh --purge: the live copies are
+                # re-created from the .dist files by the next init.
+                ("docker-compose.yml", "docker-compose.yml"),
+                ("docker-compose.yml.flock", "docker-compose.yml lock file"),
+                ("docker-compose.yml.dist.flock", "docker-compose.yml.dist lock file"),
+                ("versions.lock", "versions.lock"),
+                ("versions.lock.flock", "versions.lock lock file"),
+                ("versions.lock.dist.flock", "versions.lock.dist lock file"),
+                (INSTALL_MARKER, "install marker"),
             ]
 
             for path, desc in files_to_remove:
@@ -5126,7 +5873,13 @@ Type 'registrar <subcommand> help' for more details.
             print(green("✓ Generated files purged"))
 
         print(f"\n{bold('Cleanup complete!')}")
-        print("Run 'init' to initialize, then 'start' to begin.")
+        if clean_volumes and not teardown_network and any(os.path.exists(f"/sys/class/net/{n}") for n in INSTALL_VOIP_INTERFACES):
+            # The compose network is recreated on the next start, but the kept
+            # VoIP interfaces would then shadow its route and cut container
+            # traffic (DNS lookups and image downloads time out).
+            print("The VoIP network interfaces were kept. Before installing again, remove them:")
+            print("  sudo ./voipbin clean --network --force")
+        print("Run 'install' to set up again (or 'init', then 'start').")
 
     def _show_running_images(self, project_dir, json_output=False):
         """Show currently running container images when no override file exists"""
@@ -5288,7 +6041,7 @@ Type 'registrar <subcommand> help' for more details.
         print(f"       Run '{bold('voipbin rollback --list')}' to see history")
 
     def cmd_update(self, args):
-        """Update sandbox - pull images and/or update scripts from GitHub"""
+        """Update the install - pull images and/or update scripts from GitHub"""
         project_dir = self.config.get("project_dir", ".")
         check_only = "--check" in args
         skip_backup = "--skip-backup" in args
@@ -6182,7 +6935,7 @@ Type 'registrar <subcommand> help' for more details.
         # changing it is a deliberate maintainer action, not a routine update.
         lock_file = os.path.join(project_dir, "versions.lock")
         if os.path.exists(lock_file):
-            print(f"\n{yellow('==>')} versions.lock found - this sandbox is PINNED to a verified snapshot.")
+            print(f"\n{yellow('==>')} versions.lock found - this install is PINNED to a verified snapshot.")
             print(f"  {blue('Skipping')} 'latest' re-resolution to preserve the pin.")
             print(f"  Pulling the pinned image digests from docker-compose.yml instead.")
             try:
@@ -6442,7 +7195,7 @@ Type 'registrar <subcommand> help' for more details.
         if not found:
             return self._scripts_fail(
                 "Error: Not a git repository.",
-                "This command requires the sandbox to be cloned from GitHub "
+                "This command requires the install to be cloned from GitHub "
                 "(the checkout may sit in a parent directory of install/).")
         _, git_marker, marker_stat = found
         owner = _git_owner(marker_stat)
@@ -7234,46 +7987,90 @@ def setup_readline(cli):
         readline.parse_and_bind("bind ^I rl_complete")
 
 
-def show_cli_usage():
-    """Show usage for command-line mode"""
-    print(f"""
+def render_help():
+    """The command overview shared by `help` (REPL) and `--help`."""
+    return f"""
 {bold('VoIPBin Install CLI')}
 
+{blue('Install:')}
+  install           Guided install: host checks, configuration, host setup,
+                    services, verification and the first admin account
+  init              Generate configuration only (.env, certificates)
+
+{blue('Operate:')}
+  status, ps        Show service status and optional provider keys
+  doctor            Diagnose install and runtime state (read-only)
+  start [service]   Start services
+  stop [--all]      Stop app services (--all for everything)
+  restart [service] Restart services
+  logs <service>    View logs (-f to follow)
+  update [options]  Update (scripts, all, --check) - 'update all' = full pinned upgrade
+  backup            Full data backup (MySQL + recordings + config) to backups/<ts>/
+  restore <ts>      Restore DATA from a backup (DESTRUCTIVE, requires --force + stopped services)
+
+{blue('Advanced:')}
+  dns               DNS setup for SIP domains
+  certs             Manage SSL certificates
+  network           Manage VoIP network interfaces
+  clean [options]   Remove containers/data/generated files (asks first; --force)
+  rollback          Rollback image override history (UNPINNED repos only, --list)
+  version           Show pinned image versions
+  config            View/set CLI configuration
+  ast, kam, db, api Asterisk CLI, Kamailio kamcmd, MySQL, REST API contexts
+
+{blue('Other:')}
+  help [command]    Show help for a command
+  help api          Resource commands (extension, agent, call, flow, ...)
+  clear, exit       Clear screen, exit
+
+Undo host changes: clean --dns, clean --network, scripts/setup-dns.sh --uninstall
+Type 'help <command>' for detailed usage.
+"""
+
+
+def render_api_help():
+    """Resource (sidecar/API) commands, kept out of the default help."""
+    return f"""
+{blue('Resource commands:')}  (talk to the running services; see 'help <command>')
+  extension         Extension management
+  agent             Agent management
+  billing           Billing and account management
+  call              Call management
+  campaign          Campaign management
+  chat              Chat room management
+  conference        Conference management
+  conversation      Conversation and messaging
+  customer          Customer management
+  flow              Flow management
+  number            Phone number management
+  outdial           Outdial management
+  queue             Queue management
+  registrar         Extension and trunk management
+  route             Route management
+  storage           Storage and file management
+  tag               Tag management
+  talk              Talk chat management
+  transfer          Transfer management
+  tts               Text-to-speech
+  webhook           Webhook operations
+  hook              Test webhook operations
+"""
+
+
+def show_cli_usage():
+    """Show usage for command-line mode (same command list as `help`)"""
+    print(f"""
 Usage:
-  sudo ./voipbin                # Start interactive mode
-  sudo ./voipbin <command>      # Run command and exit
-
-Commands:
-  status              Show service status
-  doctor              Diagnose install/runtime state and print fixes (read-only)
-  start [service]     Start all services (or specific service)
-  stop [--all]        Stop app services (--all for everything)
-  restart [service]   Restart services
-  logs <service>      View logs
-  init                Initialize sandbox (generates .env and certs)
-  update [options]    Update sandbox (pinned repos: 'update all' = backup ->
-                      git pull -> migrate -> recreate -> verify)
-  backup              Full data backup (MySQL + recordings + config)
-  restore <ts> --force  Restore data from a backup (DESTRUCTIVE)
-  rollback            Image rollback from override history (unpinned repos only)
-  dns [subcommand]    DNS configuration (status, list, setup, regenerate, test)
-  certs [subcommand]  Certificate management (status, trust)
-  network [subcommand] VoIP network management (status, setup, teardown)
-  clean [options]     Cleanup sandbox
-    --volumes         Remove docker volumes
-    --network         Teardown VoIP network interfaces
-    --dns             Remove DNS configuration
-    --purge           Remove generated files (.env, certs, configs)
-    --all             Full reset (all of the above)
-
-Examples:
+  sudo ./voipbin                # Interactive mode (offers 'install' on a new checkout)
+  sudo ./voipbin <command>      # Run one command and exit""")
+    print(render_help())
+    print("""Examples:
+  sudo ./voipbin install
+  sudo ./voipbin install --yes --admin-email admin@example.com --admin-password-file ~/voipbin-admin-password
   sudo ./voipbin status
-  sudo ./voipbin start
-  sudo ./voipbin network setup --external-ip 192.168.45.160
-  sudo ./voipbin clean --all
   sudo ./voipbin logs api-manager
 
-Note: This CLI requires sudo for network and DNS operations.
+help, --help and version work without sudo; everything else needs it.
 """)
 
 
@@ -7290,8 +8087,13 @@ def main():
 
 
 def _main():
-    # Require root/sudo
-    check_root()
+    if not color_wanted():
+        Colors.disable()
+
+    # help/--help/version need no root (and no docker); everything else does.
+    no_root = len(sys.argv) > 1 and sys.argv[1] in ("-h", "--help", "help", "version")
+    if not no_root:
+        check_root()
 
     cli = VoIPBinCLI()
 
@@ -7303,7 +8105,7 @@ def _main():
     # Check for command-line arguments (non-interactive mode)
     if len(sys.argv) > 1:
         # Handle help
-        if sys.argv[1] in ("-h", "--help", "help"):
+        if sys.argv[1] in ("-h", "--help") or (sys.argv[1] == "help" and len(sys.argv) == 2):
             show_cli_usage()
             return
 
@@ -7313,16 +8115,21 @@ def _main():
 
         if cmd in cli.commands:
             cli.commands[cmd](args)
-            # doctor's 0/1 exit code is part of the machine contract for
-            # agents scripting `sudo ./voipbin doctor` (design §7). Only this
-            # non-interactive path exits with it; the REPL path returns to
+            # Exit codes are part of the machine contract for scripted
+            # callers: doctor (0/1), update (0, 11 ... 64), and init, start,
+            # clean, install (0 ok, 1 user/validation error, 2 environment
+            # error; init/start pass their script's code through). Only this
+            # non-interactive path exits with them; the REPL path returns to
             # the prompt instead.
-            if cmd == "doctor" and cli.last_doctor_rc:
-                sys.exit(cli.last_doctor_rc)
-            # `update` exit codes (0 ok, 11 scripts, ... 64 usage) are a
-            # machine contract for scripted callers.
-            if cmd == "update" and cli.last_update_rc:
-                sys.exit(cli.last_update_rc)
+            rc = 0
+            if cmd == "doctor":
+                rc = cli.last_doctor_rc
+            elif cmd == "update":
+                rc = cli.last_update_rc
+            elif cmd in ("init", "start", "clean", "install"):
+                rc = cli.last_rc
+            if rc:
+                sys.exit(rc if 0 < rc < 256 else 2)
         else:
             print(red(f"Unknown command: {cmd}"))
             print("Run 'sudo ./voipbin --help' for usage.")
@@ -7334,6 +8141,12 @@ def _main():
 
     # Show welcome dashboard
     show_welcome_dashboard()
+
+    # A checkout without .env: offer the guided install once (it asks
+    # "Install now?" itself), then continue with the REPL either way.
+    if detect_dashboard_state() == "not_initialized" and sys.stdin.isatty():
+        cli.cmd_install([])
+        print()
 
     # Handle Ctrl+C gracefully
     def sigint_handler(sig, frame):

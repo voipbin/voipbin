@@ -1223,9 +1223,9 @@ services:
     # supplied.
     environment:
       - RABBITMQ_ADDRESS=amqp://${RABBITMQ_DEFAULT_USER}:${RABBITMQ_DEFAULT_PASS}@${RABBITMQ_HOST:-rabbitmq}:${RABBITMQ_PORT:-5672}
-      - GCP_PROJECT_ID=${GCP_PROJECT_ID:-sandbox-placeholder}
+      - GCP_PROJECT_ID=${GCP_PROJECT_ID:-voipbin-placeholder}
       - GCP_REGION=${GCP_REGION:-us-central1}
-      - GCP_BUCKET_NAME_MEDIA=${GCP_BUCKET_NAME_MEDIA:-sandbox-placeholder-media}
+      - GCP_BUCKET_NAME_MEDIA=${GCP_BUCKET_NAME_MEDIA:-voipbin-placeholder-media}
       - POSTGRESQL_DSN=postgres://voipbin:${POSTGRES_PASSWORD}@postgres:5432/bin_manager?sslmode=disable
       - RAG_TOP_K=${RAG_TOP_K:-5}
       - PROMETHEUS_ENDPOINT=/metrics
