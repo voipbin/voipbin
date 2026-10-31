@@ -1320,13 +1320,56 @@ exec "'"$real_openssl"'" "$@"'
     [[ "$(detect_stage)" == "prestart" ]]
 }
 
-@test "schema present without the test-data marker warns without a FIX" {
+# The marker only exists when the dev seed ran, so its absence is expected
+# while VOIPBIN_SANDBOX_DEV_SEED is not true (start.sh skips the seed then).
+# $1 is appended to .env as the VOIPBIN_SANDBOX_DEV_SEED line when non-empty.
+test_data_without_marker() {
     setup_healthy_internal
+    if [[ -n "${1:-}" ]]; then echo "VOIPBIN_SANDBOX_DEV_SEED=$1" >> "$PROJECT_DIR/.env"; fi
     rm -f "$PROJECT_DIR/.test_data_initialized"
-
     run_doctor
+}
+
+@test "schema present without the test-data marker warns without a FIX when the dev seed is on" {
+    test_data_without_marker true
 
     [[ "$status" -eq 0 ]]
     [[ "$output" == *'DOCTOR test-data: warn'* ]]
+    [[ "$output" == *'start.sh will re-seed'* ]]
     ! grep -q '^FIX test-data:' <<< "$output"
+}
+
+@test "schema present without the test-data marker warns when the dev seed value is quoted true" {
+    test_data_without_marker '"true"'
+
+    [[ "$status" -eq 0 ]]
+    [[ "$output" == *'DOCTOR test-data: warn'* ]]
+}
+
+@test "schema present without the test-data marker passes when the dev seed is off" {
+    local seed
+    for seed in false True 1 ""; do
+        test_data_without_marker "$seed"
+        echo "dev seed value: '$seed'"
+
+        [[ "$status" -eq 0 ]]
+        [[ "$output" == *'DOCTOR test-data: pass dev seed is off'* ]]
+        [[ "$output" != *'DOCTOR test-data: warn'* ]]
+        [[ "$output" != *'start.sh will re-seed'* ]]
+        ! grep -q '^FIX test-data:' <<< "$output"
+    done
+}
+
+@test "load_doctor_functions: check_test_data passes with the dev seed off when .env is missing" {
+    load_doctor_functions
+    stub_docker_doctor healthy
+    DOCTOR_DOCKER_OK=true
+    DOCTOR_STAGE=running
+    DOCTOR_PROFILES=""
+    rm -f "$ENV_FILE" "$PROJECT_DIR/.test_data_initialized"
+
+    run check_test_data
+
+    [[ "$status" -eq 0 ]]
+    [[ "$output" == *'DOCTOR test-data: pass dev seed is off'* ]]
 }
