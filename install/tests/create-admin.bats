@@ -5,7 +5,8 @@
 
 load 'test_helper'
 
-FAKE_PASSWORD="Fake-Test-Passw0rd-not-real"
+# generated per run: no password-like literal in the repository
+FAKE_PASSWORD="$(openssl rand -hex 12)"
 
 setup() {
     setup_test_env
