@@ -788,7 +788,7 @@ check_realm() {
 # zero customer rows is explicitly out of scope.
 check_test_data() {
     runtime_gate test-data || return
-    local marker="$PROJECT_DIR/.test_data_initialized" db_id tables
+    local marker="$PROJECT_DIR/.test_data_initialized" db_id tables seed
     db_id=$(cd "$PROJECT_DIR" && COMPOSE_PROFILES="$DOCTOR_PROFILES" docker compose ps -q db 2>/dev/null | head -1)
     if [[ -z "$db_id" ]]; then doctor_result test-data skip "db container not running (see database)"; return; fi
     tables=$(docker exec "$db_id" sh -c "$DOCTOR_MYSQL_IN_DB -N -e \"SELECT COUNT(*) FROM information_schema.TABLES WHERE TABLE_SCHEMA = 'bin_manager';\"" root 2>/dev/null)
@@ -796,7 +796,17 @@ check_test_data() {
     if [[ -f "$marker" && "$tables" -eq 0 ]]; then
         doctor_fail test-data "marker .test_data_initialized present but the bin_manager schema is empty (stale marker after a volume wipe)" "rm .test_data_initialized && ./scripts/start.sh (re-seeds the test data)"
     elif [[ ! -f "$marker" && "$tables" -gt 0 ]]; then
-        doctor_result test-data warn "schema present but no .test_data_initialized marker (start.sh will re-seed test data on its next run)"
+        # The marker exists only when the dev seed ran, so without it the
+        # seed is expected to be off. Reads .env only (like start.sh's
+        # dev_seed_enabled it needs the exact value true), so a seed enabled
+        # only through the process environment, or a line with a trailing
+        # comment or an export prefix, is not seen here.
+        seed=$(get_env_var "$ENV_FILE" VOIPBIN_SANDBOX_DEV_SEED)
+        if [[ "$seed" == "true" ]]; then
+            doctor_result test-data warn "schema present but no .test_data_initialized marker (start.sh will re-seed test data on its next run)"
+        else
+            doctor_result test-data pass "dev seed is off (VOIPBIN_SANDBOX_DEV_SEED is not true), no marker expected"
+        fi
     elif [[ -f "$marker" ]]; then
         doctor_result test-data pass "marker present and the bin_manager schema is populated"
     else

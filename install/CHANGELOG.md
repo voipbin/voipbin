@@ -14,6 +14,10 @@ records where this directory came from.)
 - `LOCAL_LLM_MODELS` (ai-manager, pipecat-manager) and `LOCAL_LLM_ENDPOINTS` (pipecat-script-runner) for self-hosted OpenAI-compatible LLM servers. Both are off by default; `.env.template` explains the format and the order to enable them.
 - pipecat-script-runner now receives `GOOGLE_APPLICATION_CREDENTIALS` and the credentials file mount, like the other services that use Google APIs. The default is the dummy file `init.sh` creates, which is not a valid credential; set the variable in `.env` to a real service account file to use Google speech services.
 
+### Fixed
+
+- `doctor.sh` no longer warns that `start.sh` will re-seed test data on an install that has the dev seed off (the default). Without `VOIPBIN_SANDBOX_DEV_SEED=true` in `.env` the missing `.test_data_initialized` marker is expected, so the `test-data` check now passes there. With the seed on it still warns.
+
 ### Upgrade notes
 
 - Your live `docker-compose.yml` is not updated by `git pull`. Merge the new settings by hand and add the two encryption keys to `.env` before `sudo ./voipbin update all`; the steps are in `README.md` under "Adopting the encryption keys, local LLM and timeline analysis settings". Do not run `init.sh --yes` or `--force-reinit` for this: they regenerate the database and RabbitMQ passwords.
