@@ -1271,6 +1271,529 @@ if [[ "$1 $2" == "compose ps" ]]; then printf "voipbin-db\\tUp 5 minutes\\nvoipb
     assert "(TTS/storage disabled)" not in out and "(transcription)" not in out, out
     print("ok test_status_never_prints_service_passwords")
 
+
+# ---------------------------------------------------------------------------
+# Interactive TUI: pure render/parse functions, fallback, REPL loop
+# ---------------------------------------------------------------------------
+
+class FakeStream:
+    def __init__(self, tty=True, encoding="utf-8"):
+        self._tty, self.encoding = tty, encoding
+
+    def isatty(self):
+        return self._tty
+
+
+def tui_info(**overrides):
+    info = {"version": None, "state": "running", "running": 12, "total": 45,
+            "dns": True, "net": True, "mode": "internal",
+            "cwd": "/srv/voipbin-install/install"}
+    info.update(overrides)
+    return info
+
+
+def test_tui_wanted(cli_module):
+    tty = FakeStream()
+    ok = {"TERM": "xterm"}
+    assert cli_module.tui_wanted(tty, tty, ok, lines=24) is True
+    assert cli_module.tui_wanted(FakeStream(False), tty, ok, lines=24) is False, "stdin not a tty"
+    assert cli_module.tui_wanted(tty, FakeStream(False), ok, lines=24) is False, "stdout not a tty"
+    assert cli_module.tui_wanted(tty, tty, {"TERM": "xterm", "NO_COLOR": "1"}, lines=24) is False
+    assert cli_module.tui_wanted(tty, tty, {"TERM": "dumb"}, lines=24) is False
+    assert cli_module.tui_wanted(tty, FakeStream(encoding="ANSI_X3.4-1968"), ok, lines=24) is False
+    assert cli_module.tui_wanted(tty, FakeStream(encoding=None), ok, lines=24) is False
+    assert cli_module.tui_wanted(tty, FakeStream(encoding="UTF-8"), ok, lines=24) is True
+    assert cli_module.tui_wanted(tty, tty, ok, lines=7) is False, "too short for the frame"
+    assert cli_module.tui_wanted(tty, tty, ok, lines=8) is True
+    assert cli_module.tui_wanted(io.StringIO(""), io.StringIO(""), ok, lines=24) is False
+    print("ok test_tui_wanted")
+
+
+def test_tui_clip_and_widths(cli_module):
+    vis, clip = cli_module.visible_len, cli_module.clip
+    assert vis("\x1b[1mabc\x1b[0m") == 3 and vis("한글") == 4
+    assert clip("abcdef", 10) == "abcdef" and clip("abcdef", 4) == "abc…"
+    assert clip("abcdef", 0) == "" and vis(clip("한글한글", 5)) <= 5
+    colored = clip("\x1b[1mabcdefgh\x1b[0m", 5)
+    assert vis(colored) == 5 and colored.endswith("…\x1b[0m"), repr(colored)
+    assert clip("/very/long/path/name", 8, keep="tail") == "…th/name"
+    assert vis(clip("/very/long/path/name", 8, keep="tail")) <= 8
+    print("ok test_tui_clip_and_widths")
+
+
+def test_tui_render_header_notice_statusbar(cli_module):
+    vis = cli_module.visible_len
+    plain = lambda t: re.sub(r"\x1b\[[0-9;]*m", "", t)
+    for width in (80, 60, 59, 40, 24, 20):
+        for info in (tui_info(), tui_info(version="v1.2.3"), tui_info(state="stopped", running=None, total=None, dns=None, net=None),
+                     tui_info(state="not_initialized", running=None, total=None, dns=None, net=None, mode=None),
+                     tui_info(mode="external", dns="n/a"), tui_info(total=0),
+                     tui_info(cwd="/" + "deep/" * 40 + "dir")):
+            rows = (cli_module.render_header(info, width) + [cli_module.render_notice(info, width)]
+                    + cli_module.render_frame(info, width))
+            for row in rows:
+                assert vis(row) <= width - 1, (width, vis(row), plain(row))
+    header = [plain(r) for r in cli_module.render_header(tui_info(version="v1.2.3"), 100)]
+    assert len(header) == 3 and "█" in header[0]
+    assert "VoIPBin Install CLI v1.2.3" in header[0] and "running 12/45" in header[1] and "mode internal" in header[1], header
+    assert header[2].rstrip().endswith("/srv/voipbin-install/install"), header
+    narrow = [plain(r) for r in cli_module.render_header(tui_info(cwd="/srv/projects/voipbin/checkout/current/install"), 40)]
+    assert len(narrow) == 3 and "█" not in "".join(narrow), narrow
+    assert "VoIPBin Install CLI" in narrow[0] and "v" not in narrow[0].split("CLI")[1], narrow
+    assert "…" in narrow[2] and narrow[2].endswith("install"), narrow
+    assert cli_module.render_notice(tui_info(), 80) == "Using .env (mode=internal) · /status"
+    assert cli_module.render_notice(tui_info(state="not_initialized", mode=None), 80) == "No installation found · /install"
+    full = [plain(r) for r in cli_module.render_statusbar(tui_info(), 100)]
+    assert full[0] == "Env: running | Services: 12/45 | DNS: ● | Net: ● | Mode: internal", full
+    assert full[1] == 'Try "/status" or "/logs <service>" · /help for commands · /exit to quit', full
+    bar40 = [plain(r) for r in cli_module.render_statusbar(tui_info(), 40)]
+    assert "12/45" in bar40[0] and "internal" in bar40[0] and "/help" in bar40[1] and "/exit" in bar40[1], bar40
+    bar20 = [plain(r) for r in cli_module.render_statusbar(tui_info(), 20)]
+    assert bar20[1] == "/help · /exit" and bar20[0].startswith("running 12/45"), bar20
+    stopped = plain(cli_module.render_statusbar(tui_info(state="stopped", running=None, total=None, dns=None, net=None), 100)[0])
+    assert stopped == "Env: stopped | Services: - | DNS: - | Net: - | Mode: internal", stopped
+    fresh = [plain(r) for r in cli_module.render_statusbar(tui_info(state="not_initialized", running=None, total=None, dns=None, net=None, mode=None), 100)]
+    assert fresh[0] == "Env: not installed | Services: - | DNS: - | Net: - | Mode: -", fresh
+    assert fresh[1].startswith('Try "/install"'), fresh
+    ext = plain(cli_module.render_statusbar(tui_info(mode="external", dns="n/a", net=False), 100)[0])
+    assert "DNS: n/a" in ext and "Net: ○" in ext and "Mode: external" in ext, ext
+    assert plain(cli_module.render_statusbar(tui_info(total=0), 100)[0]).count("Services: 12 ") == 1
+    frame = cli_module.render_frame(tui_info(), 50)
+    assert len(frame) == 5 and frame[1] == "" and frame[0] == frame[2] and "─" * 49 in frame[0]
+    # colors off (config colors=false): no SGR sequences, frame unchanged
+    saved = {k: getattr(cli_module.Colors, k) for k in ("GREEN", "RED", "YELLOW", "BLUE", "GRAY", "WHITE", "BOLD", "DIM", "RESET")}
+    cli_module.Colors.disable()
+    try:
+        text = "".join(cli_module.render_header(tui_info(), 100) + cli_module.render_frame(tui_info(), 100))
+        assert "\x1b[" not in text
+    finally:
+        for k, v in saved.items():
+            setattr(cli_module.Colors, k, v)
+    print("ok test_tui_render_header_notice_statusbar")
+
+
+def test_tui_release_version(cli_module, tmp_dir):
+    def version_of(text):
+        path = os.path.join(tmp_dir, "CHANGELOG.test.md")
+        with open(path, "w") as f:
+            f.write(text)
+        return cli_module.read_release_version(path)
+    assert version_of("# Changelog\n\n## [Unreleased]\n\n### Added\n- x\n") is None
+    assert version_of("## [Unreleased]\n\n## [v0.2.1] - 2026-11-02\n\n## [v0.2.0] - 2026-11-01\n") == "v0.2.1"
+    assert version_of("") is None
+    assert cli_module.read_release_version(os.path.join(tmp_dir, "missing.md")) is None
+    shipped = cli_module.read_release_version()
+    assert shipped is None or re.fullmatch(r"v\d+\.\d+\.\d+", shipped), shipped
+    print("ok test_tui_release_version")
+
+
+def test_tui_parse_slash(cli_module):
+    parse = cli_module.parse_slash
+    assert parse("status") == ("status", None) and parse("  install --yes ") == ("  install --yes ", None)
+    assert parse("") == ("", None)
+    for name in ("help", "install", "status", "start", "stop", "restart", "logs", "doctor", "update", "version", "clear", "exit"):
+        assert parse("/" + name) == (name, None), name
+    assert parse("/logs -f api-manager") == ("logs -f api-manager", None)
+    assert parse("  /STATUS  ") == ("status", None)
+    assert parse("/start   kamailio ") == ("start kamailio", None)
+    line, msg = parse("/")
+    assert line is None and "/install" in msg and "/exit" in msg and "/doctor" in msg, msg
+    for bad in ("/quit", "/ status", "//x", "/ast", "/foo bar"):
+        line, msg = parse(bad)
+        assert line is None and msg.startswith("Unknown command: " + bad.split()[0]), (bad, msg)
+    assert "ast" not in cli_module.TUI_SLASH_COMMANDS and len(cli_module.TUI_SLASH_COMMANDS) == 12
+    print("ok test_tui_parse_slash")
+
+
+def test_tui_completer_and_help(cli_module, tmp_dir):
+    cli, project_dir = make_cli(tmp_dir, INTERNAL_ENV, cli_module)
+    completer = cli_module.Completer(cli)
+    assert completer.get_matches("/ast", "ast") == ["ast ", "asterisk "], "TUI off: classic completion unchanged"
+    cli.tui_on = True
+    assert sorted(completer.get_matches("/st", "st")) == ["start ", "status ", "stop "]
+    assert sorted(completer.get_matches("/st", "/st")) == ["/start ", "/status ", "/stop "], "libedit keeps the slash"
+    assert completer.get_matches("/", "") == [c + " " for c in cli_module.TUI_SLASH_COMMANDS]
+    assert completer.get_matches("/ex", "ex") == ["exit "]
+    assert completer.get_matches("/ast", "ast") == []
+    assert completer.get_matches("/logs -", "-") == ["-f "]
+    assert completer.get_matches("/update ", "") == ["scripts ", "all ", "--check "]
+    assert completer.get_matches("sta", "sta")[0].startswith("sta"), "plain words still complete"
+    assert "Slash commands" in capture(cli.cmd_help, [])
+    assert "Slash commands" not in capture(cli.cmd_help, ["status"])
+    cli.tui_on = False
+    assert "Slash commands" not in capture(cli.cmd_help, [])
+    # non-interactive help output carries no slash text
+    rc, out = run_main(cli_module, ["help"])
+    assert rc == 0 and "Slash commands" not in out and out == capture(cli_module.show_cli_usage), out[:200]
+    rc, out = run_main(cli_module, ["--help"])
+    assert rc == 0 and "Slash commands" not in out
+    print("ok test_tui_completer_and_help")
+
+
+def test_tui_collect_info_states_and_secrets(cli_module, tmp_dir, stub_bin, log_path):
+    secret = "tui-secret-never-shown"
+    env_lines = INTERNAL_ENV + ["OPENAI_API_KEY=" + secret, "MYSQL_ROOT_PASSWORD=" + secret]
+    cli, project_dir = make_cli(tmp_dir, env_lines, cli_module)
+    prev = os.getcwd()
+    os.chdir(project_dir)
+    calls = {"detect": 0, "quick": 0}
+    orig_detect, orig_quick = cli_module.detect_dashboard_state, cli_module.get_quick_status
+
+    def counting_detect():
+        calls["detect"] += 1
+        return orig_detect()
+
+    def counting_quick():
+        calls["quick"] += 1
+        return orig_quick()
+    cli_module.detect_dashboard_state, cli_module.get_quick_status = counting_detect, counting_quick
+    try:
+        set_docker_stub(stub_bin, log_path, '''
+if [[ "$1 $2" == "compose ps" ]]; then printf "voipbin-db\\tUp 5 minutes\\nvoipbin-mq\\tUp 5 minutes\\nvoipbin-redis\\tExited (1)\\n"; exit 0; fi
+if [[ "$1 $2" == "compose config" ]]; then printf "db\\nmq\\nredis\\napi-manager\\n"; exit 0; fi
+''')
+        info = cli_module.tui_collect_info(cli)
+        assert (calls["detect"], calls["quick"]) == (1, 1), calls
+        assert info["state"] == "running" and (info["running"], info["total"]) == (2, 4), info
+        assert info["mode"] == "internal" and info["net"] is False and info["dns"] is False, info
+        shown = " ".join(cli_module.render_header(info, 100) + [cli_module.render_notice(info, 100)]
+                         + cli_module.render_frame(info, 100) + [str(info)])
+        assert secret not in shown and "HOST_EXTERNAL_IP" not in shown, shown
+        # control characters in the directory name and in DOMAIN_MODE never reach the screen
+        evil_dir = os.path.join(tmp_dir, "evil\x1b[31mdir")
+        os.makedirs(evil_dir, exist_ok=True)
+        os.chdir(evil_dir)
+        write_env(project_dir, INTERNAL_ENV[1:] + ["DOMAIN_MODE=ex\x1b[2Jternal"])
+        info = cli_module.tui_collect_info(cli)
+        assert "\x1b" not in info["cwd"] and info["cwd"].endswith("evil?[31mdir"), info["cwd"]
+        os.chdir(project_dir)
+        info = cli_module.tui_collect_info(cli)
+        assert info["mode"] == "ex2Jternal" and "\x1b" not in str(info) and "[" not in info["mode"], info
+        write_env(project_dir, env_lines)
+        # external mode: DNS is not managed by the install
+        write_env(project_dir, EXTERNAL_ENV)
+        assert cli_module.tui_collect_info(cli)["dns"] == "n/a"
+        write_env(project_dir, env_lines)
+        # containers listed but none running: shown as stopped
+        set_docker_stub(stub_bin, log_path, '''
+if [[ "$1 $2" == "compose ps" ]]; then printf "voipbin-db\\tExited (0)\\n"; exit 0; fi
+''')
+        info = cli_module.tui_collect_info(cli)
+        assert info["state"] == "stopped" and info["running"] is None, info
+        assert cli_module._services_text(info) == "-"
+        reset_docker_stub(stub_bin, log_path)
+        info = cli_module.tui_collect_info(cli)
+        assert info["state"] == "stopped" and info["mode"] == "internal", info
+        os.remove(os.path.join(project_dir, ".env"))
+        calls["detect"] = calls["quick"] = 0
+        info = cli_module.tui_collect_info(cli)
+        assert info["state"] == "not_initialized" and info["mode"] is None and calls == {"detect": 1, "quick": 0}, (info, calls)
+    finally:
+        cli_module.detect_dashboard_state, cli_module.get_quick_status = orig_detect, orig_quick
+        reset_docker_stub(stub_bin, log_path)
+        os.chdir(prev)
+    print("ok test_tui_collect_info_states_and_secrets")
+
+
+@contextlib.contextmanager
+def fake_input(responder):
+    import builtins
+    orig = builtins.input
+    builtins.input = responder
+    try:
+        yield
+    finally:
+        builtins.input = orig
+
+
+@contextlib.contextmanager
+def terminal_size(columns, lines):
+    prev = {k: os.environ.get(k) for k in ("COLUMNS", "LINES")}
+    os.environ["COLUMNS"], os.environ["LINES"] = str(columns), str(lines)
+    try:
+        yield
+    finally:
+        for k, v in prev.items():
+            if v is None:
+                os.environ.pop(k, None)
+            else:
+                os.environ[k] = v
+
+
+def test_tui_read_line_sequences(cli_module, tmp_dir):
+    import signal as signal_mod
+    cli, _ = make_cli(tmp_dir, INTERNAL_ENV, cli_module)
+    info = tui_info()
+    marker_handler = lambda *args: None  # noqa: E731  distinguishable from the default handler
+    handler_before = signal_mod.signal(signal_mod.SIGINT, marker_handler)
+    prompts = []
+    during = []
+
+    def typed(text):
+        def responder(prompt=""):
+            prompts.append(prompt)
+            during.append(signal_mod.getsignal(signal_mod.SIGINT))
+            return text
+        return responder
+
+    def raising(exc):
+        def responder(prompt=""):
+            prompts.append(prompt)
+            raise exc
+        return responder
+    with terminal_size(60, 24):
+        rule = cli_module.render_frame(info, 60)[0]
+        # normal line: frame drawn, cursor back on the input row, closing rule kept
+        with fake_input(typed("/status")):
+            buf = io.StringIO()
+            with contextlib.redirect_stdout(buf):
+                assert cli_module.tui_read_line(cli, info) == "/status"
+        out = buf.getvalue()
+        assert out.startswith("\r" + rule + "\n\n" + rule + "\n") and "\x1b[3A\r" in out, repr(out)
+        assert out.endswith("\r\x1b[J" + rule + "\n"), repr(out)
+        assert prompts[-1].startswith("\001") and "❯" in prompts[-1] and prompts[-1].endswith("\002 "), repr(prompts[-1])
+        # blank line (and whitespace only): frame erased from the top rule, nothing left behind
+        for blank in ("", "   "):
+            buf = io.StringIO()
+            with fake_input(typed(blank)), contextlib.redirect_stdout(buf):
+                assert cli_module.tui_read_line(cli, info) == blank
+            assert buf.getvalue().endswith("\x1b[2A\r\x1b[J"), repr(buf.getvalue())
+        # Ctrl+C: typed text dropped, "" returned, frame erased
+        buf = io.StringIO()
+        with fake_input(raising(KeyboardInterrupt())), contextlib.redirect_stdout(buf):
+            assert cli_module.tui_read_line(cli, info) == ""
+        assert buf.getvalue().endswith("\x1b[1A\r\x1b[J"), repr(buf.getvalue())
+        # Ctrl+D: closing rule kept, EOFError re-raised for the loop
+        buf = io.StringIO()
+        raised = False
+        with fake_input(raising(EOFError())), contextlib.redirect_stdout(buf):
+            try:
+                cli_module.tui_read_line(cli, info)
+            except EOFError:
+                raised = True
+        assert raised and buf.getvalue().endswith("\n\r\x1b[J" + rule + "\n"), repr(buf.getvalue())
+        assert during and all(h is signal_mod.default_int_handler for h in during), during
+        assert signal_mod.getsignal(signal_mod.SIGINT) is marker_handler, "SIGINT handler not restored"
+        # the frame write fails: plain prompt, no exception
+        class BrokenOut(io.StringIO):
+            def write(self, text):
+                raise OSError("closed")
+        prompts.clear()
+        orig_stdout = sys.stdout
+        sys.stdout = BrokenOut()
+        try:
+            with fake_input(typed("status")):
+                assert cli_module.tui_read_line(cli, info) == "status"
+        finally:
+            sys.stdout = orig_stdout
+        assert prompts == [cli.get_prompt()], prompts
+    signal_mod.signal(signal_mod.SIGINT, handler_before)
+    # too short for a frame: plain prompt, nothing drawn
+    with terminal_size(60, 5):
+        prompts.clear()
+        buf = io.StringIO()
+        with fake_input(typed("status")), contextlib.redirect_stdout(buf):
+            assert cli_module.tui_read_line(cli, info) == "status"
+        assert buf.getvalue() == "" and prompts == [cli.get_prompt()]
+    print("ok test_tui_read_line_sequences")
+
+
+def test_tui_repl_loop(cli_module, tmp_dir):
+    cli, _ = make_cli(tmp_dir, INTERNAL_ENV, cli_module)
+    info = tui_info()
+    calls = []
+    for name in ("status", "start", "doctor", "clear", "logs", "update"):
+        cli.commands[name] = (lambda n: lambda args: calls.append((n, list(args))))(name)
+
+    def boom(args):
+        calls.append(("restart", list(args)))
+        raise RuntimeError("restart failed")
+    cli.commands["restart"] = boom
+    refreshed = []
+    orig_collect, orig_intro = cli_module.tui_collect_info, cli_module.tui_print_intro
+    cli_module.tui_collect_info = lambda c: refreshed.append(1) or {"state": "stopped"}
+    intros = []
+    cli_module.tui_print_intro = lambda i: intros.append(dict(i))
+    lines = iter(["/status", "", "/doctor", "/logs -f api-manager", "start kamailio", "/clear", "clear",
+                  "/bogus", "/restart", "bogus", "/exit"])
+    orig_read = cli_module.tui_read_line
+    cli_module.tui_read_line = lambda c, i: next(lines)
+    try:
+        out = capture(cli_module.repl_loop, cli, info)
+    finally:
+        cli_module.tui_collect_info, cli_module.tui_print_intro, cli_module.tui_read_line = orig_collect, orig_intro, orig_read
+    assert calls == [("status", []), ("doctor", []), ("logs", ["-f", "api-manager"]), ("start", ["kamailio"]),
+                     ("clear", []), ("clear", []), ("restart", [])], calls
+    # refresh after status, start, restart (even though it raised); not after doctor/logs/clear
+    assert len(refreshed) == 3, refreshed
+    assert len(intros) == 2, "header redrawn after both /clear and clear"
+    assert "Unknown command: /bogus. Type /help" in out and "Unknown command: bogus. Type 'help'" in out, out
+    assert "Error: restart failed" in out and not cli.running
+    # plain loop (no TUI snapshot): slash words are not commands, prompt is the classic one
+    cli.running = True
+    cli.tui_on = False
+    seen = []
+    answers = iter(["/status", "status", "exit"])
+    def responder(prompt=""):
+        seen.append(prompt)
+        return next(answers)
+    with fake_input(responder):
+        out = capture(cli_module.repl_loop, cli, None)
+    assert "Unknown command: /status. Type 'help'" in out and seen == [cli.get_prompt()] * 3, (out, seen)
+    assert calls[-1] == ("status", []) and not cli.running
+    # a context keeps the classic prompt and never goes through the frame
+    cli.running, cli.context = True, "db"
+    ran = []
+    cli.run_in_context = lambda line: ran.append(line) or setattr(cli, "running", False)
+    cli_module.tui_read_line = lambda c, i: (_ for _ in ()).throw(AssertionError("frame used in a context"))
+    try:
+        with fake_input(lambda prompt="": "select 1"):
+            capture(cli_module.repl_loop, cli, tui_info())
+    finally:
+        cli_module.tui_read_line = orig_read
+    assert ran == ["select 1"]
+    print("ok test_tui_repl_loop")
+
+
+TUI_CHILD = (
+    "import importlib.util, sys\n"
+    "spec = importlib.util.spec_from_file_location('voipbin_cli_child', sys.argv[1])\n"
+    "m = importlib.util.module_from_spec(spec)\n"
+    "spec.loader.exec_module(m)\n"
+    "m.check_root = lambda: None\n"
+    "sys.argv = ['voipbin']\n"
+    "m.main()\n"
+)
+
+
+def tui_child_env(tmp_dir, project_dir, **extra):
+    home = os.path.join(tmp_dir, "tui_home")
+    os.makedirs(home, exist_ok=True)
+    env = {k: v for k, v in os.environ.items() if k not in ("NO_COLOR", "COLUMNS", "LINES", "TERM")}
+    env.update({"HOME": home, "VOIPBIN_PROJECT_DIR": project_dir, "TERM": "xterm",
+                "LC_ALL": "C.UTF-8", "PYTHONIOENCODING": "utf-8"})
+    env.update(extra)
+    return env
+
+
+def test_tui_fallback_without_terminal(cli_module, tmp_dir, stub_bin, log_path):
+    import subprocess
+    project_dir = fresh_project(tmp_dir, "p_tui_fallback")
+    write_env(project_dir, INTERNAL_ENV)
+    cli_path = os.path.join(SCRIPTS_DIR, "voipbin-cli.py")
+    for label, extra in (("pipe", {}), ("NO_COLOR", {"NO_COLOR": "1"}), ("TERM=dumb", {"TERM": "dumb"})):
+        proc = subprocess.run([sys.executable, "-c", TUI_CHILD, cli_path], input="/status\nstatus\nexit\n",
+                              capture_output=True, text=True, timeout=60, cwd=project_dir,
+                              env=tui_child_env(tmp_dir, project_dir, **extra))
+        out = proc.stdout
+        assert proc.returncode == 0, (label, proc.returncode, proc.stderr[-300:])
+        assert "\x1b[" not in out, (label, repr(out[:300]))
+        assert "Unknown command: /status. Type 'help'" in out, (label, out[-400:])
+        assert "voipbin\x01\x02> " in out and "❯" not in out and "Slash commands" not in out, (label, out[-400:])
+        assert "Services stopped. Ready to start." in out and "Goodbye!" in out, (label, out[-400:])
+    print("ok test_tui_fallback_without_terminal")
+
+
+def strip_ansi(text):
+    return re.sub(r"\x1b\[[0-9;?]*[A-Za-z]", "", text)
+
+
+def run_in_pty(tmp_dir, project_dir, keys, columns=100, rows=30, **extra):
+    """Run the CLI REPL on a pseudo terminal, send keys, return (exit_status, output)."""
+    import fcntl, pty, select, signal, struct, termios, time
+    cli_path = os.path.join(SCRIPTS_DIR, "voipbin-cli.py")
+    env = tui_child_env(tmp_dir, project_dir, **extra)
+    pid, fd = pty.fork()
+    if pid == 0:
+        try:
+            os.chdir(project_dir)
+            os.execvpe(sys.executable, [sys.executable, "-c", TUI_CHILD, cli_path], env)
+        finally:
+            os._exit(127)
+    fcntl.ioctl(fd, termios.TIOCSWINSZ, struct.pack("HHHH", rows, columns, 0, 0))
+    data = b""
+    deadline = time.time() + 40
+
+    def read_for(seconds):
+        nonlocal data
+        end = min(time.time() + seconds, deadline)
+        while time.time() < end:
+            if select.select([fd], [], [], 0.1)[0]:
+                try:
+                    chunk = os.read(fd, 65536)
+                except OSError:
+                    return False
+                if not chunk:
+                    return False
+                data += chunk
+        return True
+    status = None
+    try:
+        end = time.time() + 20
+        while "❯".encode() not in data and time.time() < end:
+            read_for(0.2)
+        for key in keys:
+            os.write(fd, key.encode())
+            if not read_for(1.0):
+                break
+        read_for(1.0)
+        finished = 0
+        for _ in range(50):
+            finished, status = os.waitpid(pid, os.WNOHANG)
+            if finished:
+                break
+            time.sleep(0.1)
+        if not finished:
+            os.kill(pid, signal.SIGKILL)
+            os.waitpid(pid, 0)
+            status = None
+    except ChildProcessError:
+        pass
+    finally:
+        os.close(fd)
+    return status, data.decode("utf-8", "replace")
+
+
+def test_tui_pty_session(cli_module, tmp_dir, stub_bin, log_path):
+    try:
+        import pty  # noqa: F401  (skipped only where the stdlib has no pty module)
+    except ImportError:
+        print("skip test_tui_pty_session: no pty module on this platform")
+        return
+    project_dir = fresh_project(tmp_dir, "p_tui_pty")
+    write_env(project_dir, INTERNAL_ENV + ["OPENAI_API_KEY=tui-pty-secret"])
+    set_docker_stub(stub_bin, log_path, '''
+if [[ "$1 $2" == "compose ps" ]]; then printf "voipbin-db\\tUp 5 minutes\\nvoipbin-mq\\tUp 5 minutes\\n"; exit 0; fi
+if [[ "$1 $2" == "compose config" ]]; then printf "db\\nmq\\napi-manager\\n"; exit 0; fi
+''')
+    try:
+        status, raw = run_in_pty(tmp_dir, project_dir, ["/help\r", "\r", "/status\r", "/bogus\r", "version\r", "/exit\r"])
+        text = strip_ansi(raw)
+        assert status is not None and os.WIFEXITED(status) and os.WEXITSTATUS(status) == 0, (status, text[-500:])
+        assert "VoIPBin Install CLI" in text and "running 2/3 · mode internal" in text, text[:600]
+        assert "Using .env (mode=internal) · /status" in text and "█" in text
+        assert "Env: running | Services: 2/3 | DNS: ○ | Net: ○ | Mode: internal" in text, text[-900:]
+        assert 'Try "/status" or "/logs <service>" · /help for commands · /exit to quit' in text
+        assert "\x1b[?1049" not in raw, "alternate screen must not be used"
+        assert "❯ /help" in text and "Slash commands:" in text and "VoIPBin Install CLI" in text
+        assert "Unknown command: /bogus. Type /help for available commands." in text
+        assert "No version pins found" in text or "Using :latest" in text, text[-600:]
+        assert "Services" in text and "tui-pty-secret" not in text
+        assert "Goodbye!" in text and "voipbin> " not in text
+        # Ctrl+C clears the typed text, Ctrl+D leaves like exit
+        status, raw = run_in_pty(tmp_dir, project_dir, ["status", "\x03", "\x04"])
+        text = strip_ansi(raw)
+        assert status is not None and os.WIFEXITED(status) and os.WEXITSTATUS(status) == 0, (status, text[-500:])
+        assert "Goodbye!" in text and "Type 'exit' to quit" not in text, text[-400:]
+        # narrow terminal keeps every line inside the width
+        status, raw = run_in_pty(tmp_dir, project_dir, ["/exit\r"], columns=40, rows=24)
+        for row in strip_ansi(raw).splitlines()[:12]:
+            assert cli_module.visible_len(row.rstrip("\r")) <= 40, repr(row)
+    finally:
+        reset_docker_stub(stub_bin, log_path)
+    print("ok test_tui_pty_session")
+
+
 def main():
     tmp_dir = tempfile.mkdtemp(prefix="voipbin-cli-mode-test.")
     prev_path = os.environ.get("PATH", "")
@@ -1314,6 +1837,17 @@ def main():
         test_user_facing_text_has_no_sandbox_and_honors_no_color(cli_module, tmp_dir, log_path)
         test_help_and_version_need_no_root(cli_module, tmp_dir)
         test_status_never_prints_service_passwords(cli_module, tmp_dir, stub_bin, log_path)
+        test_tui_wanted(cli_module)
+        test_tui_clip_and_widths(cli_module)
+        test_tui_render_header_notice_statusbar(cli_module)
+        test_tui_release_version(cli_module, tmp_dir)
+        test_tui_parse_slash(cli_module)
+        test_tui_completer_and_help(cli_module, tmp_dir)
+        test_tui_collect_info_states_and_secrets(cli_module, tmp_dir, stub_bin, log_path)
+        test_tui_read_line_sequences(cli_module, tmp_dir)
+        test_tui_repl_loop(cli_module, tmp_dir)
+        test_tui_fallback_without_terminal(cli_module, tmp_dir, stub_bin, log_path)
+        test_tui_pty_session(cli_module, tmp_dir, stub_bin, log_path)
 
         print("All test_cli_mode.py tests passed")
     finally:

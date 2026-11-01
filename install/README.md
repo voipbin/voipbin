@@ -1246,6 +1246,27 @@ sudo ./voipbin status
 sudo ./voipbin logs -f api-manager
 ```
 
+### Start Screen and Slash Commands
+
+On a UTF-8 terminal, `sudo ./voipbin` opens a start screen: a header (install
+state, mode, current directory), a one-line notice, an input box between two
+rules, and a two-line status bar below it:
+
+```
+Env: running | Services: 12/45 | DNS: ● | Net: ● | Mode: internal
+Try "/status" or "/logs <service>" · /help for commands · /exit to quit
+```
+
+The status bar is read when the screen starts and again after commands that
+change or report the state (`install`, `start`, `stop`, `restart`, `update`,
+`status`, ...); it is not polled. Slash commands are aliases of the commands
+above: `/help`, `/install`, `/status`, `/start`, `/stop`, `/restart`, `/logs`,
+`/doctor`, `/update`, `/version`, `/clear`, `/exit` (`/` alone lists them, Tab
+completes them). The plain words (`status`, `logs api-manager`, ...) and the
+`ast`, `kam`, `db`, `api` contexts work as before. When input or output is
+not a terminal (pipes, CI), or `NO_COLOR` is set, or `TERM=dumb`, or the
+terminal is not UTF-8, the CLI keeps the classic `voipbin>` prompt and output.
+
 ### Command Categories
 
 #### Service Control
