@@ -678,6 +678,39 @@ error on the Asterisk side. A veth pair has no such asymmetry — from the
 bridge's perspective it's indistinguishable from any other container's own
 network attachment.
 
+### Interactive CLI start screen (TUI)
+
+`scripts/voipbin-cli.py` draws a start screen only in the no-argument REPL
+and only when `tui_wanted()` is true: stdin and stdout are terminals,
+`NO_COLOR` is unset, `TERM` is not `dumb`, stdout is UTF-8, and the terminal
+has at least 8 rows (checked again for every prompt; a shorter terminal gets
+the plain `voipbin> ` prompt for that prompt). Otherwise `show_welcome_dashboard()`
+and the classic prompt run unchanged. Commands run with arguments never
+touch the TUI code, so their output and exit codes are unchanged.
+
+- Pure functions (unit-tested): `tui_wanted`, `visible_len`, `clip`,
+  `read_release_version`, `render_header`, `render_notice`, `render_statusbar`,
+  `render_frame`, `parse_slash`. `tui_collect_info()` reuses
+  `detect_dashboard_state()` and `get_quick_status()` and adds only
+  `DOMAIN_MODE` from `.env`; only state, counts, mode and directory are
+  displayed, never a `.env` value such as a password or key.
+- `tui_read_line()` draws the 5-line frame (rule, input, rule, two status
+  lines), moves the cursor back to the input row with relative cursor
+  movement (no alternate screen), and tidies the frame after Enter, Ctrl+C
+  and Ctrl+D. The prompt keeps readline's `\001`/`\002` ANSI wrapping.
+  A resize while typing can leave a stale rule in the scrollback; the next
+  prompt is drawn at the new width.
+- The status bar is refreshed once at start and after the commands in
+  `TUI_STATE_CHANGING` (never polled). The header shows a version only when
+  `CHANGELOG.md` has a released `## [vX.Y.Z]` section; `/version` is still the
+  pinned-image table.
+- Slash commands (`TUI_SLASH_COMMANDS`) are translated to the plain command
+  by `parse_slash()` in `repl_loop()`; they are not interpreted when the TUI
+  is off or inside a context (`ast`, `kam`, `db`, `api`). `cli.tui_on` makes
+  `help` and Tab completion aware of them.
+- Tests: `tests/test_cli_mode.py` (`test_tui_*`), including a pseudo-terminal
+  session and a pipe/NO_COLOR/TERM=dumb fallback run.
+
 ### CLI Commands
 
 ```bash

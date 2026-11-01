@@ -24,6 +24,7 @@ import subprocess
 import sys
 import time
 import traceback
+import unicodedata
 import urllib.error
 import urllib.request
 import yaml
@@ -1235,6 +1236,377 @@ def show_welcome_dashboard():
     print()
 
 
+# =============================================================================
+# Interactive TUI (start screen, input frame, status bar, slash commands)
+# =============================================================================
+#
+# Used only by the no-argument REPL, and only when stdin and stdout are both
+# terminals, NO_COLOR is unset, TERM is not "dumb" and stdout is UTF-8. In every
+# other case the REPL keeps its plain prompt and welcome dashboard. The pure
+# render/parse functions below take plain data so tests can call them directly.
+
+TUI_MIN_HEIGHT = 8
+TUI_NARROW_WIDTH = 60
+TUI_ICON = (
+    "  ████████  ",
+    " ██████████ ",
+    " ██  ██  ██ ",
+)
+TUI_SLASH_HELP = (
+    ("help", "Show commands"),
+    ("install", "Guided install"),
+    ("status", "Show service status"),
+    ("start", "Start services"),
+    ("stop", "Stop app services"),
+    ("restart", "Restart services"),
+    ("logs", "View logs (/logs <service>)"),
+    ("doctor", "Diagnose (read-only)"),
+    ("update", "Update the install"),
+    ("version", "Show pinned image versions"),
+    ("clear", "Clear the screen"),
+    ("exit", "Quit"),
+)
+TUI_SLASH_COMMANDS = tuple(name for name, _ in TUI_SLASH_HELP)
+# Commands after which the status bar data is refreshed once (status/ps show
+# the live state; the others change it). doctor is read-only and not listed.
+TUI_STATE_CHANGING = frozenset((
+    "install", "init", "start", "stop", "restart", "clean", "update",
+    "backup", "restore", "rollback", "network", "dns", "certs", "status", "ps",
+))
+_ANSI_RE = re.compile(r"\x1b\[[0-9;?]*[A-Za-z]")
+
+
+def tui_wanted(stdin=None, stdout=None, environ=None, lines=None):
+    """True only on a UTF-8 terminal with color allowed (see block comment)."""
+    stdin = sys.stdin if stdin is None else stdin
+    stdout = sys.stdout if stdout is None else stdout
+    env = os.environ if environ is None else environ
+    if env.get("NO_COLOR") or env.get("TERM") == "dumb":
+        return False
+    try:
+        if not (stdin.isatty() and stdout.isatty()):
+            return False
+    except (AttributeError, ValueError):
+        return False
+    encoding = (getattr(stdout, "encoding", None) or "").lower().replace("_", "-")
+    if encoding not in ("utf-8", "utf8"):
+        return False
+    if lines is None:
+        lines = shutil.get_terminal_size().lines
+    return lines >= TUI_MIN_HEIGHT
+
+
+def tui_width():
+    """Current terminal width, read at every draw so a resize is picked up."""
+    return max(20, shutil.get_terminal_size().columns)
+
+
+def _char_width(ch):
+    if unicodedata.combining(ch):
+        return 0
+    return 2 if unicodedata.east_asian_width(ch) in ("W", "F") else 1
+
+
+def visible_len(text):
+    """Columns the text occupies once ANSI escape sequences are removed."""
+    return sum(_char_width(c) for c in _ANSI_RE.sub("", text))
+
+
+def clip(text, width, keep="head"):
+    """Cut text to at most `width` columns, marking the cut with an ellipsis.
+
+    keep="head" keeps the start (ANSI sequences stay intact and a reset is
+    appended); keep="tail" keeps the end of a plain string (long paths).
+    """
+    if width <= 0:
+        return ""
+    if visible_len(text) <= width:
+        return text
+    budget = width - 1
+    if keep == "tail":
+        out, used = [], 0
+        for ch in reversed(_ANSI_RE.sub("", text)):
+            w = _char_width(ch)
+            if used + w > budget:
+                break
+            out.append(ch)
+            used += w
+        return "…" + "".join(reversed(out))
+    out, used, has_ansi = [], 0, False
+    for token in re.split(r"(\x1b\[[0-9;?]*[A-Za-z])", text):
+        if _ANSI_RE.fullmatch(token):
+            out.append(token)
+            has_ansi = True
+            continue
+        for ch in token:
+            w = _char_width(ch)
+            if used + w > budget:
+                return "".join(out) + "…" + ("\x1b[0m" if has_ansi else "")
+            out.append(ch)
+            used += w
+    return "".join(out)
+
+
+def read_release_version(path=None):
+    """Latest released version from install/CHANGELOG.md ("## [vX.Y.Z]"), or
+    None when there is no released section yet or the file is unreadable."""
+    path = path or (Path(__file__).resolve().parent.parent / "CHANGELOG.md")
+    try:
+        with open(path, encoding="utf-8") as f:
+            for line in f:
+                m = re.match(r"## \[(v\d+\.\d+\.\d+)\]", line)
+                if m:
+                    return m.group(1)
+    except (OSError, UnicodeDecodeError):
+        pass
+    return None
+
+
+def _printable(text, limit=64):
+    """Strip control characters from values shown on screen."""
+    return "".join(c if c.isprintable() else "?" for c in str(text))[:max(limit, 1)]
+
+
+def tui_collect_info(cli):
+    """Snapshot for the header and status bar. Reuses detect_dashboard_state and
+    get_quick_status (no new probes); the only .env value it adds is DOMAIN_MODE,
+    and only the state, counts, mode and directory are ever displayed."""
+    state = detect_dashboard_state()
+    info = {
+        "version": read_release_version(),
+        "state": state,
+        "running": None, "total": None,
+        "dns": None, "net": None,      # True | False | None (unknown) | "n/a"
+        "mode": None,
+        "cwd": "?",
+    }
+    try:
+        info["cwd"] = _printable(os.getcwd(), 4096)
+    except OSError:
+        pass  # the working directory was removed
+    if state != "not_initialized":
+        info["mode"] = re.sub(r"[^A-Za-z0-9_.-]", "", cli._domain_mode())[:16] or None
+    if state == "running":
+        quick = get_quick_status()
+        if quick["running_count"] == 0:
+            info["state"] = "stopped"
+        else:
+            info["running"] = quick["running_count"]
+            info["total"] = quick["total_count"]
+            info["dns"] = "n/a" if info["mode"] == "external" else bool(quick["dns_active"])
+            info["net"] = bool(quick["network_configured"])
+    return info
+
+
+def _state_label(info):
+    return {"not_initialized": "not installed", "stopped": "stopped",
+            "running": "running"}.get(info["state"], info["state"])
+
+
+def _services_text(info):
+    if info["state"] != "running" or info["running"] is None:
+        return "-"
+    return f"{info['running']}/{info['total']}" if info["total"] else str(info["running"])
+
+
+def _dot(value):
+    if value == "n/a":
+        return "n/a"
+    if value is None:
+        return "-"
+    return green("●") if value else gray("○")
+
+
+def render_header(info, width):
+    """Logo block (left) and three info lines (right). Returns a list of lines,
+    each at most width-1 columns."""
+    limit = max(1, width - 1)
+    title = "VoIPBin Install CLI" + (f" {info['version']}" if info.get("version") else "")
+    status = _state_label(info)
+    if info["state"] == "running":
+        status += f" {_services_text(info)}"
+    if info.get("mode"):
+        status += f" · mode {info['mode']}"
+    show_logo = width >= TUI_NARROW_WIDTH
+    avail = limit - (len(TUI_ICON[0]) + 2 if show_logo else 0)
+    right = [
+        bold(clip(title, avail)),
+        clip(status, avail),
+        gray(clip(info["cwd"], avail, keep="tail")),
+    ]
+    if not show_logo:
+        return right
+    return [white(icon) + "  " + text for icon, text in zip(TUI_ICON, right)]
+
+
+def render_notice(info, width):
+    if info["state"] == "not_initialized":
+        text = "No installation found · /install"
+    else:
+        text = f"Using .env (mode={info.get('mode') or 'internal'}) · /status"
+    return clip(text, max(1, width - 1))
+
+
+def render_statusbar(info, width):
+    """Two lines: the state bar and the hint line, narrowed in three steps."""
+    limit = max(1, width - 1)
+    env = _state_label(info)
+    mode = info.get("mode") or "-"
+    short_env = f"{env} {_services_text(info)}" if info["state"] == "running" else env
+    candidates = [
+        f"Env: {env} | Services: {_services_text(info)} | DNS: {_dot(info['dns'])}"
+        f" | Net: {_dot(info['net'])} | Mode: {mode}",
+        f"{short_env} · DNS {_dot(info['dns'])} Net {_dot(info['net'])} · {mode}",
+        f"{short_env} · {mode}",
+    ]
+    bar = next((c for c in candidates if visible_len(c) <= limit), None)
+    if bar is None:
+        bar = clip(candidates[-1], limit)
+    first = 'Try "/install"' if info["state"] == "not_initialized" else 'Try "/status" or "/logs <service>"'
+    hints = [f"{first} · /help for commands · /exit to quit",
+             "/help for commands · /exit to quit", "/help · /exit"]
+    hint = next((h for h in hints if len(h) <= limit), hints[-1])
+    return [bar, dim(clip(hint, limit))]
+
+
+def render_frame(info, width):
+    """Lines of the input frame: top rule, (empty) input line, bottom rule and
+    the two status lines."""
+    rule = gray("─" * max(1, width - 1))
+    return [rule, ""] + [rule] + render_statusbar(info, width)
+
+
+def render_slash_list():
+    rows = ["Slash commands:"]
+    rows += [f"  /{name:<9} {desc}" for name, desc in TUI_SLASH_HELP]
+    rows.append("Plain commands work too; 'help' lists all.")
+    return "\n".join(rows)
+
+
+def parse_slash(line):
+    """Translate a slash command into its plain command line.
+
+    Returns (line, None) for a line that is not a slash command, (translated,
+    None) for a known slash command, and (None, message) for "/" alone or an
+    unknown slash command.
+    """
+    text = line.strip()
+    if not text.startswith("/"):
+        return line, None
+    if text == "/":
+        return None, render_slash_list()
+    m = re.match(r"/(\S+)(?:\s+(.*))?$", text, re.S)
+    name = m.group(1).lower() if m else ""
+    if name in TUI_SLASH_COMMANDS:
+        args = (m.group(2) or "").strip()
+        return (f"{name} {args}" if args else name), None
+    return None, f"Unknown command: {text.split()[0]}. Type /help for available commands."
+
+
+def tui_print_intro(info):
+    width = tui_width()
+    print()
+    for row in render_header(info, width):
+        print(row)
+    print(render_notice(info, width))
+    print()
+
+
+def tui_read_line(cli, info):
+    """Draw the input frame, read one line below the top rule, then leave the
+    rule, the typed line and a closing rule in the scrollback.
+
+    Rows: top rule 0, input 1, bottom rule 2. Ctrl+C returns "" and EOF
+    re-raises EOFError (the caller's loop ends on it) after the frame is tidied.
+    """
+    out = sys.stdout
+    if shutil.get_terminal_size().lines < TUI_MIN_HEIGHT:
+        return input(cli.get_prompt())
+    frame = render_frame(info, tui_width())
+    try:
+        out.write("\r" + "\n".join(frame) + "\x1b[3A\r")
+        out.flush()
+    except (OSError, ValueError):
+        return input(cli.get_prompt())
+    prompt = f"\001{Colors.BOLD}\002❯\001{Colors.RESET}\002 "
+    previous, swapped = None, False
+    try:
+        previous = signal.signal(signal.SIGINT, signal.default_int_handler)
+        swapped = True
+    except (ValueError, OSError):
+        pass
+    try:
+        line = input(prompt)
+    except KeyboardInterrupt:
+        out.write("\x1b[1A\r\x1b[J")
+        out.flush()
+        return ""
+    except EOFError:
+        out.write("\n\r\x1b[J" + frame[2] + "\n")
+        out.flush()
+        raise
+    finally:
+        if swapped:
+            signal.signal(signal.SIGINT, previous if previous is not None else signal.SIG_DFL)
+    if line.strip():
+        out.write("\r\x1b[J" + frame[2] + "\n")
+    else:
+        out.write("\x1b[2A\r\x1b[J")
+    out.flush()
+    return line
+
+
+def tui_after_command(cli, info, cmd):
+    """Redraw the header after `clear`, or refresh the snapshot once after a
+    command that changes or reports the state. Never raises."""
+    if not cli.running:
+        return
+    try:
+        if cmd == "clear":
+            tui_print_intro(info)
+        elif cmd in TUI_STATE_CHANGING:
+            info.update(tui_collect_info(cli))
+    except Exception:
+        pass
+
+
+def repl_loop(cli, info=None):
+    """The interactive command loop. info is the TUI snapshot, or None for the
+    plain `voipbin> ` prompt (non-terminal, NO_COLOR, TERM=dumb)."""
+    while cli.running:
+        try:
+            tui = info is not None and not cli.context
+            line = tui_read_line(cli, info) if tui else input(cli.get_prompt())
+
+            if cli.context:
+                cli.run_in_context(line)
+            else:
+                if tui:
+                    line, message = parse_slash(line)
+                    if message:
+                        print(message)
+                        continue
+                cmd, args = cli.parse_input(line)
+                if cmd:
+                    if cmd in cli.commands:
+                        try:
+                            cli.commands[cmd](args)
+                        finally:
+                            if info is not None:
+                                tui_after_command(cli, info, cmd)
+                    else:
+                        print(f"Unknown command: {cmd}. Type 'help' for available commands.")
+
+        except EOFError:
+            print()
+            break
+        except KeyboardInterrupt:
+            print()
+            continue
+        except Exception as e:
+            print(red(f"Error: {e}"))
+
+
 # Optional provider keys `status` reports as set/empty (from .env.template's
 # OPTIONAL sections). Grouped keys count as set only when all are set.
 OPTIONAL_PROVIDER_KEYS = (
@@ -2169,6 +2541,9 @@ class VoIPBinCLI:
         # the non-interactive dispatch in _main() (0 ok, 1 user/validation
         # error, 2 environment error; init/start pass their script's code).
         self.last_rc = 0
+        # True only in the terminal REPL started with the TUI (see tui_wanted);
+        # help and tab completion add the slash commands then.
+        self.tui_on = False
 
         # Disable colors if configured
         if not self.config.get("colors", True):
@@ -2351,6 +2726,8 @@ class VoIPBinCLI:
                 print(f"Unknown command: {cmd}")
             return
         print(render_help())
+        if self.tui_on:
+            print(render_slash_list())
 
     # -------------------------------------------------------------------------
     # Mode awareness (dual-mode DNS, VOIP-1275 design §2.10). URLs and mode
@@ -7870,6 +8247,16 @@ class Completer:
         if self.cli.context:
             return self.context_matches(text)
 
+        # Slash commands (terminal REPL with the TUI only)
+        if self.cli.tui_on and line.lstrip().startswith("/"):
+            if len(parts) == 1 and not line.endswith(" "):
+                # GNU readline drops "/" from text, libedit keeps it
+                prefix = "/" if text.startswith("/") else ""
+                word = text.lstrip("/")
+                return [f"{prefix}{c} " for c in TUI_SLASH_COMMANDS if c.startswith(word)]
+            line = line.lstrip()[1:]
+            parts = line.split()
+
         # Empty line or first word - complete commands
         if not parts or (len(parts) == 1 and not line.endswith(" ")):
             commands = list(self.cli.commands.keys())
@@ -8139,14 +8526,24 @@ def _main():
     # Interactive mode
     setup_readline(cli)
 
-    # Show welcome dashboard
-    show_welcome_dashboard()
+    # Start screen: the TUI on a UTF-8 terminal, else the plain dashboard
+    cli.tui_on = tui_wanted()
+    info = None
+    if cli.tui_on:
+        info = tui_collect_info(cli)
+        tui_print_intro(info)
+        state = info["state"]
+    else:
+        show_welcome_dashboard()
+        state = detect_dashboard_state()
 
     # A checkout without .env: offer the guided install once (it asks
     # "Install now?" itself), then continue with the REPL either way.
-    if detect_dashboard_state() == "not_initialized" and sys.stdin.isatty():
+    if state == "not_initialized" and sys.stdin.isatty():
         cli.cmd_install([])
         print()
+        if info is not None:
+            info.update(tui_collect_info(cli))
 
     # Handle Ctrl+C gracefully
     def sigint_handler(sig, frame):
@@ -8158,28 +8555,7 @@ def _main():
 
     signal.signal(signal.SIGINT, sigint_handler)
 
-    while cli.running:
-        try:
-            line = input(cli.get_prompt())
-
-            if cli.context:
-                cli.run_in_context(line)
-            else:
-                cmd, args = cli.parse_input(line)
-                if cmd:
-                    if cmd in cli.commands:
-                        cli.commands[cmd](args)
-                    else:
-                        print(f"Unknown command: {cmd}. Type 'help' for available commands.")
-
-        except EOFError:
-            print()
-            break
-        except KeyboardInterrupt:
-            print()
-            continue
-        except Exception as e:
-            print(red(f"Error: {e}"))
+    repl_loop(cli, info)
 
     print("Goodbye!")
 
