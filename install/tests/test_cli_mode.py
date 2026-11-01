@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
-"""Tests for the CLI/SIP-tooling mode awareness (VOIP-1275 Phase 6).
+"""Tests for the CLI/SIP-tooling mode awareness, the guided
+`install` command, exit-code propagation, clean confirmation and ownership.
 
 Plain asserts, no pytest dependency; run directly:
 
@@ -19,6 +20,7 @@ import contextlib
 import importlib.util
 import io
 import os
+import re
 import shutil
 import stat
 import sys
@@ -589,6 +591,686 @@ def test_rollback_pinned_guard_uses_scoped_checkout(cli_module, tmp_dir):
     print("ok test_rollback_pinned_guard_uses_scoped_checkout")
 
 
+
+# =============================================================================
+# Guided install, exit codes, clean confirmation, ownership, user-facing text
+# =============================================================================
+
+def write_script_stub(project_dir, name, body):
+    """scripts/<name> stub (bash). body is the script text after the shebang."""
+    scripts_dir = os.path.join(project_dir, "scripts")
+    os.makedirs(scripts_dir, exist_ok=True)
+    path = os.path.join(scripts_dir, name)
+    with open(path, "w") as f:
+        f.write("#!/bin/bash\n" + body + "\n")
+    os.chmod(path, 0o755)
+    return path
+
+
+def run_main(cli_module, argv, stdin_text=None):
+    """Run cli main() with argv (check_root bypassed); returns (rc, stdout)."""
+    orig_check_root = cli_module.check_root
+    orig_argv, orig_stdin = sys.argv, sys.stdin
+    prev_cwd = os.getcwd()
+    cli_module.check_root = lambda: None
+    sys.argv = ["voipbin"] + list(argv)
+    if stdin_text is not None:
+        sys.stdin = io.StringIO(stdin_text)
+    buf = io.StringIO()
+    rc = 0
+    try:
+        with contextlib.redirect_stdout(buf):
+            try:
+                cli_module.main()
+            except SystemExit as e:
+                rc = e.code if isinstance(e.code, int) else 1
+    finally:
+        cli_module.check_root = orig_check_root
+        sys.argv, sys.stdin = orig_argv, orig_stdin
+        os.chdir(prev_cwd)
+    return rc, buf.getvalue()
+
+
+def fresh_project(tmp_dir, name):
+    project_dir = os.path.join(tmp_dir, name)
+    shutil.rmtree(project_dir, ignore_errors=True)
+    os.makedirs(os.path.join(project_dir, "scripts"))
+    os.environ["VOIPBIN_PROJECT_DIR"] = project_dir
+    return project_dir
+
+
+def set_docker_stub(stub_bin, log_path, body):
+    """Replace the docker stub with one that logs and runs body."""
+    path = os.path.join(stub_bin, "docker")
+    with open(path, "w") as f:
+        f.write("#!/bin/bash\n" f'echo "DOCKER:$*" >> "{log_path}"\n' + body + "\nexit 0\n")
+    os.chmod(path, 0o755)
+
+
+def reset_docker_stub(stub_bin, log_path):
+    set_docker_stub(stub_bin, log_path, "")
+
+
+def last_line(out):
+    lines = [l for l in out.splitlines() if l.strip()]
+    return lines[-1] if lines else ""
+
+
+def test_init_passes_args_and_propagates_exit_code(cli_module, tmp_dir, log_path):
+    """init used os.system without arguments and dropped the exit code."""
+    project_dir = fresh_project(tmp_dir, "p_init")
+    args_log = os.path.join(tmp_dir, "init_args.log")
+    write_script_stub(project_dir, "init.sh", f'echo "$@" > "{args_log}"\nexit 2')
+    rc, out = run_main(cli_module, ["init", "--yes", "--mode", "internal"])
+    assert rc == 2, (rc, out)
+    with open(args_log) as f:
+        assert f.read().strip() == "--yes --mode internal"
+    write_script_stub(project_dir, "init.sh", "exit 0")
+    rc, out = run_main(cli_module, ["init"])
+    assert rc == 0, (rc, out)
+    print("ok test_init_passes_args_and_propagates_exit_code")
+
+
+def test_start_propagates_exit_code_and_skips_pins_when_locked(cli_module, tmp_dir, log_path):
+    project_dir = fresh_project(tmp_dir, "p_start")
+    write_script_stub(project_dir, "start.sh", "exit 1")
+    with open(os.path.join(project_dir, "versions.lock"), "w") as f:
+        f.write("{}\n")
+    called = []
+    orig = cli_module.resolve_image_tags_parallel
+    cli_module.resolve_image_tags_parallel = lambda *a, **k: called.append(a) or []
+    try:
+        rc, out = run_main(cli_module, ["start"])
+    finally:
+        cli_module.resolve_image_tags_parallel = orig
+    assert rc == 1, (rc, out)
+    assert not called, "version pinning ran on a versions.lock install"
+    assert "pinning image versions" not in out, out
+    print("ok test_start_propagates_exit_code_and_skips_pins_when_locked")
+
+
+def test_clean_requires_confirmation(cli_module, tmp_dir, stub_bin, log_path):
+    reset_docker_stub(stub_bin, log_path)
+    project_dir = fresh_project(tmp_dir, "p_clean")
+    write_env(project_dir, INTERNAL_ENV)
+    for name in ("docker-compose.yml", "versions.lock", ".voipbin-installed"):
+        with open(os.path.join(project_dir, name), "w") as f:
+            f.write("x\n")
+    open(log_path, "w").close()
+    # non-interactive without --force: refused, nothing runs
+    for opts in (["--volumes"], ["--purge"], ["--all"], ["--images"]):
+        rc, out = run_main(cli_module, ["clean"] + opts, stdin_text="")
+        assert rc == 1, (opts, rc, out)
+        assert "--force" in out, out
+    assert "DOCKER:" not in stub_log(log_path), stub_log(log_path)
+    assert os.path.exists(os.path.join(project_dir, ".env"))
+    # interactive answer other than 'yes': aborted
+    cli = cli_module.VoIPBinCLI()
+    orig_stdin = sys.stdin
+
+    class TtyInput(io.StringIO):
+        def isatty(self):
+            return True
+    sys.stdin = TtyInput("y\n")
+    try:
+        out = capture(cli.cmd_clean, ["--volumes"])
+    finally:
+        sys.stdin = orig_stdin
+    assert cli.last_rc == 1 and "Aborted" in out, out
+    assert "DOCKER:" not in stub_log(log_path)
+    # --purge --force: the purge list matches clean.sh (compose, lock, marker)
+    rc, out = run_main(cli_module, ["clean", "--purge", "--force"], stdin_text="")
+    assert rc == 0, (rc, out)
+    for name in (".env", "docker-compose.yml", "versions.lock", ".voipbin-installed"):
+        assert not os.path.exists(os.path.join(project_dir, name)), name
+    assert "WARNING: the database volume stays" in out, out
+    # --volumes --force removes the install marker with the data
+    with open(os.path.join(project_dir, ".voipbin-installed"), "w") as f:
+        f.write("{}\n")
+    rc, out = run_main(cli_module, ["clean", "--volumes", "--force"], stdin_text="")
+    assert rc == 0, (rc, out)
+    assert "DOCKER:compose down -v" in stub_log(log_path), (stub_log(log_path), out)
+    # kept VoIP interfaces: the hint to remove them before installing again
+    assert "clean --network --force" not in out or os.path.exists("/sys/class/net/kamailio-int"), out
+    orig_ifaces = cli_module.INSTALL_VOIP_INTERFACES
+    cli_module.INSTALL_VOIP_INTERFACES = ("lo",)  # present on every Linux host
+    try:
+        rc, out = run_main(cli_module, ["clean", "--volumes", "--force"], stdin_text="")
+        assert rc == 0 and "sudo ./voipbin clean --network --force" in out, out
+        rc, out = run_main(cli_module, ["clean", "--network", "--force"], stdin_text="")
+        assert "VoIP network interfaces were kept" not in out, out
+        rc, out = run_main(cli_module, ["clean", "--containers"], stdin_text="")
+        assert "VoIP network interfaces were kept" not in out, "hint without removing the compose network"
+    finally:
+        cli_module.INSTALL_VOIP_INTERFACES = orig_ifaces
+    assert not os.path.exists(os.path.join(project_dir, ".voipbin-installed"))
+    # options that destroy no data still run without a question
+    rc, out = run_main(cli_module, ["clean", "--containers"], stdin_text="")
+    assert rc == 0, (rc, out)
+    print("ok test_clean_requires_confirmation")
+
+
+def install_docker_stub(stub_bin, log_path, volumes="", info_rc=0):
+    set_docker_stub(stub_bin, log_path, f'''
+if [[ "$1" == "info" ]]; then exit {info_rc}; fi
+if [[ "$1 $2" == "volume ls" ]]; then printf "{volumes}"; exit 0; fi
+if [[ "$1 $2 $3" == "compose config --services" ]]; then printf "db\\nredis\\napi-manager\\n"; exit 0; fi
+''')
+
+
+def write_install_stubs(project_dir, tmp_dir, start_rc=0, admin_rc=0):
+    calls = os.path.join(tmp_dir, "install_calls.log")
+    open(calls, "w").close()
+    write_script_stub(project_dir, "doctor.sh",
+                      f'echo doctor >> "{calls}"\necho "DOCTOR docker: pass ok"\necho "DOCTOR env-file: fail no .env"\nexit 1')
+    write_script_stub(project_dir, "init.sh", f'''echo "init $*" >> "{calls}"
+cat > .env <<EOF
+DOMAIN_MODE=internal
+BASE_DOMAIN=voipbin.test
+HOST_EXTERNAL_IP=192.168.1.100
+EOF
+touch docker-compose.yml versions.lock
+exit 0''')
+    write_script_stub(project_dir, "setup-host.sh", f'echo setup-host >> "{calls}"\nexit 0')
+    write_script_stub(project_dir, "start.sh", f'echo start >> "{calls}"\nexit {start_rc}')
+    write_script_stub(project_dir, "create-admin.sh", f'''echo "create-admin $*" >> "{calls}"
+[[ ${{#VOIPBIN_ADMIN_PASSWORD}} -ge 20 ]] && echo "password-env-ok" >> "{calls}"
+echo "$VOIPBIN_ADMIN_PASSWORD" > "{tmp_dir}/admin_pw_seen"
+[[ {admin_rc} -eq 3 ]] && {{ echo "VOIPBIN_ADMIN: status=exists customer_id=c1"; exit 3; }}
+[[ {admin_rc} -ne 0 ]] && {{ echo 'VOIPBIN_ADMIN: status=error reason="boom"'; exit 1; }}
+echo "VOIPBIN_ADMIN: status=ok customer_id=c1 agent_id=a1"''')
+    return calls
+
+
+def test_install_entry_guards(cli_module, tmp_dir, stub_bin, log_path):
+    """Every guard exits before init.sh runs and ends with the result line."""
+    project_dir = fresh_project(tmp_dir, "p_guard")
+    install_docker_stub(stub_bin, log_path)
+    calls = write_install_stubs(project_dir, tmp_dir)
+
+    def run(argv, stdin_text=""):
+        rc, out = run_main(cli_module, ["install"] + argv, stdin_text=stdin_text)
+        assert last_line(out).startswith("VOIPBIN_INSTALL: "), out
+        return rc, out, last_line(out)
+
+    cases = [
+        (["--bogus"], 1, "unknown argument"),
+        (["--resume", "--mode", "external"], 1, "--resume does not accept"),
+        ([], 1, "non-interactive run needs --yes"),
+        (["--yes"], 1, "--admin-email is required"),
+        (["--yes", "--admin-email", "not-an-email"], 1, "invalid --admin-email"),
+        (["--resume", "--yes", "--admin-email", "a@example.com"], 1, "nothing to resume"),
+    ]
+    for argv, want_rc, reason in cases:
+        rc, out, line = run(argv)
+        assert rc == want_rc and "status=error" in line and reason in line, (argv, rc, line)
+
+    existing = os.path.join(tmp_dir, "existing-pw")
+    open(existing, "w").close()
+    rc, out, line = run(["--yes", "--admin-email", "a@example.com", "--admin-password-file", existing])
+    assert rc == 1 and "already exists" in line, line
+    assert os.path.exists(existing), "a pre-existing --admin-password-file was removed"
+
+    # (b) .env missing but the database volume exists
+    project_name = os.path.basename(project_dir)
+    install_docker_stub(stub_bin, log_path, volumes=f"other\\n{project_name}_db_data\\n")
+    rc, out, line = run(["--yes", "--admin-email", "a@example.com"])
+    assert rc == 1 and "database volume" in line, line
+    install_docker_stub(stub_bin, log_path)
+
+    # VoIP interfaces left by a removed install: step 1 stops a new install
+    orig_ifaces = cli_module.INSTALL_VOIP_INTERFACES
+    cli_module.INSTALL_VOIP_INTERFACES = ("lo",)  # present on every Linux host
+    try:
+        rc, out, line = run(["--yes", "--admin-email", "a@example.com"])
+    finally:
+        cli_module.INSTALL_VOIP_INTERFACES = orig_ifaces
+    assert rc == 2 and "status=error step=1" in line and "VoIP network interfaces" in line, line
+    assert "clean --network --force" in line and not os.path.exists(os.path.join(project_dir, ".env")), line
+
+    # docker unreachable: environment error
+    install_docker_stub(stub_bin, log_path, info_rc=1)
+    rc, out, line = run(["--yes", "--admin-email", "a@example.com"])
+    assert rc == 2 and "docker is not installed" in line, line
+    install_docker_stub(stub_bin, log_path)
+
+    # (c) .env present: never re-installs
+    write_env(project_dir, INTERNAL_ENV)
+    rc, out, line = run(["--yes", "--admin-email", "a@example.com"])
+    assert rc == 1 and "existing .env without a completed install" in line and "--resume" in line, line
+    cli_module.write_install_marker(os.path.join(project_dir, ".voipbin-installed"), "a@example.com")
+    rc, out, line = run(["--yes", "--admin-email", "a@example.com"])
+    assert rc == 0 and "state=already-installed" in line and "admin=a@example.com" in line, line
+    rc, out, line = run(["--resume", "--yes", "--admin-email", "a@example.com"])
+    assert rc == 1 and "already completed" in line, line
+
+    with open(calls) as f:
+        assert "init" not in f.read(), "a guard let init.sh run"
+    reset_docker_stub(stub_bin, log_path)
+    print("ok test_install_entry_guards")
+
+
+def test_install_noninteractive_happy_path_and_failure(cli_module, tmp_dir, stub_bin, log_path):
+    orig_urls = cli_module.INSTALL_REACHABILITY_URLS
+    orig_verify = cli_module.VoIPBinCLI._install_wait_and_verify
+    cli_module.INSTALL_REACHABILITY_URLS = ()
+    cli_module.VoIPBinCLI._install_wait_and_verify = lambda self, d: (True, "3 containers", [], [])
+    try:
+        project_dir = fresh_project(tmp_dir, "p_happy")
+        install_docker_stub(stub_bin, log_path)
+        calls = write_install_stubs(project_dir, tmp_dir)
+        pw_file = os.path.join(tmp_dir, "admin-password")
+        if os.path.exists(pw_file):
+            os.remove(pw_file)
+        rc, out = run_main(cli_module, ["install", "--yes", "--admin-email", "admin@example.com",
+                                        "--admin-password-file", pw_file, "--mode", "internal"], stdin_text="")
+        assert rc == 0, (rc, out)
+        assert last_line(out) == ("VOIPBIN_INSTALL: status=ok state=installed admin=admin@example.com "
+                                  "url=http://admin.voipbin.test:3003"), last_line(out)
+        with open(calls) as f:
+            seq = [l.split()[0] for l in f.read().splitlines()]
+        assert seq == ["doctor", "init", "setup-host", "start", "create-admin", "password-env-ok"], seq
+        with open(calls) as f:
+            assert "init --yes --mode internal" in f.read()
+        st = os.stat(pw_file)
+        assert stat.S_IMODE(st.st_mode) == 0o600, oct(st.st_mode)
+        with open(pw_file) as f:
+            password = f.read().strip()
+        with open(os.path.join(tmp_dir, "admin_pw_seen")) as f:
+            assert f.read().strip() == password
+        assert len(password) >= 20
+        assert password not in out, "password printed although --admin-password-file was given"
+        marker = cli_module.read_install_marker(os.path.join(project_dir, ".voipbin-installed"))
+        assert marker.get("admin_email") == "admin@example.com" and "password" not in json_dump(marker)
+        # re-run: idempotent no-op
+        rc, out = run_main(cli_module, ["install", "--yes", "--admin-email", "admin@example.com"], stdin_text="")
+        assert rc == 0 and "state=already-installed" in last_line(out), out
+
+        # failure injection: start.sh fails -> its code propagates, no marker,
+        # the password file this run created is removed
+        project_dir = fresh_project(tmp_dir, "p_fail")
+        write_install_stubs(project_dir, tmp_dir, start_rc=2)
+        pw_file2 = os.path.join(tmp_dir, "admin-password-2")
+        if os.path.exists(pw_file2):
+            os.remove(pw_file2)
+        rc, out = run_main(cli_module, ["install", "--yes", "--admin-email", "admin@example.com",
+                                        "--admin-password-file", pw_file2], stdin_text="")
+        line = last_line(out)
+        assert rc == 2 and line.startswith("VOIPBIN_INSTALL: status=error step=4"), (rc, line)
+        # the next command keeps the --yes mode so it can be run as printed
+        assert ('next="fix the error above, then sudo ./voipbin install --resume --yes '
+                '--admin-email admin@example.com --admin-password-file <new path>"') in line, line
+        assert "What failed:" in out and "Next:" in out
+        assert not os.path.exists(pw_file2)
+        assert not os.path.exists(os.path.join(project_dir, ".voipbin-installed"))
+
+        # resume after the failure: init is not re-run
+        write_install_stubs(project_dir, tmp_dir)
+        os.makedirs(os.path.join(project_dir, "certs", "api"), exist_ok=True)
+        for n in ("cert.pem", "privkey.pem"):
+            open(os.path.join(project_dir, "certs", "api", n), "w").close()
+        # VoIP interfaces made by the failed run itself do not stop --resume
+        orig_ifaces = cli_module.INSTALL_VOIP_INTERFACES
+        cli_module.INSTALL_VOIP_INTERFACES = ("lo",)
+        try:
+            rc, out = run_main(cli_module, ["install", "--resume", "--yes", "--admin-email", "admin@example.com"], stdin_text="")
+        finally:
+            cli_module.INSTALL_VOIP_INTERFACES = orig_ifaces
+        assert rc == 0, (rc, out)
+        with open(os.path.join(tmp_dir, "install_calls.log")) as f:
+            seq = [l.split()[0] for l in f.read().splitlines()]
+        assert "init" not in seq and seq[:3] == ["doctor", "setup-host", "start"], seq
+        assert "Admin password" in out and "printed once" in out, "no-file run must show the password once with a warning"
+
+        # a marker left behind without .env (removed install) is dropped, so a
+        # later --resume is not refused as "already completed"
+        project_dir = fresh_project(tmp_dir, "p_stale")
+        write_install_stubs(project_dir, tmp_dir, start_rc=2)
+        with open(os.path.join(project_dir, ".voipbin-installed"), "w") as f:
+            f.write("{}")
+        rc, out = run_main(cli_module, ["install", "--yes", "--admin-email", "admin@example.com"], stdin_text="")
+        assert rc == 2 and not os.path.exists(os.path.join(project_dir, ".voipbin-installed")), (rc, out)
+
+        # existing account without --reset-admin-password: exit 1, guidance
+        project_dir = fresh_project(tmp_dir, "p_exists")
+        write_install_stubs(project_dir, tmp_dir, admin_rc=3)
+        rc, out = run_main(cli_module, ["install", "--yes", "--admin-email", "admin@example.com"], stdin_text="")
+        assert rc == 1 and "already exists" in last_line(out), last_line(out)
+        assert ('next="sudo ./voipbin install --resume --yes --admin-email admin@example.com '
+                '--reset-admin-password"') in last_line(out), last_line(out)
+        pw_file3 = os.path.join(tmp_dir, "admin-password-3")
+        if os.path.exists(pw_file3):
+            os.remove(pw_file3)
+        project_dir = fresh_project(tmp_dir, "p_exists2")
+        write_install_stubs(project_dir, tmp_dir, admin_rc=3)
+        rc, out = run_main(cli_module, ["install", "--yes", "--admin-email", "admin@example.com",
+                                        "--admin-password-file", pw_file3], stdin_text="")
+        # the printed command keeps --admin-password-file, so the new password is not printed
+        assert rc == 1 and "--admin-password-file <new path> --reset-admin-password" in last_line(out), last_line(out)
+    finally:
+        cli_module.INSTALL_REACHABILITY_URLS = orig_urls
+        cli_module.VoIPBinCLI._install_wait_and_verify = orig_verify
+        reset_docker_stub(stub_bin, log_path)
+    print("ok test_install_noninteractive_happy_path_and_failure")
+
+
+def test_install_user_caroot(cli_module, tmp_dir):
+    """Under sudo, init.sh/start.sh get the invoking user's mkcert CA directory."""
+    import pwd as pwd_mod
+    calls = []
+
+    class R:
+        def __init__(self, rc=0, out=""):
+            self.returncode, self.stdout = rc, out
+
+    caroot = os.path.join(tmp_dir, "user-caroot")
+
+    def fake_run(cmd, **kw):
+        calls.append(cmd)
+        if cmd[-1] == "-CAROOT":
+            return R(0, caroot + "\n")
+        return R(0)
+
+    me = pwd_mod.getpwuid(os.getuid())
+    orig_euid, orig_which = cli_module.os.geteuid, cli_module.shutil.which
+    orig_sudo = os.environ.get("SUDO_USER")
+    try:
+        cli_module.os.geteuid = lambda: 0
+        os.environ["SUDO_USER"] = me.pw_name
+        cli_module.shutil.which = lambda n: "/usr/bin/" + n
+        if me.pw_uid != 0:
+            got = cli_module.install_user_caroot(run=fake_run)
+            assert got == caroot, got
+            assert calls[0] == ["sudo", "-u", me.pw_name, "-H", "mkcert", "-CAROOT"], calls
+            assert calls[1] == ["sudo", "-u", me.pw_name, "-H", "mkdir", "-p", caroot], calls
+            # mkcert not installed yet: the Linux default directory, still created as the user
+            calls.clear()
+            cli_module.shutil.which = lambda n: None
+            got = cli_module.install_user_caroot(run=fake_run)
+            default = os.path.join(me.pw_dir, ".local", "share", "mkcert")
+            assert got == default and calls == [["sudo", "-u", me.pw_name, "-H", "mkdir", "-p", default]], (got, calls)
+        # no SUDO_USER (direct root login) or not root: unchanged behavior
+        del os.environ["SUDO_USER"]
+        assert cli_module.install_user_caroot(run=fake_run) is None
+        os.environ["SUDO_USER"] = me.pw_name
+        cli_module.os.geteuid = lambda: 1000
+        assert cli_module.install_user_caroot(run=fake_run) is None
+    finally:
+        cli_module.os.geteuid, cli_module.shutil.which = orig_euid, orig_which
+        if orig_sudo is None:
+            os.environ.pop("SUDO_USER", None)
+        else:
+            os.environ["SUDO_USER"] = orig_sudo
+    os.makedirs(caroot, exist_ok=True)
+    for n in ("rootCA.pem", "rootCA-key.pem"):
+        open(os.path.join(caroot, n), "w").close()
+    seen = []
+    cli_module.fix_caroot_ownership(caroot, (1234, 1234, "alice"), chown=lambda p, u, g: seen.append((os.path.basename(p), u)))
+    assert sorted(seen) == [("rootCA-key.pem", 1234), ("rootCA.pem", 1234)], seen
+    print("ok test_install_user_caroot")
+
+
+def test_install_passes_caroot_to_init_and_start(cli_module, tmp_dir, stub_bin, log_path):
+    orig = (cli_module.INSTALL_REACHABILITY_URLS, cli_module.VoIPBinCLI._install_wait_and_verify,
+            cli_module.install_user_caroot)
+    caroot = os.path.join(tmp_dir, "caroot-x")
+    cli_module.INSTALL_REACHABILITY_URLS = ()
+    cli_module.VoIPBinCLI._install_wait_and_verify = lambda self, d: (True, "3 containers", [], [])
+    cli_module.install_user_caroot = lambda: caroot
+    try:
+        project_dir = fresh_project(tmp_dir, "p_caroot")
+        install_docker_stub(stub_bin, log_path)
+        write_install_stubs(project_dir, tmp_dir)
+        for name in ("init.sh", "start.sh", "setup-host.sh"):
+            path = os.path.join(project_dir, "scripts", name)
+            with open(path) as f:
+                body = f.read()
+            with open(path, "w") as f:
+                f.write(body.replace("#!/bin/bash\n",
+                                     "#!/bin/bash\necho \"%s CAROOT=${CAROOT:-}\" >> %s\n"
+                                     % (name, os.path.join(tmp_dir, "caroot_seen")), 1))
+        seen_path = os.path.join(tmp_dir, "caroot_seen")
+        if os.path.exists(seen_path):
+            os.remove(seen_path)
+        rc, out = run_main(cli_module, ["install", "--yes", "--admin-email", "admin@example.com"], stdin_text="")
+        assert rc == 0, (rc, out)
+        with open(seen_path) as f:
+            seen = f.read().splitlines()
+        assert "init.sh CAROOT=" + caroot in seen and "start.sh CAROOT=" + caroot in seen, seen
+    finally:
+        (cli_module.INSTALL_REACHABILITY_URLS, cli_module.VoIPBinCLI._install_wait_and_verify,
+         cli_module.install_user_caroot) = orig
+        reset_docker_stub(stub_bin, log_path)
+    print("ok test_install_passes_caroot_to_init_and_start")
+
+
+def json_dump(obj):
+    import json
+    return json.dumps(obj)
+
+
+def test_classify_install_containers(cli_module):
+    # the CLI and check-install.sh/doctor.sh (common.sh) must match the same tts log line
+    with open(os.path.join(SCRIPTS_DIR, "common.sh")) as f:
+        assert f'TTS_CREDENTIALS_MISSING_LOG="{cli_module.INSTALL_TTS_CREDENTIALS_MISSING_LOG}"' in f.read()
+    def c(name, status="running", health="", probe="", restarts=0, restarting=False):
+        return {"name": name, "status": status, "health": health, "last_probe": probe,
+                "restart_count": restarts, "restarting": restarting}
+    tts = lambda name: name == "voipbin-tts-mgr"
+    snap = [
+        c("voipbin-db", health="healthy"),
+        c("voipbin-call-mgr", health="unhealthy", probe="exec: wget: executable file not found in $PATH"),
+        c("voipbin-flow-mgr", health="unhealthy", probe="connection refused"),
+        c("voipbin-tts-mgr", restarts=5, restarting=True),
+        c("voipbin-ai-mgr", restarts=3),
+        c("voipbin-redis", status="exited"),
+        c("voipbin-api-mgr", health="starting"),
+    ]
+    baseline = {"voipbin-tts-mgr": 2, "voipbin-ai-mgr": 1}
+    v = cli_module.classify_install_containers(snap, baseline, tts)
+    assert v["known"] == ["voipbin-call-mgr"], v
+    assert v["optional"] == ["voipbin-tts-mgr"], v
+    assert v["starting"] == ["voipbin-api-mgr"], v
+    assert sorted(n for n, _ in v["fail"]) == ["voipbin-ai-mgr", "voipbin-flow-mgr", "voipbin-redis"], v
+    # tts restarting for another reason is a failure
+    v = cli_module.classify_install_containers([c("voipbin-tts-mgr", restarting=True)], {}, lambda n: False)
+    assert v["fail"] == [("voipbin-tts-mgr", "restarting")], v
+    print("ok test_classify_install_containers")
+
+
+def test_install_verify_timeouts_and_ping(cli_module, tmp_dir):
+    cli, _ = make_cli(tmp_dir, INTERNAL_ENV, cli_module)
+    now = [0.0]
+    clock = lambda: now[0]
+
+    def sleep(s):
+        now[0] += s
+    starting = [{"name": "voipbin-api-mgr", "status": "running", "health": "starting", "last_probe": "",
+                 "restart_count": 0, "restarting": False}]
+    cli._install_inspect_containers = lambda d: starting
+    ok, summary, optional, failures = cli._install_wait_and_verify(".", clock=clock, sleep=sleep, ping=lambda: True)
+    assert not ok and ("voipbin-api-mgr", "still starting after 180s") in failures, failures
+    assert now[0] >= 180
+    healthy = [dict(starting[0], health="healthy")]
+    cli._install_inspect_containers = lambda d: healthy
+    now[0] = 0.0
+    ok, summary, optional, failures = cli._install_wait_and_verify(".", clock=clock, sleep=sleep, ping=lambda: False)
+    assert not ok and failures[0][0] == "api-manager", failures
+    assert 30 <= now[0] < 40, now[0]  # minimum observation window, then stops
+    now[0] = 0.0
+    ok, summary, optional, failures = cli._install_wait_and_verify(".", clock=clock, sleep=sleep, ping=lambda: True)
+    assert ok and not failures, failures
+    print("ok test_install_verify_timeouts_and_ping")
+
+
+def test_install_ownership(cli_module, tmp_dir):
+    me = pwd_name()
+    prev = os.environ.get("SUDO_USER")
+    try:
+        os.environ["SUDO_USER"] = me
+        owner = cli_module.resolve_install_owner(tmp_dir)
+        assert owner and owner[0] == os.getuid() and owner[2] == me, owner
+        os.environ.pop("SUDO_USER")
+        owner = cli_module.resolve_install_owner(tmp_dir)
+        assert owner and owner[0] == os.stat(tmp_dir).st_uid, owner
+        os.environ["SUDO_USER"] = "root"
+        orig_stat = cli_module.os.stat
+        class RootStat:
+            st_uid = 0
+            st_gid = 0
+        cli_module.os.stat = lambda p: RootStat()
+        try:
+            assert cli_module.resolve_install_owner(tmp_dir) is None
+        finally:
+            cli_module.os.stat = orig_stat
+    finally:
+        if prev is None:
+            os.environ.pop("SUDO_USER", None)
+        else:
+            os.environ["SUDO_USER"] = prev
+
+    project_dir = os.path.join(tmp_dir, "p_owner")
+    shutil.rmtree(project_dir, ignore_errors=True)
+    os.makedirs(os.path.join(project_dir, "certs", "api"))
+    for rel in (".env", "docker-compose.yml", "versions.lock", ".voipbin-installed",
+                os.path.join("certs", "api", "cert.pem"), "README.md"):
+        open(os.path.join(project_dir, rel), "w").close()
+    outside = os.path.join(tmp_dir, "outside-target")
+    open(outside, "w").close()
+    os.symlink(outside, os.path.join(project_dir, "tmp"))
+    seen = []
+    n = cli_module.fix_install_ownership(project_dir, owner=(1234, 1234, "u"),
+                                         chown=lambda p, u, g: seen.append(os.path.relpath(p, project_dir)))
+    for rel in (".env", "docker-compose.yml", "versions.lock", ".voipbin-installed", "certs",
+                os.path.join("certs", "api"), os.path.join("certs", "api", "cert.pem")):
+        assert rel in seen, (rel, seen)
+    assert "README.md" not in seen and "tmp" not in seen, seen
+    assert n == len(seen)
+    # owner cannot be resolved: no chown, one warning line
+    orig = cli_module.resolve_install_owner
+    cli_module.resolve_install_owner = lambda d: None
+    try:
+        seen.clear()
+        out = capture(cli_module.fix_install_ownership, project_dir, None, lambda p, u, g: seen.append(p))
+    finally:
+        cli_module.resolve_install_owner = orig
+    assert not seen and "ownership not changed" not in out, out  # warning goes to stderr
+    # a symlinked parent directory is not followed
+    real_cfg = os.path.join(tmp_dir, "elsewhere-config")
+    os.makedirs(os.path.join(real_cfg, "coredns"), exist_ok=True)
+    open(os.path.join(real_cfg, "coredns", "Corefile"), "w").close()
+    os.symlink(real_cfg, os.path.join(project_dir, "config"))
+    seen.clear()
+    cli_module.fix_install_ownership(project_dir, owner=(1234, 1234, "u"),
+                                     chown=lambda p, u, g: seen.append(os.path.relpath(p, project_dir)))
+    assert not any(s.startswith("config") for s in seen), seen
+    print("ok test_install_ownership")
+
+
+def pwd_name():
+    import pwd
+    return pwd.getpwuid(os.getuid()).pw_name
+
+
+def test_user_facing_text_has_no_sandbox_and_honors_no_color(cli_module, tmp_dir, log_path):
+    cli, project_dir = make_cli(tmp_dir, INTERNAL_ENV, cli_module)
+    texts = [cli_module.render_help(), cli_module.render_api_help(),
+             capture(cli_module.show_cli_usage), capture(cli.cmd_clean, []),
+             cli_module.get_logo()]
+    texts += [d + u for d, u in cli.help_text.values()]
+    empty = os.path.join(tmp_dir, "p_dash")
+    os.makedirs(empty, exist_ok=True)
+    prev = os.getcwd()
+    os.chdir(empty)
+    try:
+        texts.append(capture(cli_module.show_welcome_dashboard))
+    finally:
+        os.chdir(prev)
+    for t in texts:
+        assert "sandbox" not in t.lower(), t[:400]
+    # the first screen no longer makes editing .env a required step
+    assert "nano .env" not in texts[-1] and "install" in texts[-1], texts[-1]
+
+    prev_no_color = os.environ.get("NO_COLOR")
+    saved = {k: getattr(cli_module.Colors, k) for k in ("GREEN", "RED", "YELLOW", "BLUE", "GRAY", "WHITE", "BOLD", "DIM", "RESET")}
+    class FakeTty:
+        def isatty(self):
+            return True
+    os.environ.pop("NO_COLOR", None)
+    assert cli_module.color_wanted(FakeTty()) is True
+    os.environ["NO_COLOR"] = "1"
+    try:
+        assert cli_module.color_wanted(FakeTty()) is False, "NO_COLOR ignored on a terminal"
+        assert cli_module.color_wanted() is False
+        rc, out = run_main(cli_module, ["--help"])
+        assert rc == 0 and "\x1b[" not in out, repr(out[:200])
+        assert "install" in out and "help api" in out, out
+    finally:
+        for k, v in saved.items():
+            setattr(cli_module.Colors, k, v)
+        if prev_no_color is None:
+            os.environ.pop("NO_COLOR", None)
+        else:
+            os.environ["NO_COLOR"] = prev_no_color
+    print("ok test_user_facing_text_has_no_sandbox_and_honors_no_color")
+
+
+def test_help_and_version_need_no_root(cli_module, tmp_dir):
+    make_cli(tmp_dir, INTERNAL_ENV, cli_module)
+    orig_check_root, orig_argv = cli_module.check_root, sys.argv
+    prev_cwd = os.getcwd()
+
+    def refuse():
+        raise SystemExit(99)
+    cli_module.check_root = refuse
+    try:
+        for argv in (["--help"], ["-h"], ["help"], ["help", "install"]):
+            sys.argv = ["voipbin"] + argv
+            with contextlib.redirect_stdout(io.StringIO()):
+                cli_module.main()  # must not hit check_root
+            os.chdir(prev_cwd)
+        sys.argv = ["voipbin", "status"]
+        raised = None
+        try:
+            with contextlib.redirect_stdout(io.StringIO()):
+                cli_module.main()
+        except SystemExit as e:
+            raised = e.code
+        assert raised == 99, raised
+    finally:
+        cli_module.check_root, sys.argv = orig_check_root, orig_argv
+        os.chdir(prev_cwd)
+    print("ok test_help_and_version_need_no_root")
+
+
+def test_status_never_prints_service_passwords(cli_module, tmp_dir, stub_bin, log_path):
+    cli, project_dir = make_cli(tmp_dir, INTERNAL_ENV + ["OPENAI_API_KEY=fake-openai-key"], cli_module)
+    set_docker_stub(stub_bin, log_path, '''
+if [[ "$1 $2" == "compose ps" ]]; then printf "voipbin-db\\tUp 5 minutes\\nvoipbin-mq\\tUp 5 minutes\\n"; exit 0; fi
+''')
+    prev_env = {k: os.environ.get(k) for k in ("RABBITMQ_DEFAULT_PASS", "MYSQL_ROOT_PASSWORD")}
+    os.environ["RABBITMQ_DEFAULT_PASS"] = "fake-mq-secret"
+    os.environ["MYSQL_ROOT_PASSWORD"] = "fake-db-secret"
+    prev = os.getcwd()
+    os.chdir(project_dir)
+    try:
+        out = capture(cli.cmd_status, [])
+    finally:
+        os.chdir(prev)
+        for k, v in prev_env.items():
+            if v is None:
+                os.environ.pop(k, None)
+            else:
+                os.environ[k] = v
+        reset_docker_stub(stub_bin, log_path)
+    assert "fake-mq-secret" not in out and "fake-db-secret" not in out, out
+    assert "root_password" not in out and "guest" not in out, out
+    assert "credentials: see .env" in out, out
+    assert "fake-openai-key" not in out, out
+    assert re.search(r"OPENAI_API_KEY\s+\S*set", out), out
+    assert "(TTS/storage disabled)" not in out and "(transcription)" not in out, out
+    print("ok test_status_never_prints_service_passwords")
+
 def main():
     tmp_dir = tempfile.mkdtemp(prefix="voipbin-cli-mode-test.")
     prev_path = os.environ.get("PATH", "")
@@ -598,6 +1280,8 @@ def main():
         os.environ["PATH"] = stub_bin + os.pathsep + prev_path
 
         cli_module = load_module("voipbin_cli", os.path.join(SCRIPTS_DIR, "voipbin-cli.py"))
+        # never depend on this host's VoIP interfaces; tests that need one set ("lo",)
+        cli_module.INSTALL_VOIP_INTERFACES = ("voipbin-test-none",)
 
         test_dns_external_gate(cli_module, tmp_dir, log_path)
         test_dns_internal_not_gated(cli_module, tmp_dir, log_path)
@@ -617,6 +1301,19 @@ def main():
         test_upgrade_pinned_migration_failure_guidance_uses_scoped_checkout(cli_module, tmp_dir, log_path)
         test_upgrade_pinned_compose_up_failure_guidance_uses_scoped_checkout(cli_module, tmp_dir, log_path)
         test_rollback_pinned_guard_uses_scoped_checkout(cli_module, tmp_dir)
+        test_init_passes_args_and_propagates_exit_code(cli_module, tmp_dir, log_path)
+        test_start_propagates_exit_code_and_skips_pins_when_locked(cli_module, tmp_dir, log_path)
+        test_clean_requires_confirmation(cli_module, tmp_dir, stub_bin, log_path)
+        test_install_entry_guards(cli_module, tmp_dir, stub_bin, log_path)
+        test_install_noninteractive_happy_path_and_failure(cli_module, tmp_dir, stub_bin, log_path)
+        test_classify_install_containers(cli_module)
+        test_install_verify_timeouts_and_ping(cli_module, tmp_dir)
+        test_install_ownership(cli_module, tmp_dir)
+        test_install_user_caroot(cli_module, tmp_dir)
+        test_install_passes_caroot_to_init_and_start(cli_module, tmp_dir, stub_bin, log_path)
+        test_user_facing_text_has_no_sandbox_and_honors_no_color(cli_module, tmp_dir, log_path)
+        test_help_and_version_need_no_root(cli_module, tmp_dir)
+        test_status_never_prints_service_passwords(cli_module, tmp_dir, stub_bin, log_path)
 
         print("All test_cli_mode.py tests passed")
     finally:

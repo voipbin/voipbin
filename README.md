@@ -69,7 +69,7 @@ After `start.sh`:
 
 - **Open the apps.** Internal mode serves the Admin Console at `http://admin.voipbin.test:3003`, Talk at `http://talk.voipbin.test:3005`, Meet at `http://meet.voipbin.test:3004`, and the API at `https://api.voipbin.test:8443`.
 - **Browsing from another machine.** Map the `*.voipbin.test` names to the server first (see [Networking & DNS](install/README.md#networking--dns)), and accept the API certificate at `https://api.voipbin.test:8443` once, because the local certificate authority is trusted only on the server.
-- **First account.** A fresh install creates no user account. For a local evaluation install, add `VOIPBIN_SANDBOX_DEV_SEED=true` to `.env` before running `start.sh` to create a test account and an API access key (see [What Gets Created](install/README.md#what-gets-created)). Never enable it on a host reachable from the internet.
+- **First account.** `sudo ./voipbin install` (the [guided install](install/README.md#guided-install-sudo-voipbin-install)) creates the first admin account and prints its random password once. The script flow above creates no user account. For a local evaluation install, add `VOIPBIN_SANDBOX_DEV_SEED=true` to `.env` before running `start.sh` to create a test account and an API access key (see [What Gets Created](install/README.md#what-gets-created)). Never enable it on a host reachable from the internet.
 
 Requirements:
 

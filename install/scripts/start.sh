@@ -505,35 +505,6 @@ fetch_customer_id() {
     fi
 }
 
-# Wait for agent-manager to process customer creation event and create admin agent
-wait_for_admin_agent() {
-    local customer_id="$1"
-    local max_wait=30
-    local waited=0
-
-    # This function's stdout is captured by the caller (AGENT_ID=$(...)), so
-    # progress logging must go to stderr or it corrupts the returned agent ID.
-    log_info "  Waiting for admin agent to be created..." >&2
-    while [ $waited -lt $max_wait ]; do
-        local agent_list
-        agent_list=$(docker exec voipbin-agent-mgr /app/bin/agent-control agent list \
-            --customer-id "$customer_id" 2>/dev/null || true)
-
-        local agent_id
-        agent_id=$(echo "$agent_list" | jq -r '.[0].id' 2>/dev/null)
-
-        if [ -n "$agent_id" ] && [ "$agent_id" != "null" ]; then
-            echo "$agent_id"
-            return 0
-        fi
-
-        sleep 2
-        waited=$((waited + 2))
-    done
-
-    return 1
-}
-
 # Enable the scheduler's in-stack DB backup (VOIP-1281). It ships disabled
 # upstream (the schedule-manager seed migration: "production uses managed
 # Cloud SQL backups; self-hosted installs enable it"), since a
@@ -569,41 +540,20 @@ setup_test_customer() {
     local customer_password="admin@localhost"
     local customer_name="Install Admin"
 
-    # Step 1: Create customer via CLI
-    # agent-manager will auto-create an admin agent with a random unusable password
+    # Steps 1-4 (shared with the guided install's admin step): create the
+    # customer, wait for its admin agent, set the password, verify the login
+    # and set the unlimited billing plan. --reset keeps re-runs idempotent:
+    # an existing customer just gets the same fixed password again.
     log_info "  Creating customer: $customer_email"
-    docker exec voipbin-customer-mgr /app/bin/customer-control customer create \
-        --name "$customer_name" \
-        --email "$customer_email" 2>&1 | grep -E "(Success|ID:)" || true
-
-    # Step 2: Get customer ID from the customer-manager CLI
-    log_info "  Fetching customer ID..."
-    local customer_list
-    customer_list=$(docker exec voipbin-customer-mgr /app/bin/customer-control customer list 2>/dev/null || true)
-    CUSTOMER_ID=$(echo "$customer_list" | jq -r '.[] | select(.email == "'"$customer_email"'") | .id' 2>/dev/null | head -1)
-
-    if [ -z "$CUSTOMER_ID" ] || [ "$CUSTOMER_ID" == "null" ]; then
-        log_warn "  Could not find customer ID. You can run setup_test_customer.sh manually."
+    local admin_result
+    admin_result=$(VOIPBIN_ADMIN_PASSWORD="$customer_password" "$SCRIPT_DIR/create-admin.sh" \
+        --email "$customer_email" --name "$customer_name" --reset --wait 30 | tail -1)
+    CUSTOMER_ID=$(echo "$admin_result" | sed -n 's/.*customer_id=\([^ ]*\).*/\1/p')
+    if [[ "$admin_result" != "VOIPBIN_ADMIN: status=ok"* ]] || [ -z "$CUSTOMER_ID" ]; then
+        log_warn "  Could not set up the admin account ($admin_result). You can run setup_test_customer.sh manually."
         return 1
     fi
     log_info "  Customer ID: $CUSTOMER_ID"
-
-    # Step 3: Wait for agent-manager to create the admin agent (via RabbitMQ event)
-    local admin_agent_id
-    admin_agent_id=$(wait_for_admin_agent "$CUSTOMER_ID")
-
-    if [ -z "$admin_agent_id" ]; then
-        log_warn "  Admin agent was not created in time. You can run setup_test_customer.sh manually."
-        return 1
-    fi
-    log_info "  Admin agent ID: $admin_agent_id"
-
-    # Step 4: Set admin password using agent-control CLI
-    # The agent was created with a random password, so we must set it explicitly
-    log_info "  Setting admin password..."
-    docker exec voipbin-agent-mgr /app/bin/agent-control agent update-password \
-        --id "$admin_agent_id" \
-        --password "$customer_password" 2>&1 | grep -v severity || true
 
     # Step 5: Login to get JWT token
     sleep 1
@@ -618,42 +568,6 @@ setup_test_customer() {
     if [ "$token" == "null" ] || [ -z "$token" ]; then
         log_warn "  Could not login to create extensions. You can run setup_test_customer.sh manually."
         return 1
-    fi
-
-    # Step 5b: Set billing plan type BEFORE creating extensions.
-    # A new customer's billing account is created ASYNCHRONOUSLY by
-    # billing-manager (it subscribes to the customer_created event, creates
-    # the account, then calls back UpdateBillingAccountID on the customer).
-    # So billing_account_id can still be the zero UUID right after creation.
-    # We POLL until it is populated, then set the plan. Pinned images do not
-    # set a default plan, and resource-limited resources (extensions, agents)
-    # fail their billing resource-limit check until a plan is set.
-    local billing_account_id=""
-    local customer_info_plan=""
-    local plan_waited=0
-    local plan_max_wait=30
-    log_info "  Waiting for billing account to be provisioned..."
-    while [ $plan_waited -lt $plan_max_wait ]; do
-        customer_info_plan=$(curl -sk -X GET "https://${api_host}:${api_port}/v1.0/customer" \
-            -H "Authorization: Bearer $token" 2>/dev/null) || true
-        billing_account_id=$(echo "$customer_info_plan" | jq -r '.billing_account_id' 2>/dev/null) || true
-        if [ -n "$billing_account_id" ] && [ "$billing_account_id" != "null" ] && \
-           [ "$billing_account_id" != "00000000-0000-0000-0000-000000000000" ]; then
-            break
-        fi
-        echo -n "."
-        sleep 2
-        plan_waited=$((plan_waited + 2))
-    done
-    echo ""
-    if [ -n "$billing_account_id" ] && [ "$billing_account_id" != "null" ] && \
-       [ "$billing_account_id" != "00000000-0000-0000-0000-000000000000" ]; then
-        log_info "  Setting billing plan type (unlimited) for sandbox..."
-        docker exec voipbin-billing-mgr /app/bin/billing-control account update-plan-type \
-            --id "$billing_account_id" \
-            --plan-type unlimited 2>&1 | grep -v severity || true
-    else
-        log_warn "  Billing account not ready after ${plan_max_wait}s; plan type not set. Extensions may fail."
     fi
 
     # Step 6: Create extensions
@@ -687,7 +601,7 @@ setup_test_customer() {
     accesskey_output=$(docker exec voipbin-customer-mgr /app/bin/customer-control accesskey create \
         --customer-id "$CUSTOMER_ID" \
         --name "Install API Key" \
-        --detail "Default API key for sandbox testing" \
+        --detail "Default API key for local testing" \
         --expire 87600h 2>&1 | grep -v severity || true)
     # Extract the token from the output (format: "token: <token>")
     ACCESSKEY_TOKEN=$(echo "$accesskey_output" | grep -oP '(?<=token:\s)[^\s]+' | head -1)
@@ -930,7 +844,7 @@ main() {
         log_info "Creating test customer and extensions..."
         setup_test_customer
     else
-        log_info "Skipping dev seed data (VOIPBIN_SANDBOX_DEV_SEED not set to true) — no test customer/extensions created."
+        log_info "Skipping dev seed data (not enabled) - no test customer/extensions created."
     fi
 
     # Step 13: Show status
@@ -953,8 +867,9 @@ main() {
             echo "  - $line"
         done
         echo ""
-        log_info "These may be due to missing API keys (OpenAI, GCP, etc.)"
-        log_info "Core VoIP services should still work."
+        log_info "Many images have no healthcheck binary, so 'unhealthy' is often a known,"
+        log_info "harmless state; tts-manager restarts until TTS credentials are added to .env."
+        log_info "Run 'sudo ./voipbin doctor' to see which ones need attention."
     fi
 
     echo ""
@@ -984,7 +899,7 @@ main() {
         echo "  Talk:          http://talk.${base_domain}:3005"
         echo "  API Manager:   https://api.${base_domain}:8443"
     fi
-    echo "  RabbitMQ:      http://localhost:15672 (${RABBITMQ_DEFAULT_USER:-guest} / ${RABBITMQ_DEFAULT_PASS:-guest})"
+    echo "  RabbitMQ:      http://localhost:15672 (credentials: see .env)"
     echo ""
     if [ "${WEB_REVERSE_PROXY:-false}" != "true" ]; then
         echo "  NOTE: If you see ERR_CERT_AUTHORITY_INVALID, visit"

@@ -965,10 +965,10 @@ GCPEOF
 # project to actually use RAG ingestion/query, TTS, or storage.
 # ==============================================================================
 GOOGLE_APPLICATION_CREDENTIALS=./config/dummy-gcp-credentials.json
-GCP_PROJECT_ID=sandbox-placeholder
+GCP_PROJECT_ID=voipbin-placeholder
 GCP_REGION=us-central1
 GCP_BUCKET_NAME_TMP=
-GCP_BUCKET_NAME_MEDIA=sandbox-placeholder-media
+GCP_BUCKET_NAME_MEDIA=voipbin-placeholder-media
 
 # ==============================================================================
 # API SSL Certificates (Auto-generated)

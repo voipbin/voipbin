@@ -22,6 +22,8 @@ config/coredns/Corefile
 config/dummy-gcp-credentials.json
 tmp/
 .test_data_initialized
+# Guided install completion marker (admin email + time, no secrets)
+.voipbin-installed
 .backup/
 # Data backups (contain plaintext .env secrets - never commit; copy off-host)
 backups/

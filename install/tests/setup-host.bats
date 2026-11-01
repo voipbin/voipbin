@@ -188,6 +188,33 @@ exit 0'
     [[ "$output" == *'SUDO:-u testuser -H env CAROOT=/home/testuser/.local/share/mkcert mkcert -install'* ]]
 }
 
+@test "step_install_ca_trust creates the user CAROOT as the user and hands pass-1 files back before pass 2" {
+    load_setup_host_functions
+    mock_command_script "sudo" '
+if [[ "$*" == *"mkcert -CAROOT"* ]]; then
+    echo "/home/testuser/.local/share/mkcert"
+else
+    echo "SUDO:$*"
+fi'
+    mock_command_script "mkcert" '
+if [[ "$1" == "-check" ]]; then exit 1; fi
+echo "MKCERT-INSTALL CAROOT=$CAROOT"
+exit 0'
+    mock_command_script "chown" 'echo "CHOWN:$*"'
+    export SUDO_USER="testuser"
+
+    run step_install_ca_trust
+
+    [[ "$status" -eq 0 ]]
+    local mkdir_at pass1_at chown_at pass2_at
+    mkdir_at=$(grep -n 'SUDO:-u testuser -H mkdir -p /home/testuser/.local/share/mkcert' <<<"$output" | cut -d: -f1)
+    pass1_at=$(grep -n 'MKCERT-INSTALL CAROOT=/home/testuser' <<<"$output" | cut -d: -f1)
+    chown_at=$(grep -n 'CHOWN:-R testuser /home/testuser/.local/share/mkcert' <<<"$output" | cut -d: -f1)
+    pass2_at=$(grep -n 'SUDO:-u testuser -H env CAROOT=' <<<"$output" | cut -d: -f1)
+    [[ -n "$mkdir_at" && -n "$pass1_at" && -n "$chown_at" && -n "$pass2_at" ]]
+    (( mkdir_at < pass1_at && pass1_at < chown_at && chown_at < pass2_at ))
+}
+
 @test "step_install_ca_trust without SUDO_USER uses plain mkcert -install (never sudo -u '')" {
     load_setup_host_functions
     mock_command_script "sudo" 'echo "SUDO:$*"'

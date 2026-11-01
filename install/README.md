@@ -58,6 +58,50 @@ git clone https://github.com/voipbin/voipbin.git
 cd voipbin/install
 ```
 
+### Guided Install (`sudo ./voipbin install`)
+
+The shortest path from a fresh clone to a working admin console login:
+
+```bash
+sudo ./voipbin install
+```
+
+It runs six steps and prints one line per step: host checks (the same
+prerequisite checks as `doctor`), configuration (`init.sh`), host setup
+(`setup-host.sh`, shown and confirmed before anything changes), service
+start (`start.sh`), verification (waits up to 3 minutes for health checks)
+and the first admin account. Nothing has to be edited by hand first: every
+secret and certificate is generated, and AI/TTS/messaging provider keys are
+optional (add them to `.env` later, then `sudo ./voipbin restart`). It ends
+with the admin console URL, the admin email and a random password shown once.
+Running `sudo ./voipbin` with no arguments on a new checkout offers the same
+install.
+
+Non-interactive (CI, automation):
+
+```bash
+sudo ./voipbin install --yes --admin-email admin@example.com \
+    --admin-password-file ~/voipbin-admin-password   # new file, mode 0600, outside the checkout
+```
+
+The last output line is `VOIPBIN_INSTALL: status=ok ...` or
+`VOIPBIN_INSTALL: status=error step=<n> reason="..." next="..."`; the exit
+code is 0 on success, 1 for a usage or verification error and 2 for an
+environment error. Without `--admin-password-file` the password is printed
+once to stdout (with a warning, since logs keep it). `--admin-name <name>`
+sets the account name, and `--reset-admin-password` sets a new password when
+an account for that email already exists. External mode takes the
+same flags as `init.sh` (`--mode external --domain <d> --tls byo --cert <f>
+--key <f>`, `--web-reverse-proxy`).
+
+Re-running `install` on a finished install changes nothing. If an install
+stopped after the configuration step (for example a failed image pull), fix
+the cause and continue with `sudo ./voipbin install --resume`; it keeps the
+existing `.env` and starts again at host setup. Do not use `--resume` on a
+server that was installed with `init`/`start` and is already running. If a
+database volume exists but `.env` is missing, `install` stops instead of
+generating new passwords that would not match the data.
+
 ### First-Time Install (unprivileged, AI-agent friendly)
 
 This is the recommended path for a fresh install, since it isolates the one
@@ -335,10 +379,11 @@ sudo ./voipbin status
 sudo ./voipbin restart api-manager
 ```
 
-**Note:** `sudo ./voipbin init` / `sudo ./voipbin start` also work (the CLI
-wraps `scripts/init.sh` / `scripts/start.sh`), but run the whole flow as
-root. The unprivileged 4-command flow above is recommended for the first
-install; use the `voipbin` CLI afterward for routine operations.
+**Note:** `sudo ./voipbin install` (above), or `sudo ./voipbin init` /
+`sudo ./voipbin start` (the CLI wraps `scripts/init.sh` / `scripts/start.sh`
+and passes their exit codes through), run the whole flow as root and hand
+the generated files back to the invoking user. The unprivileged 4-command
+flow above keeps root to `setup-host.sh` only.
 
 The `start` command (either path) handles **everything** after initialization:
 
@@ -490,7 +535,7 @@ and volumes, per your own risk tolerance).
 
 ## Install Modes
 
-The sandbox installs in one of two modes, chosen at init time and recorded
+VoIPBin installs in one of two modes, chosen at init time and recorded
 in `.env` as `DOMAIN_MODE`:
 
 | | Internal mode (default) | External mode |
@@ -499,12 +544,12 @@ in `.env` as `DOMAIN_MODE`:
 | DNS | Automatic. CoreDNS container plus `/etc/resolv.conf` forwarding | Operator-managed A records at your DNS provider |
 | TLS | Automatic. mkcert (browser-trusted) or self-signed | Bring your own certificate (Let's Encrypt recipe below) |
 | Reachable from | This machine and your LAN | Any host that can route to your IPs |
-| Best for | Local development, demos, evaluation | A sandbox shared under a real domain |
+| Best for | Local development, demos, evaluation | An install shared under a real domain |
 
 **Decision guidance:** use internal mode unless you specifically need the
-sandbox reachable under a real domain from machines you do not control.
+install reachable under a real domain from machines you do not control.
 Internal mode requires nothing from you (no domain, no certificate, no DNS
-provider) and stays byte-for-byte the behavior this sandbox always had.
+provider) and stays byte-for-byte the behavior this install always had.
 External mode is for directly-routable hosts (on-prem, corporate LAN with
 internal DNS, cloud with multiple routable IPs); see the prerequisites in
 the next section.
@@ -517,7 +562,7 @@ supported escape hatches.
 
 ### Unprivileged install flow (both modes)
 
-Besides the classic `sudo ./voipbin` flow, the sandbox supports a
+Besides the classic `sudo ./voipbin` flow, the install supports a
 4-command unprivileged flow with exactly one sudo command, designed so an
 AI agent (or a human without standing root) can drive the install:
 
@@ -542,12 +587,12 @@ with the exact remedy for every failure it finds.
 
 ## External Mode (Real Domain)
 
-External mode runs the sandbox under a real domain with a real certificate.
-The sandbox never touches DNS or the trust store in this mode; you own both.
+External mode runs the install under a real domain with a real certificate.
+The install never touches DNS or the trust store in this mode; you own both.
 
 ### Prerequisites
 
-- **A directly-routable host.** The sandbox binds two distinct IP addresses
+- **A directly-routable host.** The install binds two distinct IP addresses
   on the same subnet: `HOST_EXTERNAL_IP` (web/API) and
   `KAMAILIO_EXTERNAL_IP` (SIP signaling, a macvlan secondary address), plus
   `RTPENGINE_EXTERNAL_IP` for media. The deployment environment must route
@@ -592,12 +637,12 @@ domain and IPs substituted.
 > routable domain this means login credentials and JWTs travel in the
 > clear. Front them with a TLS-terminating reverse proxy (nginx, Caddy,
 > Traefik) or restrict those ports to trusted networks — or use
-> `--web-reverse-proxy` below, which sets up exactly that with the sandbox's
+> `--web-reverse-proxy` below, which sets up exactly that with the install's
 > own certificate and no port suffixes at all.
 
 ### Step 2: Obtain a certificate (Let's Encrypt recipe)
 
-The sandbox installs whatever certificate you bring (`--tls byo`). The
+VoIPBin installs whatever certificate you bring (`--tls byo`). The
 certificate must cover `api.`, `sip.`, `sip-service.`, `conference.`,
 `trunk.`, and `registrar.` of your domain; a wildcard covers all six.
 `*.registrar.example.com` is additionally recommended for SIP devices that
@@ -660,7 +705,7 @@ automatically:
 
 ```bash
 certbot renew --deploy-hook \
-  '/path/to/sandbox/scripts/install-certs.sh /etc/letsencrypt/live/example.com/fullchain.pem /etc/letsencrypt/live/example.com/privkey.pem'
+  '/path/to/voipbin/install/scripts/install-certs.sh /etc/letsencrypt/live/example.com/fullchain.pem /etc/letsencrypt/live/example.com/privkey.pem'
 ```
 
 The deploy hook runs as root; the script preserves the ownership and mode
@@ -673,7 +718,7 @@ By default, external mode's `api`/`admin`/`meet`/`talk` are reached at
 `https://api.example.com:8443`, `http://admin.example.com:3003`, and so
 on — the individual published host ports from the table in
 [DNS Resolution](CLAUDE.md#dns-resolution). That is fine behind an
-operator-owned proxy, but the wrong shape when the sandbox is meant to be
+operator-owned proxy, but the wrong shape when the install is meant to be
 the origin customers hit directly with a clean, port-less URL and TLS
 everywhere (including `admin`/`meet`/`talk`, closing the plain-HTTP warning
 above).
@@ -1022,7 +1067,7 @@ mkcert -install
 ## Networking & DNS
 
 > **Scope: internal mode (default).** This section describes the automatic
-> `.voipbin.test` DNS the sandbox manages itself. In external mode DNS is
+> `.voipbin.test` DNS the install manages itself. In external mode DNS is
 > operator-managed; see [External Mode (Real Domain)](#external-mode-real-domain).
 
 ### Why `.voipbin.test`?
@@ -1064,7 +1109,7 @@ sudo ./voipbin dns regenerate
 
 ### Dynamic IP Detection (After Reboot/Network Change)
 
-If your host IP changes (e.g., after reboot, hibernate, or network change), the sandbox automatically detects and regenerates all configurations:
+If your host IP changes (e.g., after reboot, hibernate, or network change), the install automatically detects and regenerates all configurations:
 
 **What gets updated automatically:**
 - `.env` file with new `HOST_EXTERNAL_IP`, `KAMAILIO_EXTERNAL_IP`, `RTPENGINE_EXTERNAL_IP`
@@ -1131,7 +1176,7 @@ If you prefer not to modify system DNS, add these entries to your hosts file:
 
 ### Connecting SIP Devices on Your LAN
 
-SIP phones and softphones on your network can use the sandbox's DNS:
+SIP phones and softphones on your network can use the install's DNS:
 
 1. Find your host IP: `sudo ./voipbin network status` (look for `Host IP`)
 2. Configure your SIP device's DNS server to point to the host IP
@@ -1142,7 +1187,7 @@ SIP phones and softphones on your network can use the sandbox's DNS:
 ## SSL Certificate Trust
 
 > **Scope: internal mode (default).** This section covers the mkcert and
-> self-signed certificates the sandbox generates itself. In external mode
+> self-signed certificates the install generates itself. In external mode
 > certificates are bring-your-own via `./scripts/install-certs.sh`; never
 > delete `certs/` on a BYO install. See
 > [External Mode (Real Domain)](#external-mode-real-domain).
@@ -1190,7 +1235,7 @@ sudo ./voipbin init
 
 ## The Interactive CLI
 
-The `voipbin` CLI is your command center for the entire sandbox. It provides an interactive shell with context-aware commands, tab completion, and history.
+The `voipbin` CLI is your command center for the entire install. It provides an interactive shell with context-aware commands, tab completion, and history.
 
 ```bash
 # Launch interactive mode
@@ -1316,14 +1361,15 @@ These commands use manager container CLIs for direct resource management:
 
 | Command | Description |
 |---------|-------------|
-| `init` | Initialize sandbox (generate .env, certs) |
+| `install [options]` | Guided install: host checks, configuration, host setup, start, verification, first admin account (see [Guided Install](#guided-install-sudo-voipbin-install)) |
+| `init` | Generate configuration only (.env, certs); `install` runs it for you |
 | `version [--json]` | Show pinned image versions (table or JSON) |
 | `update [images/scripts/all]` | Update Docker images or scripts (pinned repos: `update all` = full safe upgrade: backup, git pull, migrate, recreate, verify) |
 | `update --check` | Dry-run to preview updates |
 | `backup` | Full data backup (MySQL + recordings + config) into `backups/<ts>/` |
 | `restore <ts> --force` | Restore DATA from a backup (DESTRUCTIVE; services must be stopped except db/redis) |
 | `rollback [timestamp]` | Roll back image versions from override history (UNPINNED repos only; for data recovery use `restore`) |
-| `clean [options]` | Cleanup sandbox resources |
+| `clean [options]` | Remove containers, data or generated files (asks for `yes`; `--force` when scripted) |
 | `config [key] [value]` | View/set CLI configuration |
 
 ### Scheduled Jobs (VOIP-1281)
@@ -1372,7 +1418,7 @@ one's retention pruning touches the other.
 schedule-manager is running and all three schedules above are enabled — see
 "Troubleshooting" if it fails.
 
-#### Host-side gaps (operator runbook, out of scope for sandbox automation)
+#### Host-side gaps (operator runbook, out of scope for install automation)
 
 Two maintenance tasks structurally cannot move inside the platform and stay
 manual/operator-owned:
@@ -1385,7 +1431,7 @@ manual/operator-owned:
   outside this repo).
 - **Host-level maintenance.** OS package updates, Docker Engine upgrades,
   disk space/log rotation on the host, and kernel/security patching are the
-  operator's responsibility — nothing in this sandbox observes or manages
+  operator's responsibility; nothing in this install observes or manages
   host OS state.
 
 ### Configuration
@@ -1824,13 +1870,13 @@ docker compose restart schedule-manager
 ### Reset Everything
 
 ```bash
-# Stop all services and remove volumes
+# Stop all services and remove volumes (lists what goes and asks for 'yes';
+# --force skips the question)
 sudo ./voipbin stop --all
-sudo ./voipbin clean --all
+sudo ./voipbin clean --all --force
 
-# Reinitialize from scratch
-sudo ./voipbin init
-sudo ./voipbin start
+# Install again from scratch
+sudo ./voipbin install
 ```
 
 ### Getting Help

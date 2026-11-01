@@ -74,8 +74,11 @@ PIP_PINS="alembic==1.11.3 SQLAlchemy==1.4.52 PyMySQL==1.1.0 cryptography==42.0.8
 # a mutable tag here would let the migration environment drift between runs.
 MIGRATE_IMAGE="python:3.11-slim@sha256:b27df5841f3355e9473f9a516d38a6783b6c8dfeacaf2d14a240f443b368ddb6"
 
-log()  { echo -e "\033[0;32m[migrate]\033[0m $1"; }
-err()  { echo -e "\033[0;31m[migrate:ERROR]\033[0m $1" >&2; }
+MIGRATE_GREEN='\033[0;32m'; MIGRATE_RED='\033[0;31m'; MIGRATE_NC='\033[0m'
+# NO_COLOR (https://no-color.org): any non-empty value disables color.
+if [ -n "${NO_COLOR:-}" ]; then MIGRATE_GREEN=''; MIGRATE_RED=''; MIGRATE_NC=''; fi
+log()  { echo -e "${MIGRATE_GREEN}[migrate]${MIGRATE_NC} $1"; }
+err()  { echo -e "${MIGRATE_RED}[migrate:ERROR]${MIGRATE_NC} $1" >&2; }
 
 # Set to 1 at startup when tmp/ already existed before this run, so
 # adopt_tmp_owner only re-owns a tmp/ this run created (or one left behind by

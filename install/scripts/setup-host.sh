@@ -152,8 +152,13 @@ step_install_ca_trust() {
         fi
 
         log_info "  Installing mkcert CA (CAROOT=$user_caroot)..."
+        # The user's CAROOT may not exist yet (init.sh ran before mkcert was
+        # installed): create it as the user, and hand back what pass 1 writes,
+        # or pass 2 cannot read the root-owned CA key.
+        sudo -u "$SUDO_USER" -H mkdir -p "$user_caroot"
         # Pass 1: system trust store, as root, against the user's CAROOT
         CAROOT="$user_caroot" mkcert -install
+        chown -R "$SUDO_USER" "$user_caroot" 2>/dev/null || true
         # Pass 2: the invoking user's NSS store
         sudo -u "$SUDO_USER" -H env CAROOT="$user_caroot" mkcert -install
     else
