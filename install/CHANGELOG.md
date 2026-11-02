@@ -32,6 +32,7 @@ records where this directory came from.)
 
 - `doctor.sh` no longer warns that `start.sh` will re-seed test data on an install that has the dev seed off (the default). Without `VOIPBIN_SANDBOX_DEV_SEED=true` in `.env` the missing `.test_data_initialized` marker is expected, so the `test-data` check now passes there. With the seed on it still warns.
 - The icon in the start screen header is now a complete phone shape instead of a block that looked cut off.
+- `sudo ./voipbin` on a terminal no longer keeps running at 100% CPU after its terminal is closed (a closed terminal window, a killed `tmux` session, a dropped SSH connection) when Python's `readline` is the libedit build. It now exits, also when it is waiting at a question of the guided install.
 
 ### Upgrade notes
 
