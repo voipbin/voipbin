@@ -1248,9 +1248,9 @@ def show_welcome_dashboard():
 TUI_MIN_HEIGHT = 8
 TUI_NARROW_WIDTH = 60
 TUI_ICON = (
-    "  ████████  ",
-    " ██████████ ",
-    " ██  ██  ██ ",
+    "▄██▀▀▀▀▀▀██▄",
+    "███▀    ▀███",
+    "▀█▀      ▀█▀",
 )
 TUI_SLASH_HELP = (
     ("help", "Show commands"),

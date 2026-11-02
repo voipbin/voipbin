@@ -1335,6 +1335,10 @@ def test_tui_render_header_notice_statusbar(cli_module):
                 assert vis(row) <= width - 1, (width, vis(row), plain(row))
     header = [plain(r) for r in cli_module.render_header(tui_info(version="v1.2.3"), 100)]
     assert len(header) == 3 and "█" in header[0]
+    icon = cli_module.TUI_ICON
+    assert len(icon) == 3 and len({len(r) for r in icon}) == 1 and len(icon[0]) == 12, icon
+    assert all(ch in " █▀▄" for r in icon for ch in r), icon
+    assert icon == ("▄██▀▀▀▀▀▀██▄", "███▀    ▀███", "▀█▀      ▀█▀"), icon
     assert "VoIPBin Install CLI v1.2.3" in header[0] and "running 12/45" in header[1] and "mode internal" in header[1], header
     assert header[2].rstrip().endswith("/srv/voipbin-install/install"), header
     narrow = [plain(r) for r in cli_module.render_header(tui_info(cwd="/srv/projects/voipbin/checkout/current/install"), 40)]
