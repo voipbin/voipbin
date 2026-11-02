@@ -1328,27 +1328,32 @@ def test_tui_render_header_notice_statusbar(cli_module):
              tui_info(state="not_initialized", running=None, total=None, dns=None, net=None, mode=None),
              tui_info(mode="external", dns="n/a"), tui_info(total=0),
              tui_info(cwd="/" + "deep/" * 40 + "dir"))
-    for width in (120, 80, 66, 65, 60, 59, 40, 24, 20):
-        for height in (60, 40, 24, 8):
+    fresh = tui_info(state="not_initialized", running=None, total=None, dns=None, net=None, mode=None)
+    for width in (120, 100, 80, 66, 65, 60, 59, 40, 24, 20):
+        for height in (60, 40, 24, 17, 16, 14, 13, 8):
             for info in infos:
                 rows = (cli_module.render_header(info, width, height) + [cli_module.render_notice(info, width)]
                         + cli_module.render_frame(info, width))
+                pinned = cli_module.tui_pin_rows(info, width, height)
+                if pinned:
+                    rows += pinned
                 for row in rows:
                     assert vis(row) <= width - 1, (width, height, vis(row), plain(row))
-    # The header is the get_logo() logo (same icon, wordmark and tagline text)
-    # with the three info lines in the rows where the wordmark column is empty.
+    # The confirmed icon: six rows, only full blocks and spaces, one width, no half blocks
+    icon = cli_module.TUI_ICON
+    assert icon == ("   █████████ ", "  ███████████", "  ██ ██ ██ ██", "  ██ ██ ██ ██", "  ██ ██ ██ ██", "   █████████ "), icon
+    assert len({len(r) for r in icon}) == 1 and set("".join(icon)) == {"█", " "}, icon
+    assert cli_module.TUI_ICON_WIDTH == 13 and cli_module.TUI_ICON_GAP == 6
+    # The logo header: icon rows with the four info lines beside rows 1-4, rows 5-6 icon only
     header = [plain(r) for r in cli_module.render_header(tui_info(version="v1.2.3"), 100, 40)]
-    logo = cli_module.LOGO_LINES
-    assert len(header) == len(logo) == 11 and header[0].rstrip() == logo[0][0].rstrip(), header
-    for i in range(0, 8):
-        assert header[i] == logo[i][0] + logo[i][1], (i, header[i])
-    for i in range(8, 11):
-        assert header[i].startswith(logo[i][0] + "  "), (i, header[i])
-    assert "VoIPBin Install CLI v1.2.3" in header[8] and "running 12/45" in header[9] and "mode internal" in header[9], header
-    assert header[10].rstrip().endswith("/srv/voipbin-install/install"), header
-    assert "Connect & Collaborate for all" in header[6] and "(_)_ __" in header[2], header
-    # get_logo() is unchanged by the refactor (the pre-change body, copied here), and the
-    # header's logo rows are the same colored lines, not a re-drawn lookalike
+    assert len(header) == 6 and [h[:13] for h in header] == list(icon), header
+    assert header[0].endswith("VoIPBin Install CLI v1.2.3") and header[0][13:19] == " " * 6, header
+    assert "running 12/45" in header[1] and "mode internal" in header[1], header
+    assert header[2].rstrip().endswith("/srv/voipbin-install/install"), header
+    assert header[3].rstrip().endswith("Connect & Collaborate for all"), header
+    assert header[4].rstrip() == icon[4].rstrip() and header[5].rstrip() == icon[5].rstrip(), header
+    assert not any(c in "".join(header) for c in "▄▀▌▐"), header
+    # get_logo() is unchanged by the refactor (the pre-change body, copied here)
     legacy = []
     for icon_part, text_part in cli_module.LOGO_LINES:
         if "Connect & Collaborate" in text_part:
@@ -1358,22 +1363,25 @@ def test_tui_render_header_notice_statusbar(cli_module):
         else:
             legacy.append(f"{cli_module.white(icon_part)}")
     assert cli_module.get_logo() == "\n".join(legacy)
-    colored = cli_module.render_header(tui_info(), 100, 40)
-    assert colored[:8] == legacy[:8], colored[:8]
-    assert not hasattr(cli_module, "TUI_ICON") and not hasattr(cli_module, "TUI_NARROW_WIDTH")
-    assert cli_module.TUI_LOGO_WIDTH == 65 and cli_module.TUI_LOGO_MIN_HEIGHT == 19, (cli_module.TUI_LOGO_WIDTH, cli_module.TUI_LOGO_MIN_HEIGHT)
-    # logo only when the widest logo row fits in width-1 columns (66 and up)
-    assert len(cli_module.render_header(tui_info(), 66, 40)) == 11
-    for width in (65, 60, 40):
-        compact = [plain(r) for r in cli_module.render_header(tui_info(), width, 40)]
-        assert len(compact) == 3 and "█" not in "".join(compact), (width, compact)
-    # logo only when the whole start screen fits: 19 rows, or 31 on a checkout without .env
-    # (the "Install now?" dialog is printed between the header and the input frame)
-    fresh = tui_info(state="not_initialized", running=None, total=None, dns=None, net=None, mode=None)
-    for info, need in ((tui_info(), 19), (tui_info(state="stopped", running=None, total=None, dns=None, net=None), 19), (fresh, 31)):
-        assert len(cli_module.render_header(info, 100, need)) == 11, (info["state"], need)
-        assert len(cli_module.render_header(info, 100, need - 1)) == 3, (info["state"], need)
-    assert len(cli_module.render_header(tui_info(), 100, 8)) == 3
+    for gone in ("TUI_LOGO_WIDTH", "TUI_LOGO_MIN_HEIGHT", "TUI_INSTALL_DIALOG_ROWS", "TUI_ICON_ROWS"):
+        assert not hasattr(cli_module, gone), gone
+    # Sizes: the logo header needs width >= 60 and height >= 17 (6 + rule + 5 frame + 5 output),
+    # the three-line header is pinned from height 14, below that nothing is pinned
+    for info in (tui_info(), tui_info(state="stopped", running=None, total=None, dns=None, net=None), fresh):
+        assert len(cli_module.render_header(info, 60, 17)) == 6 and len(cli_module.render_header(info, 60, 16)) == 3
+        assert len(cli_module.render_header(info, 59, 40)) == 3 and len(cli_module.render_header(info, 120, 40)) == 6
+        assert len(cli_module.tui_pin_rows(info, 60, 17)) == 7 and len(cli_module.tui_pin_rows(info, 100, 40)) == 7
+        assert len(cli_module.tui_pin_rows(info, 60, 16)) == 4 and len(cli_module.tui_pin_rows(info, 60, 14)) == 4
+        assert cli_module.tui_pin_rows(info, 60, 13) is None and cli_module.tui_pin_rows(info, 100, 8) is None
+        assert cli_module.tui_pin_rows(info, 59, 40) is None, "narrower than 60: not pinned"
+    compact = [plain(r) for r in cli_module.render_header(tui_info(), 100, 16)]
+    assert len(compact) == 3 and "█" not in "".join(compact) and "Collaborate" not in "".join(compact), compact
+    assert "mode internal" in compact[1] and compact[2] == "/srv/voipbin-install/install", compact
+    # longest status at width 60 stays inside the line
+    longest = tui_info(version="v10.20.30", mode="external", running=99, total=99, dns="n/a",
+                       cwd="/srv/projects/voipbin/checkout/current/install")
+    for row in cli_module.render_header(longest, 60, 40):
+        assert vis(row) <= 59, plain(row)
     narrow = [plain(r) for r in cli_module.render_header(tui_info(cwd="/srv/projects/voipbin/checkout/current/install"), 40, 40)]
     assert len(narrow) == 3 and "█" not in "".join(narrow), narrow
     assert "VoIPBin Install CLI" in narrow[0] and "v" not in narrow[0].split("CLI")[1], narrow
@@ -1401,7 +1409,8 @@ def test_tui_render_header_notice_statusbar(cli_module):
     saved = {k: getattr(cli_module.Colors, k) for k in ("GREEN", "RED", "YELLOW", "BLUE", "GRAY", "WHITE", "BOLD", "DIM", "RESET")}
     cli_module.Colors.disable()
     try:
-        text = "".join(cli_module.render_header(tui_info(), 100, 40) + cli_module.render_frame(tui_info(), 100))
+        text = "".join(cli_module.render_header(tui_info(), 100, 40) + [cli_module.render_rule(100)]
+                       + cli_module.render_frame(tui_info(), 100))
         assert "\x1b[" not in text
     finally:
         for k, v in saved.items():
@@ -1692,6 +1701,253 @@ def test_tui_repl_loop(cli_module, tmp_dir):
     print("ok test_tui_repl_loop")
 
 
+def test_tui_pin_sequences(cli_module):
+    seq = cli_module.tui_pin_sequence
+    rows = ["r%d" % i for i in range(7)]
+    draw = "".join(f"\x1b[{i + 1};1H\x1b[2K{r}" for i, r in enumerate(rows))
+    assert seq(rows, 24, "init") == "\x1b[r\x1b[2J" + draw + "\x1b[8;24r" + "\x1b[8;1H"
+    assert seq(rows, 24, "repaint") == "\x1b7" + draw + "\x1b[8;24r" + "\x1b8"
+    assert seq(rows, 24, "clear") == "\x1b[8;1H\x1b[J"
+    assert seq([], 0, "release") == "\x1b7\x1b[r\x1b8"
+    assert "\x1b[?1049" not in seq(rows, 24, "init"), "no alternate screen"
+    print("ok test_tui_pin_sequences")
+
+
+def test_tui_pin_lifecycle(cli_module, tmp_dir):
+    import signal as signal_mod
+    pin = cli_module._PIN
+    info = tui_info()
+    names = ("SIGTERM", "SIGHUP", "SIGWINCH")
+    before = {n: signal_mod.getsignal(getattr(signal_mod, n)) for n in names}
+    release = "\x1b7\x1b[r\x1b8"
+
+    def run(fn, cols, rows):
+        buf = io.StringIO()
+        with terminal_size(cols, rows), contextlib.redirect_stdout(buf):
+            result = fn()
+        return result, buf.getvalue()
+    try:
+        assert not pin["enabled"] and not pin["active"], "state leaked from an earlier test"
+        # Before start nothing writes: the plain prompt, pipes and commands with arguments never pin
+        for fn in (lambda: cli_module.tui_pin_refresh(info), cli_module.tui_pin_release,
+                   cli_module.tui_pin_close, lambda: cli_module._pin_on_winch(0, None)):
+            _, out = run(fn, 100, 30)
+            assert out == "", repr(out)
+        assert run(cli_module.tui_pin_clear, 100, 30)[0] is False
+        # an ignored SIGHUP stays ignored
+        signal_mod.signal(signal_mod.SIGHUP, signal_mod.SIG_IGN)
+        # start, pinned (100x30: logo header 6 rows + rule, region from row 8)
+        ok, out = run(lambda: cli_module.tui_pin_start(info), 100, 30)
+        assert ok is True and pin["active"] and pin["enabled"] and pin["geom"] == (100, 30, 7), pin
+        assert out.startswith("\n" * 30 + "\x1b[r\x1b[2J") and "\x1b[8;30r\x1b[8;1H" in out, repr(out[:200])
+        assert out.rstrip().endswith("Using .env (mode=internal) · /status")
+        assert signal_mod.getsignal(signal_mod.SIGTERM) is cli_module._pin_on_term
+        assert signal_mod.getsignal(signal_mod.SIGWINCH) is cli_module._pin_on_winch
+        assert signal_mod.getsignal(signal_mod.SIGHUP) is signal_mod.SIG_IGN, "SIG_IGN must be kept"
+        # same geometry: repaint only, region reset by an external tool is set again
+        _, out = run(lambda: cli_module.tui_pin_refresh(info), 100, 30)
+        assert out.startswith("\x1b7") and out.endswith("\x1b[8;30r\x1b8") and "\x1b[2J" not in out, repr(out[-80:])
+        # a status change shows up in the next repaint
+        info2 = dict(info, running=3)
+        _, out = run(lambda: cli_module.tui_pin_refresh(info2), 100, 30)
+        assert "running 3/45" in out
+        # new size: cleared and redrawn, region follows
+        _, out = run(lambda: cli_module.tui_pin_refresh(info), 120, 40)
+        assert "\x1b[2J" in out and out.endswith("\x1b[8;1H") and "\x1b[8;40r" in out and pin["geom"] == (120, 40, 7)
+        # short terminal: three-line header, region from row 5
+        _, out = run(lambda: cli_module.tui_pin_refresh(info), 100, 15)
+        assert "\x1b[5;15r" in out and pin["geom"] == (100, 15, 4)
+        # SIGWINCH while the prompt waits: header repaint only, saved geometry untouched
+        pin["waiting"] = False
+        assert run(lambda: cli_module._pin_on_winch(0, None), 90, 15)[1] == "", "not waiting: no output"
+        pin["waiting"] = True
+        _, out = run(lambda: cli_module._pin_on_winch(0, None), 90, 15)
+        assert out.startswith("\x1b7") and out.endswith("\x1b[5;15r\x1b8") and pin["geom"] == (100, 15, 4), repr(out[-60:])
+        assert run(lambda: cli_module._pin_on_winch(0, None), 90, 30)[1] == "", "header height would change: leave it to refresh"
+        assert run(lambda: cli_module._pin_on_winch(0, None), 90, 12)[1] == "", "cannot be pinned: leave it to refresh"
+        pin["waiting"] = False
+        # /clear erases the region only
+        ok, out = run(cli_module.tui_pin_clear, 100, 15)
+        assert ok is True and out == "\x1b[5;1H\x1b[J", repr(out)
+        # too small to pin: region released, handlers stay for a later re-pin
+        _, out = run(lambda: cli_module.tui_pin_refresh(info), 100, 12)
+        assert out == release and not pin["active"] and pin["enabled"], repr(out)
+        assert run(cli_module.tui_pin_clear, 100, 12) == (False, "")
+        _, out = run(lambda: cli_module.tui_pin_refresh(info), 100, 30)
+        assert pin["active"] and "\x1b[2J" in out and "\x1b[8;30r" in out
+        assert signal_mod.getsignal(signal_mod.SIGTERM) is cli_module._pin_on_term
+        # close: region released once, handlers restored, idempotent
+        _, out = run(cli_module.tui_pin_close, 100, 30)
+        assert out == release and not pin["active"] and not pin["enabled"], repr(out)
+        assert run(cli_module.tui_pin_close, 100, 30)[1] == ""
+        assert pin["saved"] == {}, "close forgets the handlers it restored"
+        assert signal_mod.getsignal(signal_mod.SIGTERM) == before["SIGTERM"]
+        assert signal_mod.getsignal(signal_mod.SIGWINCH) == before["SIGWINCH"]
+        assert signal_mod.getsignal(signal_mod.SIGHUP) is signal_mod.SIG_IGN
+        # release is re-entrant safe: active goes down before the write, so a second release
+        # that arrives while the sequence is being written writes nothing
+        run(lambda: cli_module.tui_pin_start(info), 100, 30)
+
+        class Reentrant(io.StringIO):
+            def write(self, text):
+                if text == release:
+                    cli_module.tui_pin_release()
+                return super().write(text)
+        again = Reentrant()
+        with terminal_size(100, 30), contextlib.redirect_stdout(again):
+            cli_module.tui_pin_release()
+        assert again.getvalue() == release, repr(again.getvalue())
+        run(cli_module.tui_pin_close, 100, 30)
+        # the exit hook is registered once, on the first start
+        registered = []
+        orig_register = cli_module.atexit.register
+        cli_module.atexit.register = lambda fn, *a, **k: registered.append(fn)
+        pin["atexit"] = False
+        try:
+            run(lambda: cli_module.tui_pin_start(info), 100, 30)
+            run(cli_module.tui_pin_close, 100, 30)
+            run(lambda: cli_module.tui_pin_start(info), 100, 30)
+        finally:
+            cli_module.atexit.register = orig_register
+        assert registered == [cli_module.tui_pin_close], registered
+        run(cli_module.tui_pin_close, 100, 30)
+        # SIGTERM turns into SystemExit(143) so the REPL's finally runs
+        run(lambda: cli_module.tui_pin_start(info), 100, 30)
+
+        def term():
+            try:
+                cli_module._pin_on_term(signal_mod.SIGTERM, None)
+                raise AssertionError("no SystemExit")
+            except SystemExit as e:
+                assert e.code == 128 + signal_mod.SIGTERM, e.code
+        assert run(term, 100, 30)[1] == "", "between prompts nothing is erased"
+        assert signal_mod.getsignal(signal_mod.SIGTERM) == signal_mod.SIG_DFL
+        signal_mod.signal(signal_mod.SIGTERM, cli_module._pin_on_term)
+        pin["waiting"] = True
+        assert run(term, 100, 30)[1] == "\r\x1b[J", "at the prompt the open input frame is erased"
+        pin["waiting"] = False
+        run(cli_module.tui_pin_close, 100, 30)
+        # not pinnable (width 59, 12 rows): printed once, byte for byte like the unpinned intro
+        for cols, rows in ((59, 30), (100, 12), (100, 8)):
+            expected = run(lambda: cli_module.tui_print_intro(info), cols, rows)[1]
+            ok, out = run(lambda: cli_module.tui_pin_start(info), cols, rows)
+            assert ok is False and not pin["active"] and out == expected and "\x1b[r" not in out, (cols, rows, repr(out))
+            run(cli_module.tui_pin_close, cols, rows)
+        # the first draw fails: region reset is tried, header printed, not active
+        class FlakyOut(io.StringIO):
+            def write(self, text):
+                if "\x1b[2J" in text:
+                    raise OSError("tty gone")
+                return super().write(text)
+        flaky = FlakyOut()
+        with terminal_size(100, 30), contextlib.redirect_stdout(flaky):
+            ok = cli_module.tui_pin_start(info)
+        assert ok is False and not pin["active"] and release in flaky.getvalue(), repr(flaky.getvalue())
+        run(cli_module.tui_pin_close, 100, 30)
+    finally:
+        cli_module.tui_pin_close()
+        pin.update({"enabled": False, "active": False, "waiting": False, "geom": None, "info": None, "saved": {}})
+        for n in names:
+            signal_mod.signal(getattr(signal_mod, n), before[n])
+    print("ok test_tui_pin_lifecycle")
+
+
+def test_tui_pin_clear_and_loop(cli_module, tmp_dir):
+    pin = cli_module._PIN
+    cli, _ = make_cli(tmp_dir, INTERNAL_ENV, cli_module)
+    info = tui_info()
+    systems = []
+    orig_system = os.system
+    os.system = lambda cmd: systems.append(cmd) or 0
+    try:
+        # header not pinned: the classic screen clear, and the intro is drawn again after /clear
+        cli.cmd_clear([])
+        assert len(systems) == 1 and "clear" in systems[0]
+        # header pinned: only the region below it is cleared, the screen is not
+        pin.update({"enabled": True, "active": True, "geom": (100, 30, 7)})
+        buf = io.StringIO()
+        with contextlib.redirect_stdout(buf):
+            cli.cmd_clear([])
+            intros = []
+            orig_intro = cli_module.tui_print_intro
+            cli_module.tui_print_intro = lambda i: intros.append(1)
+            try:
+                cli_module.tui_after_command(cli, info, "clear")
+            finally:
+                cli_module.tui_print_intro = orig_intro
+        assert len(systems) == 1 and buf.getvalue() == "\x1b[8;1H\x1b[J" and intros == [], (systems, buf.getvalue(), intros)
+    finally:
+        os.system = orig_system
+        pin.update({"enabled": False, "active": False, "waiting": False, "geom": None, "info": None, "saved": {}})
+    # repl_loop: refresh before every prompt (only with a TUI snapshot) and waiting set while the line is read
+    seen = []
+    refreshes = []
+    orig_refresh, orig_read = cli_module.tui_pin_refresh, cli_module.tui_read_line
+    cli_module.tui_pin_refresh = lambda i: refreshes.append(i)
+    lines = iter(["", "/exit"])
+
+    def reader(c, i):
+        seen.append(pin["waiting"])
+        return next(lines)
+    cli_module.tui_read_line = reader
+    try:
+        capture(cli_module.repl_loop, cli, info)
+        assert refreshes == [info, info] and seen == [True, True] and pin["waiting"] is False, (refreshes, seen)
+        cli.running = True
+        refreshes.clear()
+        with fake_input(lambda prompt="": "exit"):
+            capture(cli_module.repl_loop, cli, None)
+        assert refreshes == [], "plain loop never touches the pinned header"
+    finally:
+        cli_module.tui_pin_refresh, cli_module.tui_read_line = orig_refresh, orig_read
+    print("ok test_tui_pin_clear_and_loop")
+
+
+def test_tui_main_releases_region_on_error(cli_module, tmp_dir):
+    """_main's finally gives the terminal back when the REPL dies (atexit does not run in-process)."""
+    import signal as signal_mod
+    cli, _ = make_cli(tmp_dir, INTERNAL_ENV, cli_module)
+    pin = cli_module._PIN
+    names = {k: getattr(cli_module, k) for k in ("VoIPBinCLI", "tui_wanted", "tui_collect_info", "setup_readline",
+                                                  "repl_loop", "check_root")}
+    argv, cwd, sigint = sys.argv, os.getcwd(), signal_mod.getsignal(signal_mod.SIGINT)
+    sigs = {n: signal_mod.getsignal(getattr(signal_mod, n)) for n in ("SIGTERM", "SIGHUP", "SIGWINCH")}
+    seen = {}
+
+    def dying(c, i):
+        seen["active"] = pin["active"]
+        raise RuntimeError("repl died")
+    cli_module.VoIPBinCLI = lambda: cli
+    cli_module.tui_wanted = lambda *a, **k: True
+    cli_module.tui_collect_info = lambda c: tui_info()
+    cli_module.setup_readline = lambda c: None
+    cli_module.repl_loop = dying
+    cli_module.check_root = lambda: None
+    sys.argv = ["voipbin"]
+    buf = io.StringIO()
+    try:
+        with terminal_size(100, 30), contextlib.redirect_stdout(buf):
+            try:
+                cli_module._main()
+                raise AssertionError("the error must propagate")
+            except RuntimeError as e:
+                assert str(e) == "repl died"
+        out = buf.getvalue()
+        assert seen == {"active": True} and not pin["active"] and not pin["enabled"], (seen, dict(pin))
+        assert "\x1b[8;30r" in out and out.endswith("\x1b7\x1b[r\x1b8"), repr(out[-40:])
+    finally:
+        for k, v in names.items():
+            setattr(cli_module, k, v)
+        sys.argv = argv
+        os.chdir(cwd)
+        signal_mod.signal(signal_mod.SIGINT, sigint)
+        cli_module.tui_pin_close()
+        pin.update({"enabled": False, "active": False, "waiting": False, "geom": None, "info": None, "saved": {}})
+        for n, h in sigs.items():
+            signal_mod.signal(getattr(signal_mod, n), h)
+    print("ok test_tui_main_releases_region_on_error")
+
+
 TUI_CHILD = (
     "import importlib.util, sys\n"
     "spec = importlib.util.spec_from_file_location('voipbin_cli_child', sys.argv[1])\n"
@@ -1732,7 +1988,7 @@ def test_tui_fallback_without_terminal(cli_module, tmp_dir, stub_bin, log_path):
 
 
 def strip_ansi(text):
-    return re.sub(r"\x1b\[[0-9;?]*[A-Za-z]", "", text)
+    return re.sub(r"\x1b\[[0-9;?]*[A-Za-z]|\x1b[78]", "", text)
 
 
 def run_in_pty(tmp_dir, project_dir, keys, columns=100, rows=30, **extra):
@@ -1817,6 +2073,10 @@ if [[ "$1 $2" == "compose config" ]]; then printf "db\\nmq\\napi-manager\\n"; ex
         assert "No version pins found" in text or "Using :latest" in text, text[-600:]
         assert "Services" in text and "tui-pty-secret" not in text
         assert "Goodbye!" in text and "voipbin> " not in text
+        # the header is pinned (region from row 8 on a 100x30 terminal) and released before the shell
+        # gets the terminal back: the last region reset comes after "Goodbye!"
+        assert "\x1b[8;30r" in raw and raw.index("Goodbye!") < raw.rindex("\x1b[r"), raw[-300:]
+        assert raw.rindex("\x1b[8;30r") < raw.index("Goodbye!")
         # Ctrl+C clears the typed text, Ctrl+D leaves like exit
         status, raw = run_in_pty(tmp_dir, project_dir, ["status", "\x03", "\x04"])
         text = strip_ansi(raw)
@@ -1883,6 +2143,10 @@ def main():
         test_tui_collect_info_states_and_secrets(cli_module, tmp_dir, stub_bin, log_path)
         test_tui_read_line_sequences(cli_module, tmp_dir)
         test_tui_repl_loop(cli_module, tmp_dir)
+        test_tui_pin_sequences(cli_module)
+        test_tui_pin_lifecycle(cli_module, tmp_dir)
+        test_tui_pin_clear_and_loop(cli_module, tmp_dir)
+        test_tui_main_releases_region_on_error(cli_module, tmp_dir)
         test_tui_fallback_without_terminal(cli_module, tmp_dir, stub_bin, log_path)
         test_tui_pty_session(cli_module, tmp_dir, stub_bin, log_path)
 
