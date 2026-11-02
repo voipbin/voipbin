@@ -700,13 +700,41 @@ touch the TUI code, so their output and exit codes are unchanged.
   and Ctrl+D. The prompt keeps readline's `\001`/`\002` ANSI wrapping.
   A resize while typing can leave a stale rule in the scrollback; the next
   prompt is drawn at the new width.
-- The header is the same `LOGO_LINES` logo that `get_logo()` prints for the plain
-  dashboard (phone icon, wordmark, tagline), with the three info lines in the
-  rows where the wordmark column is empty. The logo needs a terminal wider than
-  `TUI_LOGO_WIDTH` columns and at least `TUI_LOGO_MIN_HEIGHT` rows (more on a
-  checkout without `.env`, where the "Install now?" dialog is printed between
-  the header and the input frame: `TUI_INSTALL_DIALOG_ROWS`, update it when that
-  text changes); otherwise only the three info lines are shown.
+- The header is pinned to the top of the terminal, like a
+  fixed title bar: `tui_pin_start()` draws it and sets a scroll region
+  (DECSTBM) below it, so command output and the input frame scroll under it
+  and the header stays. The logo header is the six-line `TUI_ICON` phone with
+  the title, state, directory and tagline beside it (the plain welcome
+  screen keeps `LOGO_LINES`/`get_logo()`); a closing rule separates it from
+  the scrolling part. It needs `TUI_FULL_MIN_WIDTH` (60) columns and
+  `len(TUI_ICON) + 1 + TUI_FRAME_ROWS + TUI_MIN_OUTPUT_ROWS` (17) rows; from
+  14 rows only the three info lines are pinned; narrower or shorter
+  terminals (and under `TUI_MIN_HEIGHT`) keep the old behavior, the three
+  info lines printed once at start. The icon is the only drawing: change
+  `TUI_ICON` (full blocks and spaces only, one width) and every size follows.
+- Pinning lives in `_PIN` and the `tui_pin_*` functions. Nothing is written
+  before `tui_pin_start()` (called only for the terminal REPL), so pipes,
+  `NO_COLOR`, `TERM=dumb`, commands with arguments and the plain prompt never
+  see the escape sequences. `repl_loop` calls `tui_pin_refresh()` before every
+  prompt: a new terminal size clears the region and redraws (like `/clear`), the
+  same size only repaints the header, which also repairs a region that an
+  external tool reset. `/clear` (`cmd_clear`) erases only the region and not
+  the scrollback. A resize while the prompt waits repaints the header in
+  place (the input line is not touched); the rest is done at the next prompt.
+  The region is released by `tui_pin_close()` from the REPL's `finally`,
+  `atexit` and just before `update` re-executes the CLI; SIGTERM and SIGHUP
+  become `SystemExit` (exit code 128+n, an `os.system` child may outlive it) so
+  that the `finally` runs; an ignored SIGHUP stays ignored. SIGKILL cannot be
+  caught: run `reset` if the terminal is left with a scroll region. When the
+  region is released the header stays on screen and scrolls away with the
+  shell's own output.
+- Known limits: a tool that clears the whole screen and homes the cursor
+  (none in this repo) can leave the next input frame over the header until the
+  next prompt repaints it; a terminal may drop lines scrolled out of a
+  region from its scrollback (tmux keeps them); a resize while the prompt waits (or a drop below the pinned height) can leave
+  a piece of the old frame rule on screen until the next prompt; a SIGWINCH that
+  arrives while a prompt is being redrawn is applied at the next prompt; libedit (macOS)
+  readline was not tested.
 - The status bar is refreshed once at start and after the commands in
   `TUI_STATE_CHANGING` (never polled). The header shows a version only when
   `CHANGELOG.md` has a released `## [vX.Y.Z]` section; `/version` is still the

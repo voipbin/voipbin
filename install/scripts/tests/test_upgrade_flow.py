@@ -90,6 +90,7 @@ def fake_run_cmd(cmd, **kw):
 
 execv_calls = []
 execv_lock_state = []
+execv_pin_active = []
 
 
 def fake_execv(exe, argv):
@@ -97,6 +98,9 @@ def fake_execv(exe, argv):
     # record whether the op lock exists AT THE MOMENT of exec (in production
     # execv replaces the process image, so this is the last observable moment)
     execv_lock_state.append(os.path.exists(os.path.join(tmp, ".voipbin-op.lock")))
+    # the interactive TUI's pinned header region must be released before the process image
+    # is replaced (the re-executed CLI runs without the TUI and would leave the region set)
+    execv_pin_active.append(m._PIN["active"])
     raise RuntimeError("EXECV")  # execv never returns; simulate by raising
 
 
@@ -134,12 +138,17 @@ cli2._do_backup = lambda pd: (seq.append("backup"), "20990101-000000")[1]
 cli2._update_scripts = lambda pd, check_only=False: (seq.append("scripts"), True)[1]
 calls.clear()
 execv_calls.clear()
+m._PIN.update({"enabled": True, "active": True, "geom": (100, 30, 7)})
 try:
-    cli2.cmd_update(["all"])
+    with contextlib.redirect_stdout(io.StringIO()):
+        cli2.cmd_update(["all"])
 except RuntimeError as e:
     seq.append("execv")
+finally:
+    m._PIN.update({"enabled": False, "active": False, "geom": None})
 check("B3 order backup->scripts->execv", seq == ["backup", "scripts", "execv"], str(seq))
 argv = execv_calls[0] if execv_calls else []
+check("B3 pinned TUI header region is released before execv", execv_pin_active == [False], str(execv_pin_active))
 check("B3 execv argv carries --resume-from=pull",
       any(a == "--resume-from=pull" for a in argv), str(argv))
 check("B3 execv argv carries --backup-ts",

@@ -1246,15 +1246,27 @@ def show_welcome_dashboard():
 # render/parse functions below take plain data so tests can call them directly.
 
 TUI_MIN_HEIGHT = 8
-# The header shows the LOGO_LINES logo only when it fits: the widest logo line
-# must be at most width-1 columns, and the screen must hold the whole start
-# screen (blank line, logo, notice, blank line, 5-line input frame). A checkout
-# without .env also prints the "Install now?" dialog between the header and
-# the frame (9 rows measured, plus a margin for wrapping on narrow terminals);
-# on a shorter screen the top of the logo would scroll off, so it is left out.
-TUI_LOGO_WIDTH = max(len(icon) + len(text) for icon, text in LOGO_LINES)
-TUI_LOGO_MIN_HEIGHT = 1 + len(LOGO_LINES) + 2 + 5
-TUI_INSTALL_DIALOG_ROWS = 12
+# The header is pinned to the top of the terminal (a scroll region below it
+# holds the command output and the input frame), so it needs the room for
+# itself, the 5-line input frame and a few lines of output. It also needs a
+# terminal at least TUI_FULL_MIN_WIDTH wide; narrower or shorter terminals
+# keep the header printed once at start, as before. The icon is the only
+# place that decides the header height: TUI_ICON rows with the info lines
+# beside them (the logo header) or the three info lines alone (compact).
+TUI_ICON = (
+    "   █████████ ",
+    "  ███████████",
+    "  ██ ██ ██ ██",
+    "  ██ ██ ██ ██",
+    "  ██ ██ ██ ██",
+    "   █████████ ",
+)
+TUI_ICON_WIDTH = len(TUI_ICON[0])
+TUI_ICON_GAP = 6
+TUI_TAGLINE = "Connect & Collaborate for all"
+TUI_FULL_MIN_WIDTH = 60
+TUI_FRAME_ROWS = 5
+TUI_MIN_OUTPUT_ROWS = 5
 TUI_SLASH_HELP = (
     ("help", "Show commands"),
     ("install", "Guided install"),
@@ -1421,9 +1433,10 @@ def _dot(value):
 
 
 def render_header(info, width, height=None):
-    """The VoIPBin logo with the three info lines in its empty bottom rows.
-    On a terminal too narrow or too short for the logo, only the info lines.
-    Returns a list of lines, each at most width-1 columns."""
+    """The header lines: the icon with four info lines beside it when the
+    terminal is wide and tall enough to pin it (tui_pin_rows), else only the
+    three info lines. Returns a list of lines, each at most width-1 columns.
+    height=None reads the terminal height."""
     limit = max(1, width - 1)
     if height is None:
         height = shutil.get_terminal_size().lines
@@ -1433,25 +1446,24 @@ def render_header(info, width, height=None):
         status += f" {_services_text(info)}"
     if info.get("mode"):
         status += f" · mode {info['mode']}"
-    need = TUI_LOGO_MIN_HEIGHT
-    if info["state"] == "not_initialized":
-        need += TUI_INSTALL_DIALOG_ROWS
-    show_logo = width > TUI_LOGO_WIDTH and height >= need
-    avail = limit - (len(LOGO_LINES[0][0]) + 2 if show_logo else 0)
+    logo = (width >= TUI_FULL_MIN_WIDTH
+            and height >= len(TUI_ICON) + 1 + TUI_FRAME_ROWS + TUI_MIN_OUTPUT_ROWS)
+    avail = limit - (TUI_ICON_WIDTH + TUI_ICON_GAP if logo else 0)
     right = [
         bold(clip(title, avail)),
         clip(status, avail),
         gray(clip(info["cwd"], avail, keep="tail")),
     ]
-    if not show_logo:
+    if not logo:
         return right
-    # The three info lines sit in the last rows where the wordmark column is
-    # empty, one row below the tagline.
-    first = len(LOGO_LINES) - len(right)
-    rows = [_logo_row(icon, text) for icon, text in LOGO_LINES]
-    for i, line in enumerate(right):
-        rows[first + i] = white(LOGO_LINES[first + i][0]) + "  " + line
-    return rows
+    right.append(gray(clip(TUI_TAGLINE, avail)))
+    gap = " " * TUI_ICON_GAP
+    return [white(icon) + (gap + right[i] if i < len(right) else "")
+            for i, icon in enumerate(TUI_ICON)]
+
+
+def render_rule(width):
+    return gray("─" * max(1, width - 1))
 
 
 def render_notice(info, width):
@@ -1518,6 +1530,189 @@ def parse_slash(line):
     return None, f"Unknown command: {text.split()[0]}. Type /help for available commands."
 
 
+def tui_pin_rows(info, width, height):
+    """Header lines plus the closing rule when the header can be pinned at
+    this size, else None (the header is then printed once, unpinned)."""
+    if width < TUI_FULL_MIN_WIDTH:
+        return None
+    rows = render_header(info, width, height)
+    if height < len(rows) + 1 + TUI_FRAME_ROWS + TUI_MIN_OUTPUT_ROWS:
+        return None
+    return rows + [render_rule(width)]
+
+
+def tui_pin_sequence(rows, height, mode):
+    """Escape sequences for the pinned header. The scroll region is DECSTBM
+    (rows below the header); setting or resetting it homes the cursor, so
+    every mode puts the cursor back where it belongs.
+    init: clear, draw, set the region, cursor on the first region row.
+    repaint: draw and set the region, cursor returns where it was.
+    clear: erase the region only. release: reset the region, cursor kept."""
+    top = len(rows) + 1
+    if mode == "release":
+        return "\x1b7\x1b[r\x1b8"
+    if mode == "clear":
+        return f"\x1b[{top};1H\x1b[J"
+    draw = "".join(f"\x1b[{i + 1};1H\x1b[2K{row}" for i, row in enumerate(rows))
+    region = f"\x1b[{top};{height}r"
+    if mode == "repaint":
+        return "\x1b7" + draw + region + "\x1b8"
+    return "\x1b[r\x1b[2J" + draw + region + f"\x1b[{top};1H"
+
+
+# State of the pinned header. Nothing here writes to the terminal unless
+# tui_pin_start() was called (only the terminal REPL does), so the plain
+# prompt, pipes and commands run with arguments never see these sequences.
+# enabled: signal handlers installed (start..close); active: the region is set;
+# waiting: the REPL is blocked reading a line (the only time the SIGWINCH
+# handler may draw); geom: (width, height, header rows) of the last full draw.
+_PIN = {"enabled": False, "active": False, "waiting": False, "geom": None,
+        "info": None, "saved": {}, "atexit": False}
+
+
+def _pin_write(text):
+    sys.stdout.write(text)
+    sys.stdout.flush()
+
+
+def _pin_state(info):
+    width = tui_width()
+    height = shutil.get_terminal_size().lines
+    rows = tui_pin_rows(info, width, height) if height >= TUI_MIN_HEIGHT else None
+    return width, height, rows
+
+
+def _pin_on_winch(signum, frame):
+    """Terminal resized while the prompt waits: redraw the header and the
+    region edge in place. The input line, the cursor and the saved geometry
+    are left alone; the next prompt loop (tui_pin_refresh) cleans up."""
+    if not (_PIN["active"] and _PIN["waiting"]):
+        return
+    try:
+        width, height, rows = _pin_state(_PIN["info"])
+        if rows is None or len(rows) != _PIN["geom"][2]:
+            return
+        _pin_write(tui_pin_sequence(rows, height, "repaint"))
+    except Exception:
+        pass
+
+
+def _pin_on_term(signum, frame):
+    """SIGTERM/SIGHUP: leave through SystemExit so the REPL's finally releases
+    the region. At the prompt, first erase the open input frame (the typed
+    line and the status lines below the cursor)."""
+    signal.signal(signum, signal.SIG_DFL)
+    if _PIN["active"] and _PIN["waiting"]:
+        try:
+            _pin_write("\r\x1b[J")
+        except (OSError, ValueError):
+            pass
+    sys.exit(128 + signum)
+
+
+def _pin_install_handlers():
+    for name, handler, only_default in (("SIGWINCH", _pin_on_winch, False),
+                                        ("SIGTERM", _pin_on_term, True),
+                                        ("SIGHUP", _pin_on_term, True)):
+        sig = getattr(signal, name, None)
+        if sig is None:
+            continue
+        try:
+            previous = signal.getsignal(sig)
+            if only_default and previous != signal.SIG_DFL:
+                continue  # keep an ignored signal ignored (nohup)
+            signal.signal(sig, handler)
+            _PIN["saved"][sig] = previous
+        except (ValueError, OSError):
+            pass
+
+
+def tui_pin_start(info):
+    """Pin the header and put the cursor under it, or print it once when it
+    cannot be pinned. Returns True when pinned."""
+    if not _PIN["enabled"]:
+        _PIN["enabled"] = True
+        _pin_install_handlers()
+        if not _PIN["atexit"]:
+            _PIN["atexit"] = True
+            atexit.register(tui_pin_close)
+    _PIN["info"] = info
+    width, height, rows = _pin_state(info)
+    if rows is not None:
+        try:
+            # Push what is on the screen into the scrollback first.
+            _pin_write("\n" * height + tui_pin_sequence(rows, height, "init"))
+        except (OSError, ValueError):
+            try:
+                _pin_write(tui_pin_sequence([], height, "release"))
+            except (OSError, ValueError):
+                pass
+        else:
+            _PIN["active"] = True
+            _PIN["geom"] = (width, height, len(rows))
+            print(render_notice(info, width))
+            return True
+    tui_print_intro(info)
+    return False
+
+
+def tui_pin_refresh(info):
+    """Before every prompt: follow a resize, pick up a changed status line
+    and heal a region that an external tool reset. A new geometry clears the
+    region (like /clear); the same geometry only repaints."""
+    if not _PIN["enabled"]:
+        return
+    try:
+        _PIN["info"] = info
+        width, height, rows = _pin_state(info)
+        if rows is None:
+            tui_pin_release()
+            return
+        geom = (width, height, len(rows))
+        mode = "repaint" if _PIN["active"] and geom == _PIN["geom"] else "init"
+        _pin_write(tui_pin_sequence(rows, height, mode))
+        _PIN["active"] = True
+        _PIN["geom"] = geom
+    except (OSError, ValueError):
+        pass
+
+
+def tui_pin_clear():
+    """/clear: erase the region below the pinned header. False when the
+    header is not pinned (the caller clears the whole screen)."""
+    if not _PIN["active"]:
+        return False
+    try:
+        _pin_write(tui_pin_sequence([""] * _PIN["geom"][2], 0, "clear"))
+    except (OSError, ValueError):
+        return False
+    return True
+
+
+def tui_pin_release():
+    """Reset the scroll region, leaving the header and the cursor in place."""
+    if not _PIN["active"]:
+        return
+    _PIN["active"] = False
+    try:
+        _pin_write(tui_pin_sequence([], 0, "release"))
+    except (OSError, ValueError):
+        pass
+
+
+def tui_pin_close():
+    """Release the region and give the signal handlers back. Idempotent; runs
+    from the REPL's finally, atexit and before the update re-exec."""
+    tui_pin_release()
+    for sig, previous in _PIN["saved"].items():
+        try:
+            signal.signal(sig, previous if previous is not None else signal.SIG_DFL)
+        except (ValueError, OSError):
+            pass
+    _PIN["saved"] = {}
+    _PIN["enabled"] = False
+
+
 def tui_print_intro(info):
     width = tui_width()
     print()
@@ -1578,7 +1773,8 @@ def tui_after_command(cli, info, cmd):
         return
     try:
         if cmd == "clear":
-            tui_print_intro(info)
+            if not _PIN["active"]:
+                tui_print_intro(info)
         elif cmd in TUI_STATE_CHANGING:
             info.update(tui_collect_info(cli))
     except Exception:
@@ -1589,9 +1785,15 @@ def repl_loop(cli, info=None):
     """The interactive command loop. info is the TUI snapshot, or None for the
     plain `voipbin> ` prompt (non-terminal, NO_COLOR, TERM=dumb)."""
     while cli.running:
+        if info is not None:
+            tui_pin_refresh(info)
         try:
             tui = info is not None and not cli.context
-            line = tui_read_line(cli, info) if tui else input(cli.get_prompt())
+            _PIN["waiting"] = True
+            try:
+                line = tui_read_line(cli, info) if tui else input(cli.get_prompt())
+            finally:
+                _PIN["waiting"] = False
 
             if cli.context:
                 cli.run_in_context(line)
@@ -6779,6 +6981,7 @@ Type 'registrar <subcommand> help' for more details.
             argv.append("--skip-backup")
         sys.stdout.flush()
         sys.stderr.flush()
+        tui_pin_close()  # the re-executed CLI runs without the TUI
         os.execv(sys.executable, argv)
 
     def _verify_stack(self, project_dir, timeout=120):
@@ -8232,6 +8435,8 @@ Type 'registrar <subcommand> help' for more details.
 
     def cmd_clear(self, args):
         """Clear screen"""
+        if tui_pin_clear():
+            return  # the pinned header stays; only the region below it is erased
         os.system("clear" if os.name != "nt" else "cls")
 
 
@@ -8541,38 +8746,41 @@ def _main():
     # Interactive mode
     setup_readline(cli)
 
-    # Start screen: the TUI on a UTF-8 terminal, else the plain dashboard
-    cli.tui_on = tui_wanted()
-    info = None
-    if cli.tui_on:
-        info = tui_collect_info(cli)
-        tui_print_intro(info)
-        state = info["state"]
-    else:
-        show_welcome_dashboard()
-        state = detect_dashboard_state()
-
-    # A checkout without .env: offer the guided install once (it asks
-    # "Install now?" itself), then continue with the REPL either way.
-    if state == "not_initialized" and sys.stdin.isatty():
-        cli.cmd_install([])
-        print()
-        if info is not None:
-            info.update(tui_collect_info(cli))
-
-    # Handle Ctrl+C gracefully
-    def sigint_handler(sig, frame):
-        print()
-        if cli.context:
-            cli.context = None
+    try:
+        # Start screen: the TUI on a UTF-8 terminal, else the plain dashboard
+        cli.tui_on = tui_wanted()
+        info = None
+        if cli.tui_on:
+            info = tui_collect_info(cli)
+            tui_pin_start(info)
+            state = info["state"]
         else:
-            print("Type 'exit' to quit")
+            show_welcome_dashboard()
+            state = detect_dashboard_state()
 
-    signal.signal(signal.SIGINT, sigint_handler)
+        # A checkout without .env: offer the guided install once (it asks
+        # "Install now?" itself), then continue with the REPL either way.
+        if state == "not_initialized" and sys.stdin.isatty():
+            cli.cmd_install([])
+            print()
+            if info is not None:
+                info.update(tui_collect_info(cli))
 
-    repl_loop(cli, info)
+        # Handle Ctrl+C gracefully
+        def sigint_handler(sig, frame):
+            print()
+            if cli.context:
+                cli.context = None
+            else:
+                print("Type 'exit' to quit")
 
-    print("Goodbye!")
+        signal.signal(signal.SIGINT, sigint_handler)
+
+        repl_loop(cli, info)
+
+        print("Goodbye!")
+    finally:
+        tui_pin_close()
 
 
 if __name__ == "__main__":
