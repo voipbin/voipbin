@@ -1324,24 +1324,57 @@ def test_tui_clip_and_widths(cli_module):
 def test_tui_render_header_notice_statusbar(cli_module):
     vis = cli_module.visible_len
     plain = lambda t: re.sub(r"\x1b\[[0-9;]*m", "", t)
-    for width in (80, 60, 59, 40, 24, 20):
-        for info in (tui_info(), tui_info(version="v1.2.3"), tui_info(state="stopped", running=None, total=None, dns=None, net=None),
-                     tui_info(state="not_initialized", running=None, total=None, dns=None, net=None, mode=None),
-                     tui_info(mode="external", dns="n/a"), tui_info(total=0),
-                     tui_info(cwd="/" + "deep/" * 40 + "dir")):
-            rows = (cli_module.render_header(info, width) + [cli_module.render_notice(info, width)]
-                    + cli_module.render_frame(info, width))
-            for row in rows:
-                assert vis(row) <= width - 1, (width, vis(row), plain(row))
-    header = [plain(r) for r in cli_module.render_header(tui_info(version="v1.2.3"), 100)]
-    assert len(header) == 3 and "█" in header[0]
-    icon = cli_module.TUI_ICON
-    assert len(icon) == 3 and len({len(r) for r in icon}) == 1 and len(icon[0]) == 12, icon
-    assert all(ch in " █▀▄" for r in icon for ch in r), icon
-    assert icon == ("▄██▀▀▀▀▀▀██▄", "███▀    ▀███", "▀█▀      ▀█▀"), icon
-    assert "VoIPBin Install CLI v1.2.3" in header[0] and "running 12/45" in header[1] and "mode internal" in header[1], header
-    assert header[2].rstrip().endswith("/srv/voipbin-install/install"), header
-    narrow = [plain(r) for r in cli_module.render_header(tui_info(cwd="/srv/projects/voipbin/checkout/current/install"), 40)]
+    infos = (tui_info(), tui_info(version="v1.2.3"), tui_info(state="stopped", running=None, total=None, dns=None, net=None),
+             tui_info(state="not_initialized", running=None, total=None, dns=None, net=None, mode=None),
+             tui_info(mode="external", dns="n/a"), tui_info(total=0),
+             tui_info(cwd="/" + "deep/" * 40 + "dir"))
+    for width in (120, 80, 66, 65, 60, 59, 40, 24, 20):
+        for height in (60, 40, 24, 8):
+            for info in infos:
+                rows = (cli_module.render_header(info, width, height) + [cli_module.render_notice(info, width)]
+                        + cli_module.render_frame(info, width))
+                for row in rows:
+                    assert vis(row) <= width - 1, (width, height, vis(row), plain(row))
+    # The header is the get_logo() logo (same icon, wordmark and tagline text)
+    # with the three info lines in the rows where the wordmark column is empty.
+    header = [plain(r) for r in cli_module.render_header(tui_info(version="v1.2.3"), 100, 40)]
+    logo = cli_module.LOGO_LINES
+    assert len(header) == len(logo) == 11 and header[0].rstrip() == logo[0][0].rstrip(), header
+    for i in range(0, 8):
+        assert header[i] == logo[i][0] + logo[i][1], (i, header[i])
+    for i in range(8, 11):
+        assert header[i].startswith(logo[i][0] + "  "), (i, header[i])
+    assert "VoIPBin Install CLI v1.2.3" in header[8] and "running 12/45" in header[9] and "mode internal" in header[9], header
+    assert header[10].rstrip().endswith("/srv/voipbin-install/install"), header
+    assert "Connect & Collaborate for all" in header[6] and "(_)_ __" in header[2], header
+    # get_logo() is unchanged by the refactor (the pre-change body, copied here), and the
+    # header's logo rows are the same colored lines, not a re-drawn lookalike
+    legacy = []
+    for icon_part, text_part in cli_module.LOGO_LINES:
+        if "Connect & Collaborate" in text_part:
+            legacy.append(f"{cli_module.white(icon_part)}{cli_module.gray(text_part)}")
+        elif text_part:
+            legacy.append(f"{cli_module.white(icon_part)}{cli_module.bold(text_part)}")
+        else:
+            legacy.append(f"{cli_module.white(icon_part)}")
+    assert cli_module.get_logo() == "\n".join(legacy)
+    colored = cli_module.render_header(tui_info(), 100, 40)
+    assert colored[:8] == legacy[:8], colored[:8]
+    assert not hasattr(cli_module, "TUI_ICON") and not hasattr(cli_module, "TUI_NARROW_WIDTH")
+    assert cli_module.TUI_LOGO_WIDTH == 65 and cli_module.TUI_LOGO_MIN_HEIGHT == 19, (cli_module.TUI_LOGO_WIDTH, cli_module.TUI_LOGO_MIN_HEIGHT)
+    # logo only when the widest logo row fits in width-1 columns (66 and up)
+    assert len(cli_module.render_header(tui_info(), 66, 40)) == 11
+    for width in (65, 60, 40):
+        compact = [plain(r) for r in cli_module.render_header(tui_info(), width, 40)]
+        assert len(compact) == 3 and "█" not in "".join(compact), (width, compact)
+    # logo only when the whole start screen fits: 19 rows, or 31 on a checkout without .env
+    # (the "Install now?" dialog is printed between the header and the input frame)
+    fresh = tui_info(state="not_initialized", running=None, total=None, dns=None, net=None, mode=None)
+    for info, need in ((tui_info(), 19), (tui_info(state="stopped", running=None, total=None, dns=None, net=None), 19), (fresh, 31)):
+        assert len(cli_module.render_header(info, 100, need)) == 11, (info["state"], need)
+        assert len(cli_module.render_header(info, 100, need - 1)) == 3, (info["state"], need)
+    assert len(cli_module.render_header(tui_info(), 100, 8)) == 3
+    narrow = [plain(r) for r in cli_module.render_header(tui_info(cwd="/srv/projects/voipbin/checkout/current/install"), 40, 40)]
     assert len(narrow) == 3 and "█" not in "".join(narrow), narrow
     assert "VoIPBin Install CLI" in narrow[0] and "v" not in narrow[0].split("CLI")[1], narrow
     assert "…" in narrow[2] and narrow[2].endswith("install"), narrow
@@ -1368,7 +1401,7 @@ def test_tui_render_header_notice_statusbar(cli_module):
     saved = {k: getattr(cli_module.Colors, k) for k in ("GREEN", "RED", "YELLOW", "BLUE", "GRAY", "WHITE", "BOLD", "DIM", "RESET")}
     cli_module.Colors.disable()
     try:
-        text = "".join(cli_module.render_header(tui_info(), 100) + cli_module.render_frame(tui_info(), 100))
+        text = "".join(cli_module.render_header(tui_info(), 100, 40) + cli_module.render_frame(tui_info(), 100))
         assert "\x1b[" not in text
     finally:
         for k, v in saved.items():
@@ -1460,7 +1493,7 @@ if [[ "$1 $2" == "compose config" ]]; then printf "db\\nmq\\nredis\\napi-manager
         assert (calls["detect"], calls["quick"]) == (1, 1), calls
         assert info["state"] == "running" and (info["running"], info["total"]) == (2, 4), info
         assert info["mode"] == "internal" and info["net"] is False and info["dns"] is False, info
-        shown = " ".join(cli_module.render_header(info, 100) + [cli_module.render_notice(info, 100)]
+        shown = " ".join(cli_module.render_header(info, 100, 40) + [cli_module.render_notice(info, 100)]
                          + cli_module.render_frame(info, 100) + [str(info)])
         assert secret not in shown and "HOST_EXTERNAL_IP" not in shown, shown
         # control characters in the directory name and in DOMAIN_MODE never reach the screen

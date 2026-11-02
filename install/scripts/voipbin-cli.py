@@ -1059,18 +1059,18 @@ SIDECAR_DETAIL_FIELDS = {
 }
 
 
+def _logo_row(icon_part, text_part):
+    """One colored logo line: white icon, bold wordmark, gray tagline."""
+    if "Connect & Collaborate" in text_part:
+        return f"{white(icon_part)}{gray(text_part)}"
+    if text_part:
+        return f"{white(icon_part)}{bold(text_part)}"
+    return f"{white(icon_part)}"
+
+
 def get_logo():
     """Return the combined ASCII logo with colors"""
-    combined = []
-    for icon_part, text_part in LOGO_LINES:
-        if "Connect & Collaborate" in text_part:
-            combined.append(f"{white(icon_part)}{gray(text_part)}")
-        elif text_part:
-            combined.append(f"{white(icon_part)}{bold(text_part)}")
-        else:
-            combined.append(f"{white(icon_part)}")
-
-    return '\n'.join(combined)
+    return '\n'.join(_logo_row(icon_part, text_part) for icon_part, text_part in LOGO_LINES)
 
 
 def detect_dashboard_state():
@@ -1246,12 +1246,15 @@ def show_welcome_dashboard():
 # render/parse functions below take plain data so tests can call them directly.
 
 TUI_MIN_HEIGHT = 8
-TUI_NARROW_WIDTH = 60
-TUI_ICON = (
-    "▄██▀▀▀▀▀▀██▄",
-    "███▀    ▀███",
-    "▀█▀      ▀█▀",
-)
+# The header shows the LOGO_LINES logo only when it fits: the widest logo line
+# must be at most width-1 columns, and the screen must hold the whole start
+# screen (blank line, logo, notice, blank line, 5-line input frame). A checkout
+# without .env also prints the "Install now?" dialog between the header and
+# the frame (9 rows measured, plus a margin for wrapping on narrow terminals);
+# on a shorter screen the top of the logo would scroll off, so it is left out.
+TUI_LOGO_WIDTH = max(len(icon) + len(text) for icon, text in LOGO_LINES)
+TUI_LOGO_MIN_HEIGHT = 1 + len(LOGO_LINES) + 2 + 5
+TUI_INSTALL_DIALOG_ROWS = 12
 TUI_SLASH_HELP = (
     ("help", "Show commands"),
     ("install", "Guided install"),
@@ -1417,18 +1420,24 @@ def _dot(value):
     return green("●") if value else gray("○")
 
 
-def render_header(info, width):
-    """Logo block (left) and three info lines (right). Returns a list of lines,
-    each at most width-1 columns."""
+def render_header(info, width, height=None):
+    """The VoIPBin logo with the three info lines in its empty bottom rows.
+    On a terminal too narrow or too short for the logo, only the info lines.
+    Returns a list of lines, each at most width-1 columns."""
     limit = max(1, width - 1)
+    if height is None:
+        height = shutil.get_terminal_size().lines
     title = "VoIPBin Install CLI" + (f" {info['version']}" if info.get("version") else "")
     status = _state_label(info)
     if info["state"] == "running":
         status += f" {_services_text(info)}"
     if info.get("mode"):
         status += f" · mode {info['mode']}"
-    show_logo = width >= TUI_NARROW_WIDTH
-    avail = limit - (len(TUI_ICON[0]) + 2 if show_logo else 0)
+    need = TUI_LOGO_MIN_HEIGHT
+    if info["state"] == "not_initialized":
+        need += TUI_INSTALL_DIALOG_ROWS
+    show_logo = width > TUI_LOGO_WIDTH and height >= need
+    avail = limit - (len(LOGO_LINES[0][0]) + 2 if show_logo else 0)
     right = [
         bold(clip(title, avail)),
         clip(status, avail),
@@ -1436,7 +1445,13 @@ def render_header(info, width):
     ]
     if not show_logo:
         return right
-    return [white(icon) + "  " + text for icon, text in zip(TUI_ICON, right)]
+    # The three info lines sit in the last rows where the wordmark column is
+    # empty, one row below the tagline.
+    first = len(LOGO_LINES) - len(right)
+    rows = [_logo_row(icon, text) for icon, text in LOGO_LINES]
+    for i, line in enumerate(right):
+        rows[first + i] = white(LOGO_LINES[first + i][0]) + "  " + line
+    return rows
 
 
 def render_notice(info, width):
