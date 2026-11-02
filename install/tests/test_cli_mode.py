@@ -1701,6 +1701,46 @@ def test_tui_repl_loop(cli_module, tmp_dir):
     print("ok test_tui_repl_loop")
 
 
+class ReadLoopSpins(BaseException):
+    """BaseException so repl_loop's `except Exception` cannot swallow it."""
+
+
+def test_repl_loop_ends_when_terminal_is_gone(cli_module, tmp_dir):
+    import errno
+    # a read that fails with EIO/EBADF (hung-up terminal) ends the loop, plain prompt and frame alike
+    for err in (errno.EIO, errno.EBADF):
+        for info in (None, tui_info()):
+            cli, _ = make_cli(tmp_dir, INTERNAL_ENV, cli_module)
+            reads = []
+
+            def gone(prompt="", _err=err):
+                reads.append(1)
+                if len(reads) > 3:
+                    raise ReadLoopSpins("repl_loop kept reading a terminal that is gone")
+                raise OSError(_err, os.strerror(_err))
+            orig_read = cli_module.tui_read_line
+            cli_module.tui_read_line = lambda c, i: gone()
+            try:
+                with fake_input(gone):
+                    out = capture(cli_module.repl_loop, cli, info)
+            finally:
+                cli_module.tui_read_line = orig_read
+            assert len(reads) == 1 and "Error:" not in out, (err, reads, out)
+    # any other read error is still reported and the loop goes on
+    cli, _ = make_cli(tmp_dir, INTERNAL_ENV, cli_module)
+    answers = iter([OSError(errno.EINVAL, "bad"), "exit"])
+
+    def flaky(prompt=""):
+        a = next(answers)
+        if isinstance(a, Exception):
+            raise a
+        return a
+    with fake_input(flaky):
+        out = capture(cli_module.repl_loop, cli, None)
+    assert "Error: [Errno 22] bad" in out and not cli.running, out
+    print("ok test_repl_loop_ends_when_terminal_is_gone")
+
+
 def test_tui_pin_sequences(cli_module):
     seq = cli_module.tui_pin_sequence
     rows = ["r%d" % i for i in range(7)]
@@ -2091,6 +2131,108 @@ if [[ "$1 $2" == "compose config" ]]; then printf "db\\nmq\\napi-manager\\n"; ex
     print("ok test_tui_pty_session")
 
 
+def pty_hangup_outcome(tmp_dir, project_dir, how, ignore_hup=False, marker=None, **extra):
+    """Start the REPL on a pty, take the terminal away as `how` says (master
+    close, SIGHUP, SIGTERM) and return (exited, cpu_seconds). A child that
+    never exits is killed; RLIMIT_CPU keeps a runaway child from burning a core."""
+    import fcntl, pty, resource, select, signal, struct, termios, time
+    cli_path = os.path.join(SCRIPTS_DIR, "voipbin-cli.py")
+    env = tui_child_env(tmp_dir, project_dir, **extra)
+    pid, fd = pty.fork()
+    if pid == 0:
+        try:
+            os.chdir(project_dir)
+            resource.setrlimit(resource.RLIMIT_CPU, (30, 30))
+            if ignore_hup:
+                signal.signal(signal.SIGHUP, signal.SIG_IGN)
+            os.execvpe(sys.executable, [sys.executable, "-c", TUI_CHILD, cli_path], env)
+        finally:
+            os._exit(127)
+    fcntl.ioctl(fd, termios.TIOCSWINSZ, struct.pack("HHHH", 30, 100, 0, 0))
+    exited, cpu = False, None
+    try:
+        data, end = b"", time.time() + 20
+        waiting = (lambda d: marker in d) if marker else (
+            lambda d: "\u276f" in strip_ansi(d.decode("utf-8", "replace")) or "voipbin> " in strip_ansi(d.decode("utf-8", "replace")))
+        while not waiting(data) and time.time() < end:
+            if select.select([fd], [], [], 0.1)[0]:
+                data += os.read(fd, 65536)
+        assert waiting(data), ("prompt never appeared", how, marker, extra, strip_ansi(data.decode("utf-8", "replace"))[-300:])
+        time.sleep(0.5)
+        if how == "master":
+            os.close(fd)
+            fd = None
+        else:
+            os.kill(pid, getattr(signal, how))
+        end = time.time() + 5
+        while time.time() < end:
+            if fd is not None:
+                try:
+                    while select.select([fd], [], [], 0)[0]:
+                        os.read(fd, 65536)
+                except OSError:
+                    pass
+            done, _, usage = os.wait4(pid, os.WNOHANG)
+            if done:
+                exited, cpu = True, usage.ru_utime + usage.ru_stime
+                break
+            time.sleep(0.1)
+        if not exited:
+            os.kill(pid, signal.SIGKILL)
+            _, _, usage = os.wait4(pid, 0)
+            cpu = usage.ru_utime + usage.ru_stime
+    finally:
+        if fd is not None:
+            os.close(fd)
+    return exited, cpu
+
+
+def test_tui_pty_hangup_exits(cli_module, tmp_dir, stub_bin, log_path):
+    try:
+        import pty  # noqa: F401
+    except ImportError:
+        print("skip test_tui_pty_hangup_exits: no pty module on this platform")
+        return
+    project_dir = fresh_project(tmp_dir, "p_tui_hup")
+    write_env(project_dir, INTERNAL_ENV)
+    set_docker_stub(stub_bin, log_path, '''
+if [[ "$1 $2" == "compose ps" ]]; then exit 0; fi
+if [[ "$1 $2" == "compose config" ]]; then exit 0; fi
+''')
+    try:
+        # A vanished terminal must end the REPL at the prompt, in both prompt
+        # styles, also when SIGHUP is ignored (nohup) and whichever way it goes.
+        for label, how, ignore_hup, extra in (
+                ("tui master close", "master", False, {}),
+                ("tui master close, SIGHUP ignored", "master", True, {}),
+                ("tui SIGHUP", "SIGHUP", False, {}),
+                ("tui SIGTERM", "SIGTERM", False, {}),
+                ("plain master close", "master", False, {"TERM": "dumb"}),
+                ("plain master close, SIGHUP ignored", "master", True, {"TERM": "dumb"})):
+            history = os.path.join(tmp_dir, "tui_home", ".voipbin-cli-history")
+            if os.path.exists(history):
+                os.remove(history)
+            exited, cpu = pty_hangup_outcome(tmp_dir, project_dir, how, ignore_hup, **extra)
+            assert exited, (label, "REPL still running 5s after the terminal went away", cpu)
+            assert cpu < 3.0, (label, "burned cpu seconds", cpu)
+            if how == "master" and (ignore_hup or not extra):
+                # the watch thread ends it (a plain prompt with the default SIGHUP is
+                # killed by the kernel instead); it still runs the atexit work
+                # (history, op lock release)
+                assert os.path.exists(history), (label, "atexit handlers did not run on hangup")
+        # a checkout without .env offers the guided install first; that question is
+        # outside repl_loop and must end on a hangup too
+        fresh = fresh_project(tmp_dir, "p_tui_hup_fresh")
+        for label, ignore_hup in (("install question master close", False),
+                                  ("install question master close, SIGHUP ignored", True)):
+            exited, cpu = pty_hangup_outcome(tmp_dir, fresh, "master", ignore_hup, marker=b"[Y/n]")
+            assert exited, (label, "REPL still running 5s after the terminal went away", cpu)
+            assert cpu < 3.0, (label, "burned cpu seconds", cpu)
+    finally:
+        reset_docker_stub(stub_bin, log_path)
+    print("ok test_tui_pty_hangup_exits")
+
+
 def main():
     tmp_dir = tempfile.mkdtemp(prefix="voipbin-cli-mode-test.")
     prev_path = os.environ.get("PATH", "")
@@ -2143,12 +2285,14 @@ def main():
         test_tui_collect_info_states_and_secrets(cli_module, tmp_dir, stub_bin, log_path)
         test_tui_read_line_sequences(cli_module, tmp_dir)
         test_tui_repl_loop(cli_module, tmp_dir)
+        test_repl_loop_ends_when_terminal_is_gone(cli_module, tmp_dir)
         test_tui_pin_sequences(cli_module)
         test_tui_pin_lifecycle(cli_module, tmp_dir)
         test_tui_pin_clear_and_loop(cli_module, tmp_dir)
         test_tui_main_releases_region_on_error(cli_module, tmp_dir)
         test_tui_fallback_without_terminal(cli_module, tmp_dir, stub_bin, log_path)
         test_tui_pty_session(cli_module, tmp_dir, stub_bin, log_path)
+        test_tui_pty_hangup_exits(cli_module, tmp_dir, stub_bin, log_path)
 
         print("All test_cli_mode.py tests passed")
     finally:

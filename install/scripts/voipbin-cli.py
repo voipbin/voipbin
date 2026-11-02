@@ -9,6 +9,7 @@ This CLI requires sudo for full functionality (network setup, DNS config, etc.)
 """
 
 import atexit
+import errno
 import getpass
 import hashlib
 import json
@@ -17,11 +18,13 @@ import pwd
 import readline
 import re
 import secrets
+import select
 import shlex
 import shutil
 import signal
 import subprocess
 import sys
+import threading
 import time
 import traceback
 import unicodedata
@@ -1781,6 +1784,55 @@ def tui_after_command(cli, info, cmd):
         pass
 
 
+# Errors a read raises once the terminal is gone; retrying them can only spin.
+TERMINAL_GONE_ERRNOS = (errno.EIO, errno.EBADF)
+_HANGUP_WATCH = {"started": False}
+
+
+def _hangup_watch(fd):
+    # With a libedit-backed readline (python builds that ship editline instead
+    # of GNU readline) input() keeps retrying a hung-up terminal in C and never
+    # lets the Python SIGHUP handler run (or SIGHUP be ignored), so wait for the
+    # hangup in a thread. poll() with no requested events wakes only on
+    # POLLHUP/POLLERR/POLLNVAL, so it costs no CPU while idle. POLLNVAL alone
+    # (a platform that cannot poll a terminal) is not a hangup: stop watching.
+    poller = select.poll()
+    poller.register(fd, 0)
+    while True:
+        try:
+            events = poller.poll()
+        except InterruptedError:
+            continue
+        except (OSError, ValueError):
+            return
+        if any(mask & (select.POLLHUP | select.POLLERR) for _, mask in events):
+            # The main thread is stuck inside readline, so a normal exit cannot
+            # run: do what it would (release the op lock, save the history),
+            # then leave. (_run_exitfuncs is private API, hence the broad except.)
+            try:
+                atexit._run_exitfuncs()
+            except BaseException:
+                pass
+            os._exit(128 + signal.SIGHUP)
+        if events:
+            return
+
+
+def start_hangup_watch():
+    """Exit when the controlling terminal hangs up, wherever the CLI is waiting
+    for input. A no-op unless stdin is a terminal, and started once."""
+    if _HANGUP_WATCH["started"] or not hasattr(select, "poll"):
+        return
+    try:
+        if not sys.stdin.isatty():
+            return
+        fd = sys.stdin.fileno()
+    except (AttributeError, OSError, ValueError):
+        return
+    _HANGUP_WATCH["started"] = True
+    threading.Thread(target=_hangup_watch, args=(fd,), daemon=True).start()
+
+
 def repl_loop(cli, info=None):
     """The interactive command loop. info is the TUI snapshot, or None for the
     plain `voipbin> ` prompt (non-terminal, NO_COLOR, TERM=dumb)."""
@@ -1792,6 +1844,10 @@ def repl_loop(cli, info=None):
             _PIN["waiting"] = True
             try:
                 line = tui_read_line(cli, info) if tui else input(cli.get_prompt())
+            except OSError as e:
+                if e.errno in TERMINAL_GONE_ERRNOS:
+                    raise EOFError  # terminal gone: leave like Ctrl+D
+                raise
             finally:
                 _PIN["waiting"] = False
 
@@ -8745,6 +8801,7 @@ def _main():
 
     # Interactive mode
     setup_readline(cli)
+    start_hangup_watch()
 
     try:
         # Start screen: the TUI on a UTF-8 terminal, else the plain dashboard
