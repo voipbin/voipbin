@@ -700,6 +700,13 @@ touch the TUI code, so their output and exit codes are unchanged.
   and Ctrl+D. The prompt keeps readline's `\001`/`\002` ANSI wrapping.
   A resize while typing can leave a stale rule in the scrollback; the next
   prompt is drawn at the new width.
+- The header is the same `LOGO_LINES` logo that `get_logo()` prints for the plain
+  dashboard (phone icon, wordmark, tagline), with the three info lines in the
+  rows where the wordmark column is empty. The logo needs a terminal wider than
+  `TUI_LOGO_WIDTH` columns and at least `TUI_LOGO_MIN_HEIGHT` rows (more on a
+  checkout without `.env`, where the "Install now?" dialog is printed between
+  the header and the input frame: `TUI_INSTALL_DIALOG_ROWS`, update it when that
+  text changes); otherwise only the three info lines are shown.
 - The status bar is refreshed once at start and after the commands in
   `TUI_STATE_CHANGING` (never polled). The header shows a version only when
   `CHANGELOG.md` has a released `## [vX.Y.Z]` section; `/version` is still the

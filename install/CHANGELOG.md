@@ -26,6 +26,7 @@ records where this directory came from.)
 - `help` and `--help` show the same grouped command list (resource commands moved to `help api`), and `help`, `--help` and `version` work without sudo. Output has no color when `NO_COLOR` is set or stdout is not a terminal.
 - `status` shows which optional provider keys are set and no longer prints MySQL or RabbitMQ credentials; the start summary no longer prints the RabbitMQ password.
 - User-facing text no longer calls the install a sandbox, and `.env.template` labels secrets and certificates as generated and provider keys as optional. New installs use `voipbin-placeholder` for the GCP placeholder values; existing `.env` values keep working.
+- The start screen header now shows the VoIPBin logo (the same phone icon and wordmark as the plain welcome screen) with the install state, mode and directory beside it. Terminals narrower than 66 columns or too short for the whole screen show the three info lines only.
 
 ### Fixed
 
