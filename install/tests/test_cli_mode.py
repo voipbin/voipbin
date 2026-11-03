@@ -1339,20 +1339,32 @@ def test_tui_render_header_notice_statusbar(cli_module):
                     rows += pinned
                 for row in rows:
                     assert vis(row) <= width - 1, (width, height, vis(row), plain(row))
-    # The confirmed icon: six rows, only full blocks and spaces, one width, no half blocks
+    # The confirmed icon: six rows of quadrant, half and full blocks, every row padded to
+    # one width (14). Rows 1, 4, 5, 6 carry one trailing space so the glyphs stay centred.
     icon = cli_module.TUI_ICON
-    assert icon == ("   █████████ ", "  ███████████", "  ██ ██ ██ ██", "  ██ ██ ██ ██", "  ██ ██ ██ ██", "   █████████ "), icon
-    assert len({len(r) for r in icon}) == 1 and set("".join(icon)) == {"█", " "}, icon
-    assert cli_module.TUI_ICON_WIDTH == 13 and cli_module.TUI_ICON_GAP == 6
-    # The logo header: icon rows with the four info lines beside rows 1-4, rows 5-6 icon only
+    assert icon == (
+        " ▗▄▄▄████▄▄▄▖ ",
+        "▗█▄▄▄▄▄▄▄▄▄▄█▖",
+        "▝▙  ▄ ▗▖ ▄  ▟▘",
+        " █  █ ▐▌ █  █ ",
+        " ▜▖ █ ▐▌ █ ▗▛ ",
+        " ▝▀▀▀▀▀▀▀▀▀▀▘ ",
+    ), icon
+    assert len(icon) == 6 and {len(r) for r in icon} == {14} and {cli_module.visible_len(r) for r in icon} == {14}, icon
+    chars = set("".join(icon))
+    assert chars <= set("█▄▀▌▐▖▗▘▙▛▜▝▟ "), chars
+    assert set("▗▖▝▘▙▟▛▜") <= chars, chars
+    assert all(cli_module._char_width(c) == 1 for c in chars), chars
+    assert cli_module.TUI_ICON_WIDTH == 14 and cli_module.TUI_ICON_GAP == 6
+    # The logo header: icon rows with the four info lines beside rows 1-4 (starting at column 20), rows 5-6 icon only
     header = [plain(r) for r in cli_module.render_header(tui_info(version="v1.2.3"), 100, 40)]
-    assert len(header) == 6 and [h[:13] for h in header] == list(icon), header
-    assert header[0].endswith("VoIPBin Install CLI v1.2.3") and header[0][13:19] == " " * 6, header
+    assert len(header) == 6 and [h[:14] for h in header] == list(icon), header
+    assert all(h[14:20] == " " * 6 for h in header[:4]) and all(h[20] != " " for h in header[:4]), header
+    assert header[0][20:] == "VoIPBin Install CLI v1.2.3", header
     assert "running 12/45" in header[1] and "mode internal" in header[1], header
     assert header[2].rstrip().endswith("/srv/voipbin-install/install"), header
     assert header[3].rstrip().endswith("Connect & Collaborate for all"), header
-    assert header[4].rstrip() == icon[4].rstrip() and header[5].rstrip() == icon[5].rstrip(), header
-    assert not any(c in "".join(header) for c in "▄▀▌▐"), header
+    assert header[4] == icon[4] and header[5] == icon[5], header
     # get_logo() is unchanged by the refactor (the pre-change body, copied here)
     legacy = []
     for icon_part, text_part in cli_module.LOGO_LINES:
