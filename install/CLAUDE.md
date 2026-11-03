@@ -703,7 +703,7 @@ touch the TUI code, so their output and exit codes are unchanged.
 - The header is pinned to the top of the terminal, like a
   fixed title bar: `tui_pin_start()` draws it and sets a scroll region
   (DECSTBM) below it, so command output and the input frame scroll under it
-  and the header stays. The logo header is the six-line `TUI_ICON` phone with
+  and the header stays. The logo header is the six-line `TUI_ICON` phone (quadrant, half and full blocks) with
   the title, state, directory and tagline beside it (the plain welcome
   screen keeps `LOGO_LINES`/`get_logo()`); a closing rule separates it from
   the scrolling part. It needs `TUI_FULL_MIN_WIDTH` (60) columns and
@@ -711,7 +711,10 @@ touch the TUI code, so their output and exit codes are unchanged.
   14 rows only the three info lines are pinned; narrower or shorter
   terminals (and under `TUI_MIN_HEIGHT`) keep the old behavior, the three
   info lines printed once at start. The icon is the only drawing: change
-  `TUI_ICON` (full blocks and spaces only, one width) and every size follows.
+  `TUI_ICON` (block characters and spaces, every row padded to one width) and every
+  size follows. `█▄▀▌` are East Asian ambiguous-width characters, so a CJK
+  locale may draw them two columns wide, and a font without the quadrant
+  blocks (U+2596 to U+259F) can show them empty.
 - Pinning lives in `_PIN` and the `tui_pin_*` functions. Nothing is written
   before `tui_pin_start()` (called only for the terminal REPL), so pipes,
   `NO_COLOR`, `TERM=dumb`, commands with arguments and the plain prompt never

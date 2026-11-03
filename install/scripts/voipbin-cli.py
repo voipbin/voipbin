@@ -1257,14 +1257,15 @@ TUI_MIN_HEIGHT = 8
 # place that decides the header height: TUI_ICON rows with the info lines
 # beside them (the logo header) or the three info lines alone (compact).
 TUI_ICON = (
-    "   █████████ ",
-    "  ███████████",
-    "  ██ ██ ██ ██",
-    "  ██ ██ ██ ██",
-    "  ██ ██ ██ ██",
-    "   █████████ ",
+    " ▗▄▄▄████▄▄▄▖ ",
+    "▗█▄▄▄▄▄▄▄▄▄▄█▖",
+    "▝▙  ▄ ▗▖ ▄  ▟▘",
+    " █  █ ▐▌ █  █ ",
+    " ▜▖ █ ▐▌ █ ▗▛ ",
+    " ▝▀▀▀▀▀▀▀▀▀▀▘ ",
 )
-TUI_ICON_WIDTH = len(TUI_ICON[0])
+# Every row is padded to the same width, so the info lines beside it line up.
+TUI_ICON_WIDTH = max(len(row) for row in TUI_ICON)
 TUI_ICON_GAP = 6
 TUI_TAGLINE = "Connect & Collaborate for all"
 TUI_FULL_MIN_WIDTH = 60
