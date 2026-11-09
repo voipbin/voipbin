@@ -623,7 +623,7 @@ load_init_database_functions() {
 # check_databases_exist, check_migrations_applied, create_databases), plus
 # common.sh, without triggering the real script's top-level versions.lock/
 # python3 MONOREPO_PIN resolution (main() itself never touches that - it's
-# only used by the legacy setup_dbscheme()/configure_alembic() path, which
+# only used by the legacy setup_dbscheme() path, which
 # main() doesn't call). Used specifically for VOIP-1328 review finding H2
 # (round 2): main() must provision the dedicated DB user BEFORE the
 # "already initialized, re-run? (y/N)" gate, not only inside
