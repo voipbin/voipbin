@@ -28,6 +28,10 @@ records where this directory came from.)
 - User-facing text no longer calls the install a sandbox, and `.env.template` labels secrets and certificates as generated and provider keys as optional. New installs use `voipbin-placeholder` for the GCP placeholder values; existing `.env` values keep working.
 - The start screen header is now pinned to the top of the terminal, like a title bar: a compact six-line VoIPBin phone icon drawn with quadrant and half blocks with the install state, mode and directory beside it stays in place while command output and the input box scroll below it, and `/clear` clears only the part below. Terminals narrower than 60 columns or shorter than 14 rows show the three info lines once at the start, as before. If a terminal is ever left with a scroll region (the CLI was killed), run `reset`.
 
+### Removed
+
+- Removed the unused legacy host-alembic helpers (`configure_alembic`, `run_migrations`) from `init_database.sh`. The installer already ran only the asterisk migration stream through `scripts/migrate.sh`; the services create the `bin_manager` schema themselves.
+
 ### Fixed
 
 - `doctor.sh` no longer warns that `start.sh` will re-seed test data on an install that has the dev seed off (the default). Without `VOIPBIN_SANDBOX_DEV_SEED=true` in `.env` the missing `.test_data_initialized` marker is expected, so the `test-data` check now passes there. With the seed on it still warns.

@@ -1,6 +1,6 @@
 #!/bin/bash
 # VoIPBin Install - Database Initialization Script
-# Creates databases and runs alembic migrations from the monorepo
+# Creates databases and delegates schema migration to scripts/migrate.sh
 
 set -e
 
@@ -18,21 +18,13 @@ DBSCHEME_DIR="$PROJECT_DIR/tmp/bin-dbscheme-manager"
 # shellcheck source=common.sh
 source "$SCRIPT_DIR/common.sh"
 
-# Database configuration (matches docker-compose.yml)
-DB_HOST="127.0.0.1"
-DB_PORT="3306"
-DB_ROOT_USER="root"
-DB_ROOT_PASSWORD="${MYSQL_ROOT_PASSWORD:-root_password}"
-# The docker-exec'd mysql invocations below do NOT use $DB_ROOT_PASSWORD
+# The docker-exec'd mysql invocations below do NOT use the root password
 # directly on the host's `docker exec` argv (visible to any local user via
 # `ps aux`). Instead, IN_DB_MYSQL expands ${MYSQL_ROOT_PASSWORD} INSIDE the
 # container via `sh -c`, matching migrate.sh's MYSQL_IN_DB idiom. This also
 # means this script does not need MYSQL_ROOT_PASSWORD set in the host shell
 # (it isn't, since this script never sources .env) — the container already
-# has the var injected via docker-compose.yml. DB_ROOT_PASSWORD above is
-# retained only for the legacy configure_alembic()/run_migrations() functions
-# below (never called: main() delegates to migrate.sh), which write a DSN into
-# an alembic.ini config file rather than a process argv.
+# has the var injected via docker-compose.yml.
 IN_DB_MYSQL='exec mysql -u"$0" -p"${MYSQL_ROOT_PASSWORD:-root_password}"'
 
 # Monorepo configuration
@@ -169,228 +161,10 @@ setup_dbscheme() {
         fi
     fi
 
-    # configure_alembic() (below) writes alembic.ini files carrying the real
-    # MySQL root DSN into this directory - keep it out of reach of other
-    # local users.
+    # Keep the schema directory private to the owner.
     chmod 700 "$DBSCHEME_DIR"
 
     log_info "  Database schema files ready at: $DBSCHEME_DIR"
-}
-
-# Configure alembic.ini files
-configure_alembic() {
-    log_step "Configuring alembic..."
-
-    local db_url="mysql://${DB_ROOT_USER}:${DB_ROOT_PASSWORD}@${DB_HOST}:${DB_PORT}"
-
-    # Configure bin-manager alembic
-    cat > "$DBSCHEME_DIR/bin-manager/alembic.ini" << EOF
-[alembic]
-script_location = main
-sqlalchemy.url = ${db_url}/bin_manager
-
-[loggers]
-keys = root,sqlalchemy,alembic
-
-[handlers]
-keys = console
-
-[formatters]
-keys = generic
-
-[logger_root]
-level = WARN
-handlers = console
-qualname =
-
-[logger_sqlalchemy]
-level = WARN
-handlers =
-qualname = sqlalchemy.engine
-
-[logger_alembic]
-level = INFO
-handlers =
-qualname = alembic
-
-[handler_console]
-class = StreamHandler
-args = (sys.stderr,)
-level = NOTSET
-formatter = generic
-
-[formatter_generic]
-format = %(levelname)-5.5s [%(name)s] %(message)s
-datefmt = %H:%M:%S
-EOF
-    # alembic.ini embeds the real MySQL root DSN - keep it out of reach of
-    # other local users (default umask leaves it world-readable).
-    chmod 600 "$DBSCHEME_DIR/bin-manager/alembic.ini"
-    log_info "  Configured: bin-manager/alembic.ini"
-
-    # Configure asterisk_config alembic
-    cat > "$DBSCHEME_DIR/asterisk_config/alembic.ini" << EOF
-[alembic]
-script_location = config
-sqlalchemy.url = ${db_url}/asterisk
-
-[loggers]
-keys = root,sqlalchemy,alembic
-
-[handlers]
-keys = console
-
-[formatters]
-keys = generic
-
-[logger_root]
-level = WARN
-handlers = console
-qualname =
-
-[logger_sqlalchemy]
-level = WARN
-handlers =
-qualname = sqlalchemy.engine
-
-[logger_alembic]
-level = INFO
-handlers =
-qualname = alembic
-
-[handler_console]
-class = StreamHandler
-args = (sys.stderr,)
-level = NOTSET
-formatter = generic
-
-[formatter_generic]
-format = %(levelname)-5.5s [%(name)s] %(message)s
-datefmt = %H:%M:%S
-EOF
-    chmod 600 "$DBSCHEME_DIR/asterisk_config/alembic.ini"
-    log_info "  Configured: asterisk_config/alembic.ini"
-}
-
-# Run alembic migrations
-run_migrations() {
-    log_step "Running alembic migrations (parallel)..."
-
-    # Check if alembic is installed with a compatible SQLAlchemy version.
-    # The monorepo dbscheme migrations require SQLAlchemy 1.x (they use the
-    # 1.x-only MetaData(bind=...) API). SQLAlchemy 2.x breaks them, so we must
-    # pin "sqlalchemy<2.0" — matching the dbscheme Dockerfile. A bare
-    # `command -v alembic` check is NOT enough: alembic may already be present
-    # alongside SQLAlchemy 2.x, which passes the check but fails at upgrade head.
-    local need_install=false
-    if ! command -v alembic &> /dev/null; then
-        need_install=true
-    elif ! python3 -c 'import sqlalchemy,sys; sys.exit(0 if sqlalchemy.__version__.split(".")[0]=="1" else 1)' 2>/dev/null; then
-        log_warn "Incompatible SQLAlchemy detected (need 1.x). Reinstalling pinned versions..."
-        need_install=true
-    fi
-
-    if [ "$need_install" = true ]; then
-        log_warn "Installing alembic with pinned SQLAlchemy<2.0..."
-        pip3 install "sqlalchemy<2.0" alembic PyMySQL 2>/dev/null || {
-            log_error "Failed to install alembic. Please install it manually:"
-            log_error "  pip3 install 'sqlalchemy<2.0' alembic PyMySQL"
-            return 1
-        }
-    fi
-
-    # Create temp files for capturing output and status
-    local bin_manager_log=$(mktemp)
-    local asterisk_log=$(mktemp)
-    local bin_manager_status_file=$(mktemp)
-    local asterisk_status_file=$(mktemp)
-
-    # Spinner characters
-    local spinner='⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏'
-
-    # Run both migrations in parallel
-    (cd "$DBSCHEME_DIR/bin-manager" && alembic -c alembic.ini upgrade head > "$bin_manager_log" 2>&1; echo $? > "$bin_manager_status_file") &
-    local bin_manager_pid=$!
-
-    (cd "$DBSCHEME_DIR/asterisk_config" && alembic -c alembic.ini upgrade head > "$asterisk_log" 2>&1; echo $? > "$asterisk_status_file") &
-    local asterisk_pid=$!
-
-    # Show progress with spinner
-    local i=0
-    local bin_done=false
-    local ast_done=false
-
-    while true; do
-        # Check if processes are done
-        if ! kill -0 $bin_manager_pid 2>/dev/null; then
-            bin_done=true
-        fi
-        if ! kill -0 $asterisk_pid 2>/dev/null; then
-            ast_done=true
-        fi
-
-        # Build status line
-        local spin_char="${spinner:$((i % ${#spinner})):1}"
-        local bin_status="$spin_char running"
-        local ast_status="$spin_char running"
-
-        if $bin_done; then
-            if [ "$(cat "$bin_manager_status_file" 2>/dev/null)" = "0" ]; then
-                bin_status="${GREEN}✓ done${NC}"
-            else
-                bin_status="${RED}✗ failed${NC}"
-            fi
-        fi
-
-        if $ast_done; then
-            if [ "$(cat "$asterisk_status_file" 2>/dev/null)" = "0" ]; then
-                ast_status="${GREEN}✓ done${NC}"
-            else
-                ast_status="${RED}✗ failed${NC}"
-            fi
-        fi
-
-        # Print status line (overwrite previous)
-        printf "\r  bin-manager: %-12b | asterisk_config: %-12b" "$bin_status" "$ast_status"
-
-        # Exit if both done
-        if $bin_done && $ast_done; then
-            echo ""
-            break
-        fi
-
-        sleep 0.1
-        i=$((i + 1))
-    done
-
-    # Wait for processes (should already be done)
-    wait $bin_manager_pid 2>/dev/null
-    wait $asterisk_pid 2>/dev/null
-
-    # Get final status
-    local bin_manager_status=$(cat "$bin_manager_status_file" 2>/dev/null || echo "1")
-    local asterisk_status=$(cat "$asterisk_status_file" 2>/dev/null || echo "1")
-
-    # Show error details if failed
-    if [ "$bin_manager_status" != "0" ]; then
-        log_error "  bin-manager migration error:"
-        cat "$bin_manager_log"
-    fi
-
-    if [ "$asterisk_status" != "0" ]; then
-        log_error "  asterisk_config migration error:"
-        cat "$asterisk_log"
-    fi
-
-    # Cleanup temp files
-    rm -f "$bin_manager_log" "$asterisk_log" "$bin_manager_status_file" "$asterisk_status_file"
-
-    # Return error if either failed
-    if [ "$bin_manager_status" != "0" ] || [ "$asterisk_status" != "0" ]; then
-        return 1
-    fi
-
-    log_info "  Migrations completed successfully!"
 }
 
 # Main function
@@ -441,13 +215,10 @@ main() {
     create_databases
     echo ""
 
-    # Delegate schema migration to the containerized migrate.sh (design §3.3):
-    # runs the asterisk alembic stream inside python:3.11-slim on the compose
-    # network - no host pip/alembic required - while the services own the
-    # bin_manager schema. The legacy host-alembic functions
-    # (setup_dbscheme/configure_alembic/run_migrations) above are never
-    # called; configure_alembic()/run_migrations() still reference the
-    # bin-manager stream and must not be used.
+    # Delegate schema migration to the containerized migrate.sh: it runs the
+    # asterisk alembic stream inside python:3.11-slim on the compose network (no
+    # host pip/alembic required). The services own the bin_manager schema.
+    # setup_dbscheme() above is a legacy helper that main() never calls.
     if ! "$SCRIPT_DIR/migrate.sh"; then
         log_error "Containerized migration failed (scripts/migrate.sh)."
         exit 1
