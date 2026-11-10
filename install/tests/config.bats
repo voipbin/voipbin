@@ -433,19 +433,32 @@ compose_service_block() {
     if grep -q 'LOCAL_LLM_MODELS' <<< "$(compose_service_block pipecat-script-runner)"; then return 1; fi
 }
 
-@test "docker-compose.yml.dist ai-manager reads both encryption keys with an empty default, and only ai-manager does" {
+@test "docker-compose.yml.dist ai-manager reads its three encryption keys with an empty default, and only ai-manager does" {
     local block
     block="$(compose_service_block ai-manager)"
     grep -qF -- '- MCP_SECRET_ENCRYPTION_KEYS=${MCP_SECRET_ENCRYPTION_KEYS:-}' <<< "$block"
     grep -qF -- '- ENGINE_BASE_KEY_ENCRYPTION_KEYS=${ENGINE_BASE_KEY_ENCRYPTION_KEYS:-}' <<< "$block"
+    grep -qF -- '- AI_CONFIG_ENCRYPTION_KEYS=${AI_CONFIG_ENCRYPTION_KEYS:-}' <<< "$block"
+    if grep -q 'EMAIL_CONFIG_ENCRYPTION_KEYS' <<< "$block"; then return 1; fi
     local count
-    count="$(grep -cE 'MCP_SECRET_ENCRYPTION_KEYS|ENGINE_BASE_KEY_ENCRYPTION_KEYS' "$PROJECT_ROOT/docker-compose.yml.dist")"
-    [[ "$count" -eq 2 ]]
+    count="$(grep -cE 'MCP_SECRET_ENCRYPTION_KEYS|ENGINE_BASE_KEY_ENCRYPTION_KEYS|AI_CONFIG_ENCRYPTION_KEYS' "$PROJECT_ROOT/docker-compose.yml.dist")"
+    [[ "$count" -eq 3 ]]
+}
+
+@test "docker-compose.yml.dist email-manager reads EMAIL_CONFIG_ENCRYPTION_KEYS with an empty default, and only email-manager does" {
+    local block
+    block="$(compose_service_block email-manager)"
+    grep -qF -- '- EMAIL_CONFIG_ENCRYPTION_KEYS=${EMAIL_CONFIG_ENCRYPTION_KEYS:-}' <<< "$block"
+    local count
+    count="$(grep -cE '^[[:space:]]*- EMAIL_CONFIG_ENCRYPTION_KEYS=' "$PROJECT_ROOT/docker-compose.yml.dist")"
+    [[ "$count" -eq 1 ]]
+    # The other three keys are ai-manager's, not email-manager's.
+    if grep -qE 'MCP_SECRET_ENCRYPTION_KEYS|ENGINE_BASE_KEY_ENCRYPTION_KEYS|AI_CONFIG_ENCRYPTION_KEYS' <<< "$block"; then return 1; fi
 }
 
 @test "docker-compose.yml.dist carries no key-shaped or URL-shaped literal for the new variables" {
     # Values must be \${...} references or the empty defaults, never a literal.
-    if grep -E '(MCP_SECRET_ENCRYPTION_KEYS|ENGINE_BASE_KEY_ENCRYPTION_KEYS)=[^$]' "$PROJECT_ROOT/docker-compose.yml.dist"; then return 1; fi
+    if grep -E '(MCP_SECRET_ENCRYPTION_KEYS|ENGINE_BASE_KEY_ENCRYPTION_KEYS|AI_CONFIG_ENCRYPTION_KEYS|EMAIL_CONFIG_ENCRYPTION_KEYS)=[^$]' "$PROJECT_ROOT/docker-compose.yml.dist"; then return 1; fi
     if grep -E 'LOCAL_LLM_(MODELS|ENDPOINTS)=[^$]' "$PROJECT_ROOT/docker-compose.yml.dist"; then return 1; fi
     if grep -Eq '[0-9]+:[A-Za-z0-9+/]{43}=' "$PROJECT_ROOT/docker-compose.yml.dist"; then return 1; fi
 }
@@ -454,6 +467,7 @@ compose_service_block() {
 # and no same-named shell variables; stdout and stderr go to separate files.
 compose_render_new_keys() {
     env -u MCP_SECRET_ENCRYPTION_KEYS -u ENGINE_BASE_KEY_ENCRYPTION_KEYS \
+        -u AI_CONFIG_ENCRYPTION_KEYS -u EMAIL_CONFIG_ENCRYPTION_KEYS \
         -u LOCAL_LLM_MODELS -u LOCAL_LLM_ENDPOINTS \
         docker compose --env-file "$1" -f "$PROJECT_ROOT/docker-compose.yml.dist" config \
         > "$TEST_TEMP_DIR/render.out" 2> "$TEST_TEMP_DIR/render.err"
@@ -483,13 +497,15 @@ EOF
     [[ "$status" -eq 0 ]]
     # No warning mentions any of the four new variables (the older references
     # without defaults are filled by the fixture).
-    if grep -Eq 'MCP_SECRET_ENCRYPTION_KEYS|ENGINE_BASE_KEY_ENCRYPTION_KEYS|LOCAL_LLM' "$TEST_TEMP_DIR/render.err"; then return 1; fi
+    if grep -Eq 'MCP_SECRET_ENCRYPTION_KEYS|ENGINE_BASE_KEY_ENCRYPTION_KEYS|AI_CONFIG_ENCRYPTION_KEYS|EMAIL_CONFIG_ENCRYPTION_KEYS|LOCAL_LLM' "$TEST_TEMP_DIR/render.err"; then return 1; fi
     [[ "$(grep -c 'LOCAL_LLM_MODELS:' "$TEST_TEMP_DIR/render.out")" -eq 2 ]]
     grep -Eq "LOCAL_LLM_MODELS: '?\[\]'?$" "$TEST_TEMP_DIR/render.out"
     grep -Eq "LOCAL_LLM_ENDPOINTS: '?\{\}'?$" "$TEST_TEMP_DIR/render.out"
     # Empty keys render as an empty value, so ai-manager starts with its warning.
     grep -Eq "MCP_SECRET_ENCRYPTION_KEYS: (\"\"|'')$" "$TEST_TEMP_DIR/render.out"
     grep -Eq "ENGINE_BASE_KEY_ENCRYPTION_KEYS: (\"\"|'')$" "$TEST_TEMP_DIR/render.out"
+    grep -Eq "AI_CONFIG_ENCRYPTION_KEYS: (\"\"|'')$" "$TEST_TEMP_DIR/render.out"
+    grep -Eq "EMAIL_CONFIG_ENCRYPTION_KEYS: (\"\"|'')$" "$TEST_TEMP_DIR/render.out"
     grep -q 'GOOGLE_APPLICATION_CREDENTIALS: /tmp/google_service_account.json' "$TEST_TEMP_DIR/render.out"
     grep -Eq 'DATABASE_DSN: root:.*@tcp\(db:3306\)/bin_manager' "$TEST_TEMP_DIR/render.out"
 }
@@ -499,12 +515,15 @@ EOF
         skip "docker compose not available"
     fi
     compose_write_fixture_env
-    local mcp engine
+    local mcp engine aicfg emailcfg
     mcp="1:$(openssl rand -base64 32)"; engine="1:$(openssl rand -base64 32)"
+    aicfg="1:$(openssl rand -base64 32)"; emailcfg="1:$(openssl rand -base64 32)"
     {
         cat "$TEST_TEMP_DIR/fixture.env"
         echo "MCP_SECRET_ENCRYPTION_KEYS=$mcp"
         echo "ENGINE_BASE_KEY_ENCRYPTION_KEYS=$engine"
+        echo "AI_CONFIG_ENCRYPTION_KEYS=$aicfg"
+        echo "EMAIL_CONFIG_ENCRYPTION_KEYS=$emailcfg"
         echo 'LOCAL_LLM_MODELS=[{"endpoint":"lab","id":"m1","label":"M1"}]'
         echo 'LOCAL_LLM_ENDPOINTS={"lab":{"base_url":"http://llm.example.invalid:8000/v1","api_key":""}}'
     } > "$TEST_TEMP_DIR/set.env"
@@ -514,6 +533,8 @@ EOF
     [[ "$status" -eq 0 ]]
     grep -qF "$mcp" "$TEST_TEMP_DIR/render.out"
     grep -qF "$engine" "$TEST_TEMP_DIR/render.out"
+    grep -qF "$aicfg" "$TEST_TEMP_DIR/render.out"
+    grep -qF "$emailcfg" "$TEST_TEMP_DIR/render.out"
     grep -qF 'llm.example.invalid:8000/v1' "$TEST_TEMP_DIR/render.out"
     grep -qF '"endpoint":"lab"' "$TEST_TEMP_DIR/render.out"
 }

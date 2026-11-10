@@ -238,8 +238,13 @@ Newer `docker-compose.yml.dist` and `.env.template` files carry settings that an
 older live `docker-compose.yml` does not have. The CLI never merges them (see
 above), so add them by hand before running `update all`. Until you do,
 everything keeps running as before, with these exceptions: ai-manager cannot
-store MCP server secrets or the API keys customers keep for their own LLM
-endpoints, and timeline-manager serves no analysis endpoints.
+store MCP server secrets, the API keys customers keep for their own LLM
+endpoints or the secrets of its stored configs, email-manager cannot store the
+secrets of its stored configs, and timeline-manager serves no analysis
+endpoints. The stored configs also need the newer ai-manager, email-manager and
+api-manager images; `sudo ./voipbin update all` brings the three digests from
+`versions.lock.dist` into your `docker-compose.yml`, so run it after the steps
+below. The other services keep their current images.
 
 Do **not** run `init.sh --yes` or `init.sh --force-reinit` to get the new
 keys: they regenerate the database and RabbitMQ passwords, which no longer
@@ -251,14 +256,15 @@ match your existing volumes.
    - `pipecat-script-runner`: `GOOGLE_APPLICATION_CREDENTIALS`,
      `LOCAL_LLM_ENDPOINTS` and the `volumes:` entry for the credentials file.
    - `pipecat-manager`: `LOCAL_LLM_MODELS`.
-   - `ai-manager`: `MCP_SECRET_ENCRYPTION_KEYS`, `ENGINE_BASE_KEY_ENCRYPTION_KEYS`
-     and `LOCAL_LLM_MODELS`.
-2. Create the two encryption keys in `.env` if they are not there yet (a line
+   - `ai-manager`: `MCP_SECRET_ENCRYPTION_KEYS`, `ENGINE_BASE_KEY_ENCRYPTION_KEYS`,
+     `AI_CONFIG_ENCRYPTION_KEYS` and `LOCAL_LLM_MODELS`.
+   - `email-manager`: `EMAIL_CONFIG_ENCRYPTION_KEYS`.
+2. Create the four encryption keys in `.env` if they are not there yet (a line
    with an empty or quoted-empty value counts as not there). This appends
    them without printing them:
 
    ```bash
-   for k in MCP_SECRET_ENCRYPTION_KEYS ENGINE_BASE_KEY_ENCRYPTION_KEYS; do
+   for k in MCP_SECRET_ENCRYPTION_KEYS ENGINE_BASE_KEY_ENCRYPTION_KEYS AI_CONFIG_ENCRYPTION_KEYS EMAIL_CONFIG_ENCRYPTION_KEYS; do
      grep -Eq "^${k}=[^[:space:]\"']" .env || printf '\n%s=1:%s\n' "$k" "$(openssl rand -base64 32)" >> .env
    done
    ```
@@ -268,10 +274,13 @@ match your existing volumes.
 
 Back up `.env` (`voipbin backup` includes it). A lost encryption key cannot be
 recovered: whatever was stored under it becomes unreadable and has to be
-entered again. A malformed value stops ai-manager from starting; the format is
-`<version>:<base64 of 32 random bytes>`, comma separated for several versions.
-A fresh install gets both keys from `init.sh`, and re-running `init.sh`
-keeps the values already in `.env`.
+entered again. A malformed `MCP_SECRET_ENCRYPTION_KEYS` or
+`ENGINE_BASE_KEY_ENCRYPTION_KEYS` stops ai-manager from starting; a malformed or
+empty `AI_CONFIG_ENCRYPTION_KEYS` or `EMAIL_CONFIG_ENCRYPTION_KEYS` does not stop
+its service, but stored config secrets cannot be saved until it is fixed. The
+format is `<version>:<base64 of 32 random bytes>`, comma separated for several
+versions. A fresh install gets all four keys from `init.sh`, and re-running
+`init.sh` keeps the values already in `.env`.
 
 #### Exit codes of `update all`
 
@@ -501,7 +510,9 @@ of its own).
    `DATABASE_ASTERISK_PASSWORD`, and `POSTGRES_PASSWORD` with brand-new
    random values (`AMI_PASSWORD` is the one exception since VOIP-1329 — it's
    always the fixed `asterisk`, never regenerated; an existing valid
-   `MCP_SECRET_ENCRYPTION_KEYS` / `ENGINE_BASE_KEY_ENCRYPTION_KEYS` is also kept).
+   value of each of the four encryption keys (`MCP_SECRET_ENCRYPTION_KEYS`,
+   `ENGINE_BASE_KEY_ENCRYPTION_KEYS`, `AI_CONFIG_ENCRYPTION_KEYS`,
+   `EMAIL_CONFIG_ENCRYPTION_KEYS`) is also kept).
    Those new values will
    not match the credentials already baked into your existing database and
    RabbitMQ Docker volumes, so your services will fail to authenticate
@@ -1052,7 +1063,7 @@ mkcert -install
 > | Admin Account (opt-in, `VOIPBIN_SANDBOX_DEV_SEED=true`) | `admin@localhost` / `admin@localhost` |
 > | Extensions (opt-in, `VOIPBIN_SANDBOX_DEV_SEED=true`) | `1000` / `pass1000`, `2000` / `pass2000`, `3000` / `pass3000` |
 > | JWT Secret | Auto-generated in `.env` |
-> | Stored-secret encryption keys (ai-manager) | Randomly generated per install, in `.env` (`MCP_SECRET_ENCRYPTION_KEYS`, `ENGINE_BASE_KEY_ENCRYPTION_KEYS`). Back up `.env`: a lost key cannot be recovered |
+> | Stored-secret encryption keys (ai-manager, email-manager) | Randomly generated per install, in `.env` (`MCP_SECRET_ENCRYPTION_KEYS`, `ENGINE_BASE_KEY_ENCRYPTION_KEYS`, `AI_CONFIG_ENCRYPTION_KEYS`, `EMAIL_CONFIG_ENCRYPTION_KEYS`). Back up `.env`: a lost key cannot be recovered |
 >
 > The admin/extension credentials above are a dev/test seed account, off by default. It is only
 > created if you explicitly set `VOIPBIN_SANDBOX_DEV_SEED=true` in `.env`. Never set this on an
