@@ -577,13 +577,15 @@ generate_random_key_short() {
     openssl rand -hex 16
 }
 
-# --- Encryption keys for ai-manager ------------------------------------------
-# MCP_SECRET_ENCRYPTION_KEYS and ENGINE_BASE_KEY_ENCRYPTION_KEYS protect secrets
-# that ai-manager stores in the database. Each is a comma separated list of
-# <version>:<base64 of 32 bytes>; the highest version encrypts and every
-# listed version decrypts. They are generated here at install time and written
-# to .env only (never to the repository). A key that is lost cannot be
-# recovered, so an existing value is reused on every path that rewrites .env.
+# --- Encryption keys for ai-manager and email-manager -------------------------
+# MCP_SECRET_ENCRYPTION_KEYS and ENGINE_BASE_KEY_ENCRYPTION_KEYS (ai-manager),
+# AI_CONFIG_ENCRYPTION_KEYS (ai-manager) and EMAIL_CONFIG_ENCRYPTION_KEYS
+# (email-manager) protect secrets that those services store in the database.
+# Each is a comma separated list of <version>:<base64 of 32 bytes>; the highest
+# version encrypts and every listed version decrypts. They are generated here
+# at install time and written to .env only (never to the repository). A key
+# that is lost cannot be recovered, so an existing value is reused on every
+# path that rewrites .env.
 
 # is_valid_encryption_keys <value>
 # Same rule as ai-manager's parser: each non-empty item, once trimmed, is
@@ -617,10 +619,14 @@ is_valid_encryption_keys() {
 #     rewritten .env stays safe for start.sh to `source`)
 #   - missing or empty: a new "1:<base64 32 random bytes>"
 #   - anything else: kept as it is and a warning printed. ai-manager refuses to
-#     start on a malformed value, so the operator must fix it; overwriting it
-#     could destroy a key they still need. A value with shell metacharacters is
-#     single-quoted because start.sh sources .env; one containing a single quote
-#     cannot be preserved safely and stops the run (before anything is written).
+#     start on a malformed MCP_SECRET_ENCRYPTION_KEYS or
+#     ENGINE_BASE_KEY_ENCRYPTION_KEYS; the config keys (AI_CONFIG_ENCRYPTION_KEYS,
+#     EMAIL_CONFIG_ENCRYPTION_KEYS) do not stop their service, but config
+#     secrets cannot be saved with them. Either way the operator must fix it;
+#     overwriting it could destroy a key they still need. A value with shell
+#     metacharacters is single-quoted because start.sh sources .env; one
+#     containing a single quote cannot be preserved safely and stops the run
+#     (before anything is written).
 resolve_encryption_key() {
     local _rek_name="$1" _rek_cur _rek_item _rek_out _rek_joined=""
     local -a _rek_items=()
@@ -663,7 +669,14 @@ resolve_encryption_key() {
     if [[ "$_rek_cur" == *\'* ]]; then
         die 1 "$_rek_name in the existing .env is not a valid key list and contains a single quote, so it cannot be kept safely; fix or remove that line and re-run init.sh"
     fi
-    log_warn "  $_rek_name in the existing .env is not a valid key list and was kept unchanged; ai-manager will refuse to start until you fix it or clear the line and re-run init.sh"
+    case "$_rek_name" in
+        AI_CONFIG_ENCRYPTION_KEYS|EMAIL_CONFIG_ENCRYPTION_KEYS)
+            log_warn "  $_rek_name in the existing .env is not a valid key list and was kept unchanged; stored config secrets cannot be saved until you fix it or clear the line and re-run init.sh"
+            ;;
+        *)
+            log_warn "  $_rek_name in the existing .env is not a valid key list and was kept unchanged; ai-manager will refuse to start until you fix it or clear the line and re-run init.sh"
+            ;;
+    esac
     if [[ "$_rek_cur" =~ ^[A-Za-z0-9+/=:,._-]*$ ]]; then
         _REK_RESULT="$_rek_cur"
     else
@@ -673,8 +686,9 @@ resolve_encryption_key() {
 }
 
 # ensure_encryption_keys
-# Resolves both keys into MCP_SECRET_ENCRYPTION_KEYS and
-# ENGINE_BASE_KEY_ENCRYPTION_KEYS. Called from main() right after
+# Resolves the four keys into MCP_SECRET_ENCRYPTION_KEYS,
+# ENGINE_BASE_KEY_ENCRYPTION_KEYS, AI_CONFIG_ENCRYPTION_KEYS and
+# EMAIL_CONFIG_ENCRYPTION_KEYS. Called from main() right after
 # check_existing_env_compat (which includes the overwrite prompt: answering N
 # exits there) and before anything is written, so the old values are still
 # readable and a failure here changes nothing.
@@ -684,6 +698,10 @@ ensure_encryption_keys() {
     MCP_SECRET_ENCRYPTION_KEYS="$_REK_RESULT"
     resolve_encryption_key ENGINE_BASE_KEY_ENCRYPTION_KEYS
     ENGINE_BASE_KEY_ENCRYPTION_KEYS="$_REK_RESULT"
+    resolve_encryption_key AI_CONFIG_ENCRYPTION_KEYS
+    AI_CONFIG_ENCRYPTION_KEYS="$_REK_RESULT"
+    resolve_encryption_key EMAIL_CONFIG_ENCRYPTION_KEYS
+    EMAIL_CONFIG_ENCRYPTION_KEYS="$_REK_RESULT"
     echo ""
 }
 
@@ -1086,11 +1104,14 @@ AWS_SECRET_KEY=
 # ==============================================================================
 JWT_KEY=$JWT_KEY
 MYSQL_ROOT_PASSWORD=$MYSQL_ROOT_PASSWORD
-# Encryption keys for secrets ai-manager stores in the database. Generated once
-# and reused when init.sh is re-run. Back up this file: a lost key cannot be
-# recovered and the secrets stored under it become unreadable.
+# Encryption keys for secrets ai-manager and email-manager store in the
+# database. Generated once and reused when init.sh is re-run. Back up this
+# file: a lost key cannot be recovered and the secrets stored under it become
+# unreadable.
 MCP_SECRET_ENCRYPTION_KEYS=$MCP_SECRET_ENCRYPTION_KEYS
 ENGINE_BASE_KEY_ENCRYPTION_KEYS=$ENGINE_BASE_KEY_ENCRYPTION_KEYS
+AI_CONFIG_ENCRYPTION_KEYS=$AI_CONFIG_ENCRYPTION_KEYS
+EMAIL_CONFIG_ENCRYPTION_KEYS=$EMAIL_CONFIG_ENCRYPTION_KEYS
 DATABASE_ASTERISK_USERNAME=$DATABASE_ASTERISK_USERNAME
 DATABASE_ASTERISK_PASSWORD=$DATABASE_ASTERISK_PASSWORD
 RABBITMQ_DEFAULT_USER=$RABBITMQ_DEFAULT_USER
