@@ -1675,12 +1675,14 @@ exit 0'
 }
 
 # =============================================================================
-# Encryption keys for ai-manager and email-manager (MCP_SECRET_ENCRYPTION_KEYS,
-# ENGINE_BASE_KEY_ENCRYPTION_KEYS, AI_CONFIG_ENCRYPTION_KEYS and
-# EMAIL_CONFIG_ENCRYPTION_KEYS): init.sh generates them at install time and
-# writes them to .env only. They protect stored secrets, so an existing valid
-# value is reused on every path that rewrites .env (--yes overwrite and
-# --force-reinit). Every key in these tests is generated at run time.
+# Encryption keys for stored secrets (MCP_SECRET_ENCRYPTION_KEYS,
+# ENGINE_BASE_KEY_ENCRYPTION_KEYS, AI_CONFIG_ENCRYPTION_KEYS,
+# EMAIL_CONFIG_ENCRYPTION_KEYS, TTS_CONFIG_ENCRYPTION_KEYS,
+# TRANSCRIBE_CONFIG_ENCRYPTION_KEYS and MESSAGE_CONFIG_ENCRYPTION_KEYS):
+# init.sh generates them at install time and writes them to .env only. They
+# protect stored secrets, so an existing valid value is reused on every path
+# that rewrites .env (--yes overwrite and --force-reinit). Every key in these
+# tests is generated at run time.
 # =============================================================================
 
 # Stubs shared by the end-to-end init runs below (same pattern as the
@@ -1704,7 +1706,7 @@ exit 0'
     setup_dns() { :; }
     # A shell variable of the same name would shadow nothing in init.sh, but
     # keep the process clean so the tests only see what .env says.
-    unset MCP_SECRET_ENCRYPTION_KEYS ENGINE_BASE_KEY_ENCRYPTION_KEYS AI_CONFIG_ENCRYPTION_KEYS EMAIL_CONFIG_ENCRYPTION_KEYS LOCAL_LLM_MODELS LOCAL_LLM_ENDPOINTS
+    unset MCP_SECRET_ENCRYPTION_KEYS ENGINE_BASE_KEY_ENCRYPTION_KEYS AI_CONFIG_ENCRYPTION_KEYS EMAIL_CONFIG_ENCRYPTION_KEYS TTS_CONFIG_ENCRYPTION_KEYS TRANSCRIBE_CONFIG_ENCRYPTION_KEYS MESSAGE_CONFIG_ENCRYPTION_KEYS LOCAL_LLM_MODELS LOCAL_LLM_ENDPOINTS
 }
 
 # A fresh, valid single key: "1:" + base64 of 32 random bytes.
@@ -1717,34 +1719,41 @@ enc_env_value() {
     get_env_var "$TEST_TEMP_DIR/.env" "$1"
 }
 
-# enc_write_env <MCP value> <ENGINE value> [<AI_CONFIG value> <EMAIL_CONFIG value>]:
-# a minimal existing install .env (domain/mode match the defaults so --yes and
-# --force-reinit are accepted). The two config key lines are written only when
-# their arguments are given, so an install from before they existed is a
-# two-argument call.
+# enc_write_env <value>...: a minimal existing install .env (domain/mode match
+# the defaults so --yes and --force-reinit are accepted). The values go to the
+# variables of enc_names in order (MCP, ENGINE, AI, EMAIL, TTS, TRANSCRIBE,
+# MESSAGE); a variable without an argument gets no line at all, so an install
+# from before the later keys existed is a call with fewer arguments.
 enc_write_env() {
+    local -a names
+    local i
+    mapfile -t names < <(enc_names)
     cat > "$TEST_TEMP_DIR/.env" <<EOF
 DOMAIN_MODE=internal
 BASE_DOMAIN=voipbin.test
 JWT_KEY=old-jwt-key
-MCP_SECRET_ENCRYPTION_KEYS=$1
-ENGINE_BASE_KEY_ENCRYPTION_KEYS=$2
 EOF
-    if [[ $# -ge 4 ]]; then
-        cat >> "$TEST_TEMP_DIR/.env" <<EOF
-AI_CONFIG_ENCRYPTION_KEYS=$3
-EMAIL_CONFIG_ENCRYPTION_KEYS=$4
-EOF
-    fi
+    for ((i = 1; i <= $# && i <= ${#names[@]}; i++)); do
+        printf '%s=%s\n' "${names[$((i - 1))]}" "${!i}" >> "$TEST_TEMP_DIR/.env"
+    done
 }
 
-# enc_names: the four encryption key variable names.
+# enc_names: the seven encryption key variable names.
 enc_names() {
     printf '%s\n' MCP_SECRET_ENCRYPTION_KEYS ENGINE_BASE_KEY_ENCRYPTION_KEYS \
-        AI_CONFIG_ENCRYPTION_KEYS EMAIL_CONFIG_ENCRYPTION_KEYS
+        AI_CONFIG_ENCRYPTION_KEYS EMAIL_CONFIG_ENCRYPTION_KEYS \
+        TTS_CONFIG_ENCRYPTION_KEYS TRANSCRIBE_CONFIG_ENCRYPTION_KEYS \
+        MESSAGE_CONFIG_ENCRYPTION_KEYS
 }
 
-@test "init.sh generates four different 1:<base64 32 bytes> encryption keys on a fresh install" {
+# enc_new_keys <count>: sets the array ENC_KEYS to <count> fresh valid keys.
+enc_new_keys() {
+    local i
+    ENC_KEYS=()
+    for ((i = 0; i < $1; i++)); do ENC_KEYS+=("$(enc_new_key)"); done
+}
+
+@test "init.sh generates seven different 1:<base64 32 bytes> encryption keys on a fresh install" {
     enc_prepare
 
     run main --yes
@@ -1758,8 +1767,8 @@ enc_names() {
         [[ "$(printf '%s' "${value#1:}" | base64 -d | wc -c)" -eq 32 ]]
         seen+=("$value")
     done < <(enc_names)
-    [[ "${#seen[@]}" -eq 4 ]]
-    [[ "$(printf '%s\n' "${seen[@]}" | sort -u | wc -l)" -eq 4 ]]
+    [[ "${#seen[@]}" -eq 7 ]]
+    [[ "$(printf '%s\n' "${seen[@]}" | sort -u | wc -l)" -eq 7 ]]
     # The .env file itself is not world readable.
     [[ "$(stat -c %a "$TEST_TEMP_DIR/.env")" == "600" ]]
 }
@@ -1781,40 +1790,37 @@ enc_names() {
 
 @test "init.sh --yes overwrite keeps existing valid encryption keys (other generated values change)" {
     enc_prepare
-    local mcp engine aicfg emailcfg
-    mcp="$(enc_new_key)"; engine="$(enc_new_key)"
-    aicfg="$(enc_new_key)"; emailcfg="$(enc_new_key)"
-    enc_write_env "$mcp" "$engine" "$aicfg" "$emailcfg"
+    enc_new_keys 7
+    enc_write_env "${ENC_KEYS[@]}"
 
     run main --yes
 
     [[ "$status" -eq 0 ]]
-    [[ "$(enc_env_value MCP_SECRET_ENCRYPTION_KEYS)" == "$mcp" ]]
-    [[ "$(enc_env_value ENGINE_BASE_KEY_ENCRYPTION_KEYS)" == "$engine" ]]
-    [[ "$(enc_env_value AI_CONFIG_ENCRYPTION_KEYS)" == "$aicfg" ]]
-    [[ "$(enc_env_value EMAIL_CONFIG_ENCRYPTION_KEYS)" == "$emailcfg" ]]
+    local i name
+    i=0
+    while read -r name; do
+        [[ "$(enc_env_value "$name")" == "${ENC_KEYS[$i]}" ]]
+        [[ "$output" != *"${ENC_KEYS[$i]}"* ]]
+        i=$((i + 1))
+    done < <(enc_names)
     # The rewrite really happened: the JWT key is regenerated as before.
     [[ "$(enc_env_value JWT_KEY)" != "old-jwt-key" ]]
-    [[ "$output" != *"$mcp"* ]]
-    [[ "$output" != *"$engine"* ]]
-    [[ "$output" != *"$aicfg"* ]]
-    [[ "$output" != *"$emailcfg"* ]]
 }
 
 @test "init.sh --force-reinit keeps existing valid encryption keys" {
     enc_prepare
-    local mcp engine aicfg emailcfg
-    mcp="$(enc_new_key)"; engine="$(enc_new_key)"
-    aicfg="$(enc_new_key)"; emailcfg="$(enc_new_key)"
-    enc_write_env "$mcp" "$engine" "$aicfg" "$emailcfg"
+    enc_new_keys 7
+    enc_write_env "${ENC_KEYS[@]}"
 
     run main --force-reinit --yes
 
     [[ "$status" -eq 0 ]]
-    [[ "$(enc_env_value MCP_SECRET_ENCRYPTION_KEYS)" == "$mcp" ]]
-    [[ "$(enc_env_value ENGINE_BASE_KEY_ENCRYPTION_KEYS)" == "$engine" ]]
-    [[ "$(enc_env_value AI_CONFIG_ENCRYPTION_KEYS)" == "$aicfg" ]]
-    [[ "$(enc_env_value EMAIL_CONFIG_ENCRYPTION_KEYS)" == "$emailcfg" ]]
+    local i name
+    i=0
+    while read -r name; do
+        [[ "$(enc_env_value "$name")" == "${ENC_KEYS[$i]}" ]]
+        i=$((i + 1))
+    done < <(enc_names)
     [[ "$(enc_env_value JWT_KEY)" != "old-jwt-key" ]]
 }
 
@@ -2015,11 +2021,11 @@ EOF
     cmp "$TEST_TEMP_DIR/.env" "$TEST_TEMP_DIR/.env.before"
 }
 
-@test "init.sh on an install from before the config keys keeps the old keys and generates only the two config keys" {
+@test "init.sh on an install from before the config keys keeps the old keys and generates the five config keys" {
     enc_prepare
     local mcp engine
     mcp="$(enc_new_key)"; engine="$(enc_new_key)"
-    # Two-argument call: no AI_CONFIG / EMAIL_CONFIG lines at all.
+    # Two-argument call: no config key lines at all.
     enc_write_env "$mcp" "$engine"
     run grep -q 'CONFIG_ENCRYPTION_KEYS' "$TEST_TEMP_DIR/.env"
     [[ "$status" -eq 1 ]]
@@ -2029,27 +2035,77 @@ EOF
     [[ "$status" -eq 0 ]]
     [[ "$(enc_env_value MCP_SECRET_ENCRYPTION_KEYS)" == "$mcp" ]]
     [[ "$(enc_env_value ENGINE_BASE_KEY_ENCRYPTION_KEYS)" == "$engine" ]]
-    local aicfg emailcfg
-    aicfg="$(enc_env_value AI_CONFIG_ENCRYPTION_KEYS)"
-    emailcfg="$(enc_env_value EMAIL_CONFIG_ENCRYPTION_KEYS)"
-    [[ "$aicfg" =~ ^1:[A-Za-z0-9+/]{43}=$ ]]
-    [[ "$emailcfg" =~ ^1:[A-Za-z0-9+/]{43}=$ ]]
-    [[ "$aicfg" != "$emailcfg" && "$aicfg" != "$mcp" && "$aicfg" != "$engine" ]]
-    [[ "$emailcfg" != "$mcp" && "$emailcfg" != "$engine" ]]
+    local name value
+    local -a seen=("$mcp" "$engine")
+    while read -r name; do
+        case "$name" in MCP_SECRET_ENCRYPTION_KEYS|ENGINE_BASE_KEY_ENCRYPTION_KEYS) continue ;; esac
+        value="$(enc_env_value "$name")"
+        [[ "$value" =~ ^1:[A-Za-z0-9+/]{43}=$ ]]
+        seen+=("$value")
+    done < <(enc_names)
+    [[ "${#seen[@]}" -eq 7 ]]
+    [[ "$(printf '%s\n' "${seen[@]}" | sort -u | wc -l)" -eq 7 ]]
 }
 
-@test "init.sh generates an empty config key and keeps the other one" {
+@test "init.sh on an install that has the MCP, ENGINE, AI and EMAIL keys keeps them and generates only the tts, transcribe and message keys" {
     enc_prepare
-    local mcp engine aicfg
-    mcp="$(enc_new_key)"; engine="$(enc_new_key)"; aicfg="$(enc_new_key)"
-    enc_write_env "$mcp" "$engine" "$aicfg" ""
+    enc_new_keys 4
+    enc_write_env "${ENC_KEYS[@]}"
+    run grep -qE '^(TTS|TRANSCRIBE|MESSAGE)_CONFIG_ENCRYPTION_KEYS=' "$TEST_TEMP_DIR/.env"
+    [[ "$status" -eq 1 ]]
 
     run main --yes
 
     [[ "$status" -eq 0 ]]
-    [[ "$(enc_env_value AI_CONFIG_ENCRYPTION_KEYS)" == "$aicfg" ]]
-    [[ "$(enc_env_value EMAIL_CONFIG_ENCRYPTION_KEYS)" =~ ^1:[A-Za-z0-9+/]{43}=$ ]]
-    [[ "$(enc_env_value EMAIL_CONFIG_ENCRYPTION_KEYS)" != "$aicfg" ]]
+    local i name value
+    local -a seen=()
+    i=0
+    while read -r name; do
+        value="$(enc_env_value "$name")"
+        if [[ $i -lt 4 ]]; then
+            [[ "$value" == "${ENC_KEYS[$i]}" ]]
+        else
+            [[ "$value" =~ ^1:[A-Za-z0-9+/]{43}=$ ]]
+            [[ "$output" != *"$value"* ]]
+            [[ "$output" == *"Generated $name"* ]]
+        fi
+        seen+=("$value")
+        i=$((i + 1))
+    done < <(enc_names)
+    [[ "$(printf '%s\n' "${seen[@]}" | sort -u | wc -l)" -eq 7 ]]
+    [[ "$output" == *"Kept existing AI_CONFIG_ENCRYPTION_KEYS"* ]]
+    [[ "$output" == *"Kept existing EMAIL_CONFIG_ENCRYPTION_KEYS"* ]]
+}
+
+@test "init.sh generates an empty config key and keeps the others" {
+    enc_prepare
+    local name other value
+    local -a cfg=(AI_CONFIG_ENCRYPTION_KEYS EMAIL_CONFIG_ENCRYPTION_KEYS TTS_CONFIG_ENCRYPTION_KEYS TRANSCRIBE_CONFIG_ENCRYPTION_KEYS MESSAGE_CONFIG_ENCRYPTION_KEYS)
+    for name in "${cfg[@]}"; do
+        enc_new_keys 7
+        local -a vals=("${ENC_KEYS[@]}")
+        local idx=0 n
+        while read -r n; do
+            if [[ "$n" == "$name" ]]; then vals[$idx]=""; fi
+            idx=$((idx + 1))
+        done < <(enc_names)
+        enc_write_env "${vals[@]}"
+
+        run main --yes
+
+        [[ "$status" -eq 0 ]]
+        value="$(enc_env_value "$name")"
+        [[ "$value" =~ ^1:[A-Za-z0-9+/]{43}=$ ]]
+        idx=0
+        while read -r other; do
+            if [[ "$other" == "$name" ]]; then
+                [[ "$value" != "${ENC_KEYS[$idx]}" ]]
+            else
+                [[ "$(enc_env_value "$other")" == "${ENC_KEYS[$idx]}" ]]
+            fi
+            idx=$((idx + 1))
+        done < <(enc_names)
+    done
 }
 
 @test "init.sh reuses a valid multi-key config list" {
@@ -2057,13 +2113,16 @@ EOF
     local k1 k2 mcp engine
     mcp="$(enc_new_key)"; engine="$(enc_new_key)"
     k1="$(enc_new_key)"; k2="2:$(openssl rand -base64 32)"
-    enc_write_env "$mcp" "$engine" "\"$k1, $k2\"" "\"$k2, $k1\""
+    enc_write_env "$mcp" "$engine" "\"$k1, $k2\"" "\"$k2, $k1\"" "\"$k1, $k2\"" "\"$k2, $k1\"" "\"$k1, $k2\""
 
     run main --yes
 
     [[ "$status" -eq 0 ]]
     [[ "$(enc_env_value AI_CONFIG_ENCRYPTION_KEYS)" == "$k1,$k2" ]]
     [[ "$(enc_env_value EMAIL_CONFIG_ENCRYPTION_KEYS)" == "$k2,$k1" ]]
+    [[ "$(enc_env_value TTS_CONFIG_ENCRYPTION_KEYS)" == "$k1,$k2" ]]
+    [[ "$(enc_env_value TRANSCRIBE_CONFIG_ENCRYPTION_KEYS)" == "$k2,$k1" ]]
+    [[ "$(enc_env_value MESSAGE_CONFIG_ENCRYPTION_KEYS)" == "$k1,$k2" ]]
 }
 
 @test "init.sh keeps a malformed config key unchanged and warns that config secrets cannot be saved, not that ai-manager will not start" {
@@ -2076,13 +2135,14 @@ EOF
         "$good,${good}"                              # duplicate version
         "1:not-base64!"                              # not base64
     )
-    for name in AI_CONFIG_ENCRYPTION_KEYS EMAIL_CONFIG_ENCRYPTION_KEYS; do
+    local -a cfg_names=(AI_CONFIG_ENCRYPTION_KEYS EMAIL_CONFIG_ENCRYPTION_KEYS TTS_CONFIG_ENCRYPTION_KEYS TRANSCRIBE_CONFIG_ENCRYPTION_KEYS MESSAGE_CONFIG_ENCRYPTION_KEYS)
+    local idx
+    for idx in 0 1 2 3 4; do
+        name="${cfg_names[$idx]}"
         for bad_value in "${bad_values[@]}"; do
-            if [[ "$name" == AI_CONFIG_ENCRYPTION_KEYS ]]; then
-                enc_write_env "$good" "$good" "$bad_value" "$good"
-            else
-                enc_write_env "$good" "$good" "$good" "$bad_value"
-            fi
+            local -a vals=("$good" "$good" "$good" "$good" "$good" "$good" "$good")
+            vals[$((idx + 2))]="$bad_value"
+            enc_write_env "${vals[@]}"
 
             run main --yes
 
@@ -2097,11 +2157,11 @@ EOF
     done
 }
 
-@test "init.sh keeps the ai-manager start warning wording for the two older keys" {
+@test "init.sh keeps the ai-manager start warning wording for the keys that stop ai-manager" {
     enc_prepare
     local good
     good="$(enc_new_key)"
-    enc_write_env "$(openssl rand -base64 32)" "$good" "$good" "$good"
+    enc_write_env "$(openssl rand -base64 32)" "$good" "$good" "$good" "$good" "$good" "$good"
 
     run main --yes
 
@@ -2137,6 +2197,9 @@ EOF
     grep -qx 'ENGINE_BASE_KEY_ENCRYPTION_KEYS=' "$tmpl"
     grep -qx 'AI_CONFIG_ENCRYPTION_KEYS=' "$tmpl"
     grep -qx 'EMAIL_CONFIG_ENCRYPTION_KEYS=' "$tmpl"
+    grep -qx 'TTS_CONFIG_ENCRYPTION_KEYS=' "$tmpl"
+    grep -qx 'TRANSCRIBE_CONFIG_ENCRYPTION_KEYS=' "$tmpl"
+    grep -qx 'MESSAGE_CONFIG_ENCRYPTION_KEYS=' "$tmpl"
     # No key-shaped literal anywhere in the template.
     if grep -Eq '(^|[=:,[:space:]])[0-9]+:[A-Za-z0-9+/]{43}=' "$tmpl"; then return 1; fi
 }

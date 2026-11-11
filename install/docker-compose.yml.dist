@@ -1023,6 +1023,12 @@ services:
       rabbitmq:
         condition: service_healthy
     environment:
+      # Encryption key for stored config secrets. init.sh generates the key
+      # at install time and writes it to .env only. Empty still starts
+      # message-manager, but storing such a secret then fails. Back up .env.
+      # The pinned image does not read it yet; it takes effect once the
+      # image is updated to a build with stored configs.
+      - MESSAGE_CONFIG_ENCRYPTION_KEYS=${MESSAGE_CONFIG_ENCRYPTION_KEYS:-}
       - DATABASE_DSN=root:${MYSQL_ROOT_PASSWORD}@tcp(${DB_HOST:-db}:${DB_PORT:-3306})/bin_manager
       - RABBITMQ_ADDRESS=amqp://${RABBITMQ_DEFAULT_USER}:${RABBITMQ_DEFAULT_PASS}@${RABBITMQ_HOST:-rabbitmq}:${RABBITMQ_PORT:-5672}
       - REDIS_ADDRESS=${REDIS_HOST:-redis}:${REDIS_PORT:-6379}
@@ -1492,6 +1498,12 @@ services:
       rabbitmq:
         condition: service_healthy
     environment:
+      # Encryption key for stored config secrets. init.sh generates the key
+      # at install time and writes it to .env only. Empty still starts
+      # transcribe-manager, but storing such a secret then fails. Back up .env.
+      # The pinned image does not read it yet; it takes effect once the
+      # image is updated to a build with stored configs.
+      - TRANSCRIBE_CONFIG_ENCRYPTION_KEYS=${TRANSCRIBE_CONFIG_ENCRYPTION_KEYS:-}
       - DATABASE_DSN=root:${MYSQL_ROOT_PASSWORD}@tcp(${DB_HOST:-db}:${DB_PORT:-3306})/bin_manager
       - RABBITMQ_ADDRESS=amqp://${RABBITMQ_DEFAULT_USER}:${RABBITMQ_DEFAULT_PASS}@${RABBITMQ_HOST:-rabbitmq}:${RABBITMQ_PORT:-5672}
       - REDIS_ADDRESS=${REDIS_HOST:-redis}:${REDIS_PORT:-6379}
@@ -1552,6 +1564,12 @@ services:
       rabbitmq:
         condition: service_healthy
     environment:
+      # Encryption key for stored config secrets. init.sh generates the key
+      # at install time and writes it to .env only. Empty still starts
+      # tts-manager, but storing such a secret then fails. Back up .env.
+      # The pinned image does not read it yet; it takes effect once the
+      # image is updated to a build with stored configs.
+      - TTS_CONFIG_ENCRYPTION_KEYS=${TTS_CONFIG_ENCRYPTION_KEYS:-}
       - DATABASE_DSN=root:${MYSQL_ROOT_PASSWORD}@tcp(${DB_HOST:-db}:${DB_PORT:-3306})/bin_manager
       - RABBITMQ_ADDRESS=amqp://${RABBITMQ_DEFAULT_USER}:${RABBITMQ_DEFAULT_PASS}@${RABBITMQ_HOST:-rabbitmq}:${RABBITMQ_PORT:-5672}
       - REDIS_ADDRESS=${REDIS_HOST:-redis}:${REDIS_PORT:-6379}
