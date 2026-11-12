@@ -399,13 +399,52 @@ or `ENGINE_BASE_KEY_ENCRYPTION_KEYS` makes ai-manager refuse to start; a
 malformed or empty config key (`AI_CONFIG_ENCRYPTION_KEYS`,
 `EMAIL_CONFIG_ENCRYPTION_KEYS`, `TTS_CONFIG_ENCRYPTION_KEYS`,
 `TRANSCRIBE_CONFIG_ENCRYPTION_KEYS` or `MESSAGE_CONFIG_ENCRYPTION_KEYS`)
-does not stop its service, only saving config secrets fails. The images pinned
-by `versions.lock.dist` do not read the tts, transcribe and message config keys
-yet, so those three have no effect until their services are updated to builds
-that include stored configs. Never print them: log lines name the variable
+does not stop its service, only saving config secrets fails. Never print them: log lines name the variable
 only. Losing a key makes what was stored under it unreadable, which is why
 `.env` must be backed up. Tests generate their own keys at run time; do not put
 a key in a fixture.
+
+### Provider keys are stored settings
+
+ai-manager, email-manager, message-manager, transcribe-manager and tts-manager
+read their provider keys (`llm.openai_compat.api_key`, `llm.gemini.api_key`,
+`sendgrid.api_key`, `mailgun.api_key`, `provider.messagebird.auth_token`,
+`provider.telnyx.auth_token`, `aws.access_key`, `aws.secret_key`,
+`elevenlabs.api_key`) from their stored configs (database) only; they do not
+read the environment variables any more. `.env` is the place to enter a key the
+first time. `PROVIDER_CONFIG_KEYS` in `scripts/voipbin-cli.py` maps the compose
+environment name (the value a container used to receive, resolved by
+`docker compose config`) to the stored key; keep it in step with the services'
+`internal/configkeys` and with the `environment:` lines of the five services in
+`docker-compose.yml.dist` (a test checks the compose names).
+
+- `install` (after the verification), `update all` (after `migrate.sh`, before
+  `up -d`) and `update keys` run the same step (`_provider_preflight_step` then
+  `_provider_import_step`). For each service that has a value it runs, from the
+  NEW image in a throwaway container (`docker compose run --rm -T --no-deps
+  --entrypoint /app/bin/<svc>-control`; the images are distroless, so no
+  `sh -c`), `migrate up`, `config list`, and `config set --key K --actor-id
+  <PROVIDER_ACTOR_ID>` with the value on stdin only. The value is never put in
+  argv, a log or the screen; masks hide it in error lines.
+- Only a key whose source is none/env/default is stored; `db` is left alone
+  (the database wins after the first store, so a rotation is not undone), and an
+  unreadable row (`db_invalid`, `db_undecryptable`) or a half-stored AWS pair is
+  reported as "needs attention" with the command that replaces it, never
+  overwritten. Blocking failures (migrate, list, set, timeout, unreadable compose
+  config) stop `update all` before `up -d` with exit code 20 (`stage=keys`); a
+  service without a master key stops it before any image changes
+  (`stage=keys-preflight`). The unsupported-image guard (an old image that has no
+  `config`/`migrate` command) skips with a warning.
+- `GOOGLE_API_KEY`, `ELEVENLABS_API_KEY` and `OPENAI_API_KEY` are also read from
+  `.env` by pipecat-manager and pipecat-script-runner, and `TELNYX_API_KEY` is
+  number-manager's `TELNYX_TOKEN`: never remove those `.env` variables or their
+  compose lines, and say "replace in both places" in any rotation guidance.
+  The compose lines of the five services stay: they are the source of the
+  copy and what an older image reads after a rollback.
+- Tests: `scripts/tests/test_upgrade_flow.py` (K* sections, a fake docker with
+  canary secrets) and `tests/test_cli_mode.py` (install step order). Tests of
+  the install and update flows that would reach `docker compose` stub the two step
+  methods and `_provider_stored`; a new test of that kind must do the same.
 
 ### `AMI_USERNAME`/`AMI_PASSWORD` are fixed, not random (VOIP-1329)
 

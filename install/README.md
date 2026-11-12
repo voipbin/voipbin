@@ -72,7 +72,9 @@ prerequisite checks as `doctor`), configuration (`init.sh`), host setup
 start (`start.sh`), verification (waits up to 3 minutes for health checks)
 and the first admin account. Nothing has to be edited by hand first: every
 secret and certificate is generated, and AI/TTS/messaging provider keys are
-optional (add them to `.env` later, then `sudo ./voipbin restart`). It ends
+optional (put them in `.env`: the install stores them in the services' stored
+configs after the verification step, or add them later and run
+`sudo ./voipbin update keys`; see [Provider keys](#provider-keys)). It ends
 with the admin console URL, the admin email and a random password shown once.
 Running `sudo ./voipbin` with no arguments on a new checkout offers the same
 install.
@@ -217,8 +219,10 @@ directly as root (the classic way) still works, but unprivileged git plus
 `sudo ./voipbin` is the supported combination.
 
 `update all` takes a backup, updates the scripts, syncs image digests into
-your `docker-compose.yml`, runs the database migrations, pulls and recreates
-containers, then verifies the stack. Containers are recreated, so expect a
+your `docker-compose.yml`, runs the database migrations, stores the provider
+keys of `.env` in the services' stored configs (see
+[Provider keys](#provider-keys)), pulls and recreates containers, then verifies
+the stack. Containers are recreated, so expect a
 brief service interruption (calls and API requests in flight can fail).
 
 The full `docker-compose.yml.dist` and `.env.template` diff is authoritative:
@@ -241,12 +245,14 @@ everything keeps running as before, with these exceptions: ai-manager cannot
 store MCP server secrets, the API keys customers keep for their own LLM
 endpoints or the secrets of its stored configs, email-manager cannot store the
 secrets of its stored configs, and timeline-manager serves no analysis
-endpoints. The tts-manager, transcribe-manager and message-manager keys have no
-effect yet either way: their services read them only once they run builds that
-include stored configs. The stored configs also need the newer ai-manager,
-email-manager and api-manager images; `sudo ./voipbin update all` brings the
-three digests from `versions.lock.dist` into your `docker-compose.yml`, so run
-it after the steps below. The other services keep their current images.
+endpoints. The stored configs need the newer images of ai-manager,
+email-manager, message-manager, transcribe-manager, tts-manager and
+api-manager; `sudo ./voipbin update all` brings their digests from
+`versions.lock.dist` into your `docker-compose.yml`, so run it after the steps
+below. These five services read their provider keys from the database only, so
+`update all` stops before it changes any image when a service that has a key in
+`.env` is not given its master key (see [Provider keys](#provider-keys)). The
+other services keep their current images.
 
 Do **not** run `init.sh --yes` or `init.sh --force-reinit` to get the new
 keys: they regenerate the database and RabbitMQ passwords, which no longer
@@ -287,9 +293,75 @@ empty config key (`AI_CONFIG_ENCRYPTION_KEYS`, `EMAIL_CONFIG_ENCRYPTION_KEYS`,
 secrets cannot be saved until it is fixed. The format is
 `<version>:<base64 of 32 random bytes>`, comma separated for several versions.
 A fresh install gets all seven keys from `init.sh`, and re-running `init.sh`
-keeps the values already in `.env`. The images pinned by this release do not
-read the tts, transcribe and message config keys yet; they take effect once
-those three services are updated to builds that include stored configs.
+keeps the values already in `.env`.
+
+#### Provider keys
+
+The provider keys of ai-manager, email-manager, message-manager,
+transcribe-manager and tts-manager are stored settings of those services, kept
+in the database and encrypted with the service's master key
+(`*_CONFIG_ENCRYPTION_KEYS`). The services no longer read the matching
+variables from the environment. `.env` is where you enter a key the first time:
+
+| `.env` variable | Service | Stored key |
+|---|---|---|
+| `OPENAI_API_KEY` | ai-manager | `llm.openai_compat.api_key` |
+| `GOOGLE_API_KEY` | ai-manager | `llm.gemini.api_key` |
+| `SENDGRID_API_KEY` | email-manager | `sendgrid.api_key` |
+| `MAILGUN_API_KEY` | email-manager | `mailgun.api_key` |
+| `MESSAGEBIRD_API_KEY` | message-manager | `provider.messagebird.auth_token` |
+| `TELNYX_API_KEY` | message-manager | `provider.telnyx.auth_token` |
+| `AWS_ACCESS_KEY`, `AWS_SECRET_KEY` | transcribe-manager and tts-manager | `aws.access_key`, `aws.secret_key` (stored together) |
+| `ELEVENLABS_API_KEY` | tts-manager | `elevenlabs.api_key` |
+
+`sudo ./voipbin install`, `sudo ./voipbin update all` and
+`sudo ./voipbin update keys` copy each of these values into the stored config
+of its service when that key is not stored yet. The value reaches the service
+on standard input only; it is never printed, never on a command line and never
+written anywhere. A key that is already stored is never touched, so running it
+again is safe. `update all` does this after the database migrations and before
+the containers are recreated, so the new services find their keys when they
+start, and a failure leaves the running containers untouched (exit code 20).
+`MAILGUN_WEBHOOK_SIGNING_KEY` is not in `.env`: store it with
+`email-control config set --key mailgun.webhook_signing_key` (see CHANGELOG).
+
+What this means for you:
+
+- **A key in `.env` changes nothing once it is stored.** Rotate a stored key
+  with `docker compose exec -T <service> /app/bin/<name>-control config set --key <key> --actor-id <uuid>`
+  (`<name>` is `ai`, `email`, `message`, `transcribe` or `tts`; the value is read from
+  standard input) or with the admin API. A key that is not stored
+  yet is stored by `sudo ./voipbin update keys` (no restart is needed).
+- **`config clear` removes the key.** The service then has no key; it does not
+  fall back to the environment. A value that is still in `.env` is stored
+  again by the next `update all` or `update keys`, so remove it from `.env` as
+  well when you want a key gone for good.
+- **Two keys live in two places.** `OPENAI_API_KEY`, `GOOGLE_API_KEY` and
+  `ELEVENLABS_API_KEY` are also read from `.env` by pipecat-manager and
+  pipecat-script-runner, and `TELNYX_API_KEY` is also the number service's
+  token. Replace such a key in the database and in `.env`.
+- **Before `update all` an existing install needs the master keys** in `.env`
+  and in `docker-compose.yml` (the steps above). Without them `update all`
+  stops (code 20, stage `keys-preflight`) before it changes any image; add
+  them and run `update all` again.
+- **Back up `.env`.** A lost master key makes every key stored under it
+  unreadable; the key step then reports it. Roll back to an older
+  image only together with `.env`: the older image reads its keys from the
+  environment again, so keep `.env` and the database in step.
+- **A key that cannot be used as stored** (unreadable after a master key
+  change, or only one key of the AWS pair stored) is never overwritten. The
+  command prints the line that replaces it (`update keys` exits 20, `update all`
+  goes on). A stack on an old image without stored configs skips the step
+  with a warning; update the image and run `update keys`.
+- `voipbin start` and `update images` on a pinned install do not store keys; use
+  `update keys` after editing `.env`. An install without `versions.lock` (the
+  unpinned `update all` image path) tries after the restart, with no
+  pre-flight and no exit code: it only prints a warning when storing fails.
+- `sudo ./voipbin status` shows each key as `set` (stored in the database),
+  `pending` (in `.env`, not stored yet), `incomplete` (only one key of the AWS
+  pair is in `.env`) or `empty`. The AWS row is `set` when the pair is stored
+  in tts-manager or in transcribe-manager. When the database cannot be asked
+  (stack down), the row falls back to what `.env` has.
 
 #### Exit codes of `update all`
 
@@ -308,6 +380,7 @@ those three services are updated to builds that include stored configs.
 | 17 | Verification: containers are starting, unhealthy or restarting (names are printed; the API ping is still attempted) |
 | 18 | Verification: containers are healthy but the api-manager `/ping` failed |
 | 19 | Verification: problem containers and a failed api-manager `/ping` |
+| 20 | Provider keys could not be stored: the master key is missing for a service that has a key in `.env` (`stage=keys-preflight`, before any image changed), or storing failed (`stage=keys`, before `up -d`; running containers untouched). `update keys` also exits 20 when a service runs an old image without stored configs (its keys are skipped), or a key needs your attention |
 | 64 | Unknown `update` subcommand |
 | 130 | Interrupted by the user |
 
@@ -1406,7 +1479,8 @@ These commands use manager container CLIs for direct resource management:
 | `install [options]` | Guided install: host checks, configuration, host setup, start, verification, first admin account (see [Guided Install](#guided-install-sudo-voipbin-install)) |
 | `init` | Generate configuration only (.env, certs); `install` runs it for you |
 | `version [--json]` | Show pinned image versions (table or JSON) |
-| `update [images/scripts/all]` | Update Docker images or scripts (pinned repos: `update all` = full safe upgrade: backup, git pull, migrate, recreate, verify) |
+| `update [images/scripts/all]` | Update Docker images or scripts (pinned repos: `update all` = full safe upgrade: backup, git pull, migrate, store provider keys, recreate, verify) |
+| `update keys [--check]` | Store the provider keys of `.env` that are not stored yet in the services (safe to repeat, never overwrites a stored key) |
 | `update --check` | Dry-run to preview updates |
 | `backup` | Full data backup (MySQL + recordings + config) into `backups/<ts>/` |
 | `restore <ts> --force` | Restore DATA from a backup (DESTRUCTIVE; services must be stopped except db/redis) |
@@ -1544,13 +1618,12 @@ ELEVENLABS_API_KEY=...
 CARTESIA_API_KEY=...
 ```
 
-Restart the AI services after configuration:
+Store the keys in the services (a key is stored once; see
+[Provider keys](#provider-keys) for rotating one):
 
 ```bash
-sudo ./voipbin restart ai-manager
+sudo ./voipbin update keys
 sudo ./voipbin restart pipecat-manager
-sudo ./voipbin restart transcribe-manager
-sudo ./voipbin restart tts-manager
 ```
 
 ### AI Manager Services
@@ -1670,6 +1743,9 @@ TELNYX_API_KEY=KEY...
 SENDGRID_API_KEY=SG...
 MAILGUN_API_KEY=...
 ```
+
+Then run `sudo ./voipbin update keys` to store them in the services
+([Provider keys](#provider-keys)).
 
 > **Tip:** For AI configuration (OpenAI, Deepgram, ElevenLabs), see the [AI Voice Agents](#ai-voice-agents) section.
 
@@ -1970,17 +2046,20 @@ email [support@voipbin.net](mailto:support@voipbin.net).
 
 ### External Services (Optional)
 
+The keys marked (stored) are copied into the services' stored configs by
+`install`, `update all` and `update keys`; see [Provider keys](#provider-keys).
+
 | Variable | Service |
 |----------|---------|
-| `OPENAI_API_KEY` | OpenAI (AI features) |
-| `GOOGLE_API_KEY` | Google AI (pipecat-script-runner's Gemini access) |
+| `OPENAI_API_KEY` | OpenAI (AI features) (stored; also read from `.env` by pipecat) |
+| `GOOGLE_API_KEY` | Google AI (ai-manager's Gemini key, stored; pipecat-script-runner's Gemini access reads `.env`) |
 | `OPENROUTER_API_KEY` | OpenRouter (pipecat-script-runner, platform-managed models such as Claude, Llama, DeepSeek, Qwen, Mistral). The installer pins `pipecat-script-runner` by image digest, so the key only takes effect after the runner image that contains the `platform_openrouter` branch is adopted (`scripts/sync-compose-images.sh`). Empty key: these models fail at runner init with `OpenRouter is not configured`. Invalid non-empty key: OpenRouter's 401 is classified as an authentication error. |
 | `GOOGLE_APPLICATION_CREDENTIALS` | GCP service account JSON path |
 | `LOCAL_LLM_ENDPOINTS`, `LOCAL_LLM_MODELS` | Self-hosted OpenAI-compatible LLM servers (off by default, format and enabling order in `.env.template`) |
 | `TWILIO_SID`, `TWILIO_API_KEY` | Twilio (phone numbers) |
-| `TELNYX_API_KEY` | Telnyx (telephony) |
-| `SENDGRID_API_KEY` | SendGrid (email) |
-| `AWS_ACCESS_KEY`, `AWS_SECRET_KEY` | AWS (transcription) |
+| `TELNYX_API_KEY` | Telnyx (telephony; the SMS/MMS token of message-manager is stored) |
+| `SENDGRID_API_KEY` | SendGrid (email) (stored) |
+| `AWS_ACCESS_KEY`, `AWS_SECRET_KEY` | AWS (transcription, text-to-speech) (stored) |
 
 ---
 

@@ -782,6 +782,52 @@ echo "VOIPBIN_ADMIN: status=ok customer_id=c1 agent_id=a1"''')
     return calls
 
 
+def test_install_provider_keys_step(cli_module, tmp_dir, stub_bin, log_path):
+    """After the verification (step 5) and before the admin account (step 6) the
+    install stores the provider keys of .env in the services' stored configs. A failure stops
+    the install at step 5 with the resume command and creates no admin account."""
+    cls = cli_module.VoIPBinCLI
+    orig = (cls._install_wait_and_verify, cls._provider_preflight_step, cls._provider_import_step,
+            cli_module.INSTALL_REACHABILITY_URLS)
+    cli_module.INSTALL_REACHABILITY_URLS = ()
+    cls._install_wait_and_verify = lambda self, d: (True, "3 containers", [], [])
+    try:
+        for label, import_ok, pre_ok in (("ok", True, True), ("import fails", False, True), ("preflight fails", True, False)):
+            project_dir = fresh_project(tmp_dir, "p_keys_" + label.replace(" ", "_"))
+            install_docker_stub(stub_bin, log_path)
+            calls = write_install_stubs(project_dir, tmp_dir)
+
+            def pre(self, project_dir, mode, _calls=calls, _ok=pre_ok):
+                with open(_calls, "a") as f:
+                    f.write(f"keys-preflight {mode}\n")
+                return _ok
+
+            def imp(self, project_dir, mode, check_only=False, _calls=calls, _ok=import_ok):
+                with open(_calls, "a") as f:
+                    f.write(f"keys-import {mode}\n")
+                return _ok
+
+            cls._provider_preflight_step, cls._provider_import_step = pre, imp
+            rc, out = run_main(cli_module, ["install", "--yes", "--admin-email", "admin@example.com",
+                                            "--mode", "internal"], stdin_text="")
+            with open(calls) as f:
+                seq = [l.strip() for l in f.read().splitlines()]
+            if label == "ok":
+                assert rc == 0, (rc, out)
+                assert seq[:6] == ["doctor", "init --yes --mode internal", "setup-host", "start",
+                                   "keys-preflight install", "keys-import install"] and seq[6].startswith("create-admin"), seq
+            else:
+                line = last_line(out)
+                assert rc == 1 and line.startswith("VOIPBIN_INSTALL: status=error step=5") and "provider keys" in line, (rc, line)
+                assert "sudo ./voipbin install --resume" in line, line
+                assert not any(x.startswith("create-admin") for x in seq), seq
+                assert not os.path.exists(os.path.join(project_dir, ".voipbin-installed"))
+    finally:
+        (cls._install_wait_and_verify, cls._provider_preflight_step, cls._provider_import_step,
+         cli_module.INSTALL_REACHABILITY_URLS) = orig
+    print("ok test_install_provider_keys_step")
+
+
 def test_install_entry_guards(cli_module, tmp_dir, stub_bin, log_path):
     """Every guard exits before init.sh runs and ends with the result line."""
     project_dir = fresh_project(tmp_dir, "p_guard")
@@ -2256,6 +2302,13 @@ def main():
         cli_module = load_module("voipbin_cli", os.path.join(SCRIPTS_DIR, "voipbin-cli.py"))
         # never depend on this host's VoIP interfaces; tests that need one set ("lo",)
         cli_module.INSTALL_VOIP_INTERFACES = ("voipbin-test-none",)
+        # The provider key steps talk to `docker compose run` containers; no test of
+        # this file may reach them (the docker stub would log unexpected calls).
+        # test_upgrade_flow.py tests the real steps.
+        cli_module.VoIPBinCLI._provider_preflight_step = lambda self, project_dir, mode: True
+        cli_module.VoIPBinCLI._provider_import_step = lambda self, project_dir, mode, check_only=False: True
+        cli_module.VoIPBinCLI._provider_stored = lambda self, project_dir: (
+            set(), {r[0] for r in cli_module.PROVIDER_CONFIG_KEYS})
 
         test_dns_external_gate(cli_module, tmp_dir, log_path)
         test_dns_internal_not_gated(cli_module, tmp_dir, log_path)
@@ -2280,6 +2333,7 @@ def main():
         test_clean_requires_confirmation(cli_module, tmp_dir, stub_bin, log_path)
         test_install_entry_guards(cli_module, tmp_dir, stub_bin, log_path)
         test_install_noninteractive_happy_path_and_failure(cli_module, tmp_dir, stub_bin, log_path)
+        test_install_provider_keys_step(cli_module, tmp_dir, stub_bin, log_path)
         test_classify_install_containers(cli_module)
         test_install_verify_timeouts_and_ping(cli_module, tmp_dir)
         test_install_ownership(cli_module, tmp_dir)

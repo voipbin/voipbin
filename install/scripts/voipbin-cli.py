@@ -100,6 +100,7 @@ RC_UP_FAILED = 16
 RC_VERIFY_CONTAINERS = 17
 RC_VERIFY_PING = 18
 RC_VERIFY_BOTH = 19
+RC_KEYS_FAILED = 20
 RC_USAGE = 64
 RC_INTERRUPTED = 130
 
@@ -1890,6 +1891,179 @@ OPTIONAL_PROVIDER_KEYS = (
     ("TELNYX_API_KEY",), ("SENDGRID_API_KEY",), ("MAILGUN_API_KEY",),
 )
 
+# Provider secrets of five services are read from the stored configs (database)
+# only; the services no longer read the environment variables. These rows tell
+# the installer how to copy the value the container used to receive (the compose
+# environment name, filled from .env) into the stored config of the service:
+# (compose service, control binary under /app/bin, master key variable,
+#  compose environment name, .env variable, stored config key, atomic group).
+# Both keys of an atomic group must come from the same source, so they are
+# stored together or not at all.
+PROVIDER_CONFIG_KEYS = (
+    ("ai-manager", "ai-control", "AI_CONFIG_ENCRYPTION_KEYS", "ENGINE_KEY_CHATGPT", "OPENAI_API_KEY", "llm.openai_compat.api_key", None),
+    ("ai-manager", "ai-control", "AI_CONFIG_ENCRYPTION_KEYS", "GOOGLE_API_KEY", "GOOGLE_API_KEY", "llm.gemini.api_key", None),
+    ("email-manager", "email-control", "EMAIL_CONFIG_ENCRYPTION_KEYS", "SENDGRID_API_KEY", "SENDGRID_API_KEY", "sendgrid.api_key", None),
+    ("email-manager", "email-control", "EMAIL_CONFIG_ENCRYPTION_KEYS", "MAILGUN_API_KEY", "MAILGUN_API_KEY", "mailgun.api_key", None),
+    ("message-manager", "message-control", "MESSAGE_CONFIG_ENCRYPTION_KEYS", "AUTHTOKEN_MESSAGEBIRD", "MESSAGEBIRD_API_KEY", "provider.messagebird.auth_token", None),
+    ("message-manager", "message-control", "MESSAGE_CONFIG_ENCRYPTION_KEYS", "AUTHTOKEN_TELNYX", "TELNYX_API_KEY", "provider.telnyx.auth_token", None),
+    ("transcribe-manager", "transcribe-control", "TRANSCRIBE_CONFIG_ENCRYPTION_KEYS", "AWS_ACCESS_KEY", "AWS_ACCESS_KEY", "aws.access_key", "aws"),
+    ("transcribe-manager", "transcribe-control", "TRANSCRIBE_CONFIG_ENCRYPTION_KEYS", "AWS_SECRET_KEY", "AWS_SECRET_KEY", "aws.secret_key", "aws"),
+    ("tts-manager", "tts-control", "TTS_CONFIG_ENCRYPTION_KEYS", "AWS_ACCESS_KEY", "AWS_ACCESS_KEY", "aws.access_key", "aws"),
+    ("tts-manager", "tts-control", "TTS_CONFIG_ENCRYPTION_KEYS", "AWS_SECRET_KEY", "AWS_SECRET_KEY", "aws.secret_key", "aws"),
+    ("tts-manager", "tts-control", "TTS_CONFIG_ENCRYPTION_KEYS", "ELEVENLABS_API_KEY", "ELEVENLABS_API_KEY", "elevenlabs.api_key", None),
+)
+# Recorded as the person who made the change in the history of a stored key.
+# Not a secret; any non-zero UUID is accepted by the control binaries.
+PROVIDER_ACTOR_ID = "00000000-0000-4000-8000-00000000a001"
+PROVIDER_CALL_TIMEOUT = 120      # seconds for one control binary call
+PROVIDER_TOTAL_BUDGET = 600      # seconds for all calls of one import
+PROVIDER_STATUS_TIMEOUT = 20     # seconds for one call made only to show `status`
+PROVIDER_MAX_VALUE_LEN = 512     # longest value the services accept
+# Stored config sources that mean "no value stored yet" (an old image can still
+# report env or default) and the one that means "stored and readable".
+PROVIDER_SOURCES_EMPTY = ("none", "env", "default")
+PROVIDER_SOURCE_STORED = "db"
+
+
+def provider_mask(text, values):
+    """Hide secret values (and anything longer than a short line) in text."""
+    text = text or ""
+    for v in values:
+        if v:
+            text = text.replace(v, "***")
+    return text.strip()[:200]
+
+
+def provider_last_line(text, values=()):
+    lines = [l.strip() for l in (text or "").splitlines() if l.strip()]
+    return provider_mask(lines[-1], values) if lines else ""
+
+
+def provider_classify(rc, err, ctl):
+    """ok | unsupported (an old image without the command) | failed.
+
+    Only the two messages an old image really produces count as unsupported:
+    cobra's unknown command for config/migrate, and the docker error for a
+    missing /app/bin/<ctl>. Everything else (database refused, image pull
+    failed, a "not found" of some other kind) is a failure."""
+    if rc == 0:
+        return "ok"
+    err = err or ""
+    if re.search(r'unknown command "(config|migrate)"', err):
+        return "unsupported"
+    if f"/app/bin/{ctl}" in err and re.search(r"no such file or directory|executable file not found", err):
+        return "unsupported"
+    return "failed"
+
+
+def provider_parse_list(out):
+    """The rows of `config list` ({key: source}, {key: has_secret}) or None.
+
+    The output is a JSON array that starts at a line beginning with "[";
+    lines before it (logs) are ignored, and every such line is tried."""
+    lines = (out or "").splitlines()
+    for i, line in enumerate(lines):
+        if not line.lstrip().startswith("["):
+            continue
+        try:
+            data, _ = json.JSONDecoder().raw_decode("\n".join(lines[i:]).lstrip())
+        except ValueError:
+            continue
+        if isinstance(data, list) and all(isinstance(r, dict) and "key" in r and "source" in r for r in data):
+            return ({r["key"]: r["source"] for r in data}, {r["key"]: bool(r.get("has_secret")) for r in data})
+    return None
+
+
+def provider_compose_services(data):
+    """Reduce the parsed `docker compose config --format json` to
+    {service: {variable: value}} for the provider rows only.
+
+    `compose config` writes every "$" of a value as "$$"; the container gets
+    the single form, so undo that. Values stay in memory."""
+    wanted = {}
+    for svc, _ctl, master, cname, _env, _key, _grp in PROVIDER_CONFIG_KEYS:
+        wanted.setdefault(svc, set()).update((master, cname))
+    out = {}
+    services = data.get("services") if isinstance(data, dict) else None
+    if not isinstance(services, dict):
+        return None
+    for svc, body in services.items():
+        if svc not in wanted or not isinstance(body, dict):
+            continue
+        env = body.get("environment") or {}
+        if isinstance(env, list):
+            env = dict(item.split("=", 1) if "=" in item else (item, None) for item in env if isinstance(item, str))
+        if not isinstance(env, dict):
+            env = {}
+        out[svc] = {k: (v.replace("$$", "$") if isinstance(v, str) else "")
+                    for k, v in env.items() if k in wanted[svc]}
+    return out
+
+
+def provider_plan(compose):
+    """What to store: ({service: [entry]}, notes).
+
+    entry = dict(key, env_var, value, group, ctl, master). A group (AWS pair)
+    is planned only when every member has a value and each value can be
+    stored; otherwise notes tell why it is skipped. Notes are
+    (kind, service, stored key, reason) with kind skipped (incomplete pair) or
+    invalid (a value that cannot be stored)."""
+    plan, notes = {}, []
+    members = {}
+    for svc, ctl, master, cname, env_var, key, grp in PROVIDER_CONFIG_KEYS:
+        if svc not in compose:
+            continue
+        value = compose[svc].get(cname) or ""
+        entry = dict(key=key, env_var=env_var, value=value, group=grp, ctl=ctl, master=master, svc=svc)
+        members.setdefault((svc, grp or key), []).append(entry)
+    for (svc, _g), ents in members.items():
+        have = [e for e in ents if e["value"]]
+        if not have:
+            continue
+        missing = [e["env_var"] for e in ents if not e["value"]]
+        if missing:
+            for e in have:
+                notes.append(("skipped", svc, e["key"], "incomplete pair, no value for " + ", ".join(missing)))
+            continue
+        bad = [e for e in ents if "\n" in e["value"] or "\r" in e["value"]
+               or len(e["value"].encode()) > 4096 or len(e["value"].encode()) > PROVIDER_MAX_VALUE_LEN]
+        if bad:
+            for e in ents:
+                notes.append(("invalid", svc, e["key"],
+                              "the value of " + ", ".join(b["env_var"] for b in bad) +
+                              " cannot be stored (more than one line or too long); fix or empty it in .env"))
+            continue
+        plan.setdefault(svc, []).extend(ents)
+    return plan, notes
+
+
+def provider_row_state(group_vars, env_set, stored, down):
+    """State of one status row: set | pending | incomplete | empty.
+
+    group_vars: the .env variables of the row; env_set: those with a value in
+    .env; stored: {(service, stored key)} readable in the database; down: the
+    services that could not be asked (the row then falls back to .env)."""
+    mapped = {v: [(s, k) for s, _c, _m, _n, e, k, _g in PROVIDER_CONFIG_KEYS if e == v] for v in group_vars}
+    legacy = all(v in env_set for v in group_vars)
+    if not all(mapped.values()):
+        return "set" if legacy else "empty"
+    if any(s in down for v in group_vars for s, _k in mapped[v]):
+        return "set" if legacy else "empty"
+    if len(group_vars) > 1:
+        # A pair is usable only when one service holds every key of it.
+        svcs = {s for v in group_vars for s, _k in mapped[v]}
+        complete = any(all((s, k) in stored for v in group_vars for s2, k in mapped[v] if s2 == s) and
+                       all(any(s2 == s for s2, _k in mapped[v]) for v in group_vars) for s in svcs)
+    else:
+        complete = all(any(t in stored for t in mapped[v]) for v in group_vars)
+    if complete:
+        return "set"
+    if legacy:
+        return "pending"
+    if len(group_vars) > 1 and any(v in env_set for v in group_vars):
+        return "incomplete"
+    return "empty"
+
 # =============================================================================
 # Guided install helpers (module level so tests can call them directly)
 # =============================================================================
@@ -2922,7 +3096,7 @@ class VoIPBinCLI:
             "install": ("Guided install (checks, configuration, host setup, start, admin account)", "install [--yes] [--admin-email <email>] [--admin-password-file <path>]\n          [--mode internal|external --domain <d> --tls byo --cert <f> --key <f>]\n          [--web-reverse-proxy] [--resume] [--reset-admin-password]\n  install                     Interactive: asks before changing the host and for the admin email\n  install --yes --admin-email <e> --admin-password-file <path>\n                              Non-interactive; the generated admin password is written to <path> (0600,\n                              must not exist; a relative path is relative to this directory)\n  install --resume            Continue an install that stopped after the configuration step\n  --reset-admin-password      Set a new password when the admin account already exists\n  Last line: VOIPBIN_INSTALL: status=ok|error ...  Exit code 0 ok, 1 user/verification error, 2 environment error"),
             "init": ("Generate configuration only (.env, certificates)", "init [init.sh options]\n  Runs scripts/init.sh with the given options (for example --yes, --mode external ...)\n  'install' runs this for you."),
             "clean": ("Remove containers, data or generated files", "clean [options] [--force]\n  clean --containers  Remove app containers (keeps db/redis/mq/dns)\n  clean --volumes     Remove docker volumes (database, recordings, redis, rabbitmq)\n  clean --images      Remove docker images\n  clean --network     Teardown VoIP network interfaces\n  clean --dns         Remove DNS configuration\n  clean --purge       Remove generated files (.env, certs, configs, docker-compose.yml, versions.lock)\n  clean --all         All of the above (full reset)\n  --volumes/--images/--purge/--all list what will be removed and ask for 'yes';\n  --force skips the question (required when not run from a terminal)"),
-            "update": ("Update the install", "update [subcommand] [--check] [--skip-backup]\n  update               Pull latest Docker images + restart services\n                       (pinned repo: pulls pinned digests only; real upgrades = 'update all')\n  update --check       Dry-run: show available image updates\n  update scripts       Update scripts/configs from GitHub (with backup)\n  update scripts --check  Dry-run: show what would change\n  update all           Full upgrade. Pinned repo: backup -> git pull -> compose pull\n                       -> migrate -> up -d -> verify (safe-ordered)\n  update all --skip-backup  Skip the automatic pre-upgrade backup (pinned repo)\n  update all --check   Dry-run: describe the upgrade plan, change nothing"),
+            "update": ("Update the install", "update [subcommand] [--check] [--skip-backup]\n  update               Pull latest Docker images + restart services\n                       (pinned repo: pulls pinned digests only; real upgrades = 'update all')\n  update --check       Dry-run: show available image updates\n  update scripts       Update scripts/configs from GitHub (with backup)\n  update scripts --check  Dry-run: show what would change\n  update all           Full upgrade. Pinned repo: backup -> git pull -> compose pull\n                       -> migrate -> store provider keys -> up -d -> verify (safe-ordered)\n  update all --skip-backup  Skip the automatic pre-upgrade backup (pinned repo)\n  update all --check   Dry-run: describe the upgrade plan, change nothing\n  update keys          Store the provider keys of .env that are not stored yet (the services read\n                       them from the database); safe to repeat, never overwrites a stored key\n  update keys --check  Show which keys would be stored, change nothing"),
             "backup": ("Create a full data backup", "backup\n  Dumps MySQL (all databases), archives recording volumes, and copies\n  .env/certs/versions.lock into backups/<timestamp>/ (chmod 700/600).\n  Runs while services are up (mysqldump --single-transaction).\n  Retention: last 7 backups are kept.\n  NOTE: backups contain your full .env secrets in plaintext - copy them\n  off-host (rsync/rclone) for real disaster recovery."),
             "restore": ("Restore data from a backup (DESTRUCTIVE)", "restore <timestamp> --force\n  restore              List available backups\n  restore <ts> --force Restore MySQL dump + recordings + config from backups/<ts>/\n  DESTRUCTIVE: overwrites current DATA. Requires --force AND all services\n  stopped except db and redis. Flushes Redis after import.\n  (restore = DATA from backups/. rollback = image override history, unpinned repos only.)"),
             "rollback": ("Rollback to previous version", "rollback [N]\n  rollback             Interactive version selection\n  rollback N           Restore version by number (e.g., rollback 2)\n  rollback --list      Show available versions\n  NOTE: rollback replays docker-compose.override.yml IMAGE snapshots and only\n  applies to UNPINNED repos (refused when versions.lock exists).\n  For DATA restore use 'restore <ts>' instead."),
@@ -3164,7 +3338,7 @@ class VoIPBinCLI:
 
         # Optional provider keys: whether each one is set, nothing more
         # (none of them is needed for the stack to start).
-        print(f"  {gray('Optional provider keys (.env; restart the affected services after editing):')}")
+        print(f"  {gray('Optional provider keys (the services read most of them from the database; pending = in .env, not stored yet: sudo ./voipbin update keys):')}")
         gcp_creds_path = get_env_var("GOOGLE_APPLICATION_CREDENTIALS")
         if not gcp_creds_path:
             gcp_state = "empty"
@@ -3173,11 +3347,16 @@ class VoIPBinCLI:
         else:
             gcp_state = "set"
         rows = [("GOOGLE_APPLICATION_CREDENTIALS", gcp_state)]
+        env_set = {v for keys in OPTIONAL_PROVIDER_KEYS for v in keys if get_env_var(v)}
+        try:
+            stored, down = self._provider_stored(self.config.get("project_dir", "."))
+        except Exception:
+            stored, down = set(), {r[0] for r in PROVIDER_CONFIG_KEYS}
         for keys in OPTIONAL_PROVIDER_KEYS:
-            rows.append((" + ".join(keys), "set" if all(get_env_var(k) for k in keys) else "empty"))
+            rows.append((" + ".join(keys), provider_row_state(keys, env_set, stored, down)))
         for label, state in rows:
-            icon = green('●') if state == "set" else gray('○')
-            shown = green(state) if state == "set" else gray(state)
+            icon = green('●') if state == "set" else (yellow('◐') if state in ("pending", "incomplete") else gray('○'))
+            shown = green(state) if state == "set" else (yellow(state) if state in ("pending", "incomplete") else gray(state))
             print(f"  {icon} {label:<36} {shown}")
 
         # DNS Configuration
@@ -6199,7 +6378,7 @@ Type 'registrar <subcommand> help' for more details.
             ok, summary, optional, failures = self._install_wait_and_verify(project_dir)
             for name in optional:
                 print(f"  {yellow('!')} {name}: optional feature not configured "
-                      "(add TTS provider credentials to .env, then 'sudo ./voipbin restart tts-manager')")
+                      "(add TTS provider credentials to .env, then 'sudo ./voipbin update keys')")
             if not ok:
                 for name, why in failures:
                     print(f"  {red('x')} {name}: {why}")
@@ -6207,6 +6386,10 @@ Type 'registrar <subcommand> help' for more details.
                                    "sudo ./voipbin doctor, fix, then " + resume_cmd,
                                    why="a service is not running or not healthy")
             print(f"  {green('ok')} ({summary})")
+            if not (self._provider_preflight_step(project_dir, "install")
+                    and self._provider_import_step(project_dir, "install")):
+                raise InstallAbort(1, 5, "provider keys could not be stored", resume_cmd,
+                                   why="see the provider key lines above; the services read these keys from the database only")
 
             # [6/6] admin account
             step = 6
@@ -6250,11 +6433,11 @@ Type 'registrar <subcommand> help' for more details.
                 print(f"  Sign in         {email} / password in {pw_path}")
             else:
                 print(f"  Sign in         {email} / (shown once below)")
-            print(f"  Next steps      add AI provider keys (optional): edit .env, then 'sudo ./voipbin restart'")
+            print(f"  Next steps      add AI provider keys (optional): edit .env, then 'sudo ./voipbin update keys'")
             print(f"                  check health anytime: sudo ./voipbin doctor")
             print(f"                  undo host changes: sudo ./voipbin clean --dns / --network")
             if optional:
-                print(f"  TTS             add provider credentials to .env to enable")
+                print(f"  TTS             add provider credentials to .env, then 'sudo ./voipbin update keys'")
             if not pw_path:
                 print()
                 if not interactive:
@@ -6724,6 +6907,7 @@ Type 'registrar <subcommand> help' for more details.
         self._verify_rc = 0
         self._verify_bad = 0
         self._verify_ping = "skipped"
+        self._keys_status = "none"
 
         if resume_from == "pull":
             # "Did the just-pulled release unpin this product" must be
@@ -6750,7 +6934,33 @@ Type 'registrar <subcommand> help' for more details.
                 self._print_update_result()
                 return
 
-        if subcommand == "scripts":
+        if subcommand == "keys":
+            self._update_stage = "keys"
+            if check_only:
+                if self._provider_preflight_step(project_dir, "keys"):
+                    self._provider_import_step(project_dir, "keys", check_only=True)
+                    self._keys_status = "none"
+                    self.last_update_rc = 0
+                else:
+                    self._update_stage = "keys-preflight"
+                    self.last_update_rc = RC_KEYS_FAILED
+            else:
+                lock = self._acquire_op_lock(project_dir, "update keys")
+                if not lock:
+                    self._update_stage = "lock"
+                    self.last_update_rc = RC_PRECONDITION
+                else:
+                    try:
+                        print(f"\n{bold('Provider keys')}")
+                        ok = (self._provider_preflight_step(project_dir, "keys")
+                              and self._provider_import_step(project_dir, "keys"))
+                        if self._keys_status == "preflight":
+                            self._update_stage = "keys-preflight"
+                        self.last_update_rc = 0 if ok else RC_KEYS_FAILED
+                    finally:
+                        self._release_op_lock(lock)
+            self._print_update_result()
+        elif subcommand == "scripts":
             if not self._update_scripts(project_dir, check_only):
                 self.last_update_rc = self._update_scripts_rc or RC_SCRIPTS_FAILED
         elif subcommand == "all":
@@ -6782,14 +6992,323 @@ Type 'registrar <subcommand> help' for more details.
             self._update_images(project_dir, check_only)
         else:
             print(f"{red('Unknown subcommand:')} {subcommand}")
-            print("Usage: update [scripts|images|all] [--check] [--skip-backup]")
+            print("Usage: update [scripts|images|keys|all] [--check] [--skip-backup]")
             print("Exit codes of 'update all' are listed in the README (upgrade section).")
             self.last_update_rc = RC_USAGE
+
+    # -------------------------------------------------------------------------
+    # Provider keys: copy the secret values the containers used to receive from
+    # .env into the stored configs of ai/email/message/transcribe/tts-manager
+    # -------------------------------------------------------------------------
+
+    _keys_status = "none"
+
+    def _provider_compose(self, project_dir):
+        """({service: {variable: value}}, error). The values come from
+        `docker compose config`, i.e. exactly what the container receives
+        (.env, quotes and $ already resolved). They stay in memory; compose's
+        stderr is dropped because it can quote pieces of a value."""
+        try:
+            r = subprocess.run(["docker", "compose", "config", "--format", "json"], cwd=project_dir,
+                               stdin=subprocess.DEVNULL, capture_output=True, text=True,
+                               errors="replace", timeout=60)
+        except (OSError, subprocess.TimeoutExpired) as e:
+            return None, f"docker compose config could not run ({type(e).__name__})"
+        if r.returncode != 0:
+            return None, f"docker compose config failed (exit {r.returncode})"
+        if not (r.stdout or "").strip():
+            return None, "docker compose config printed nothing"
+        try:
+            data = json.loads(r.stdout)
+        except ValueError:
+            return None, "docker compose config did not print JSON"
+        services = provider_compose_services(data)
+        if services is None:
+            return None, "docker compose config has no services"
+        return services, None
+
+    def _provider_run(self, project_dir, svc, ctl, args, value=None, tag="keys", timeout=PROVIDER_CALL_TIMEOUT):
+        """Run /app/bin/<ctl> <args> from the NEW image of the service in a
+        throwaway container (no start of the service, no dependencies). The
+        value, if any, goes to stdin only. Returns (rc, stdout, stderr)."""
+        name = f"voipbin-{tag}-{svc}"
+        devnull = dict(stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, stdin=subprocess.DEVNULL, cwd=project_dir)
+
+        def drop():
+            try:
+                subprocess.run(["docker", "rm", "-f", name], timeout=30, **devnull)
+            except (OSError, subprocess.TimeoutExpired):
+                pass
+
+        drop()
+        cmd = ["docker", "compose", "run", "--rm", "-T", "--no-deps", "--name", name,
+               "--entrypoint", f"/app/bin/{ctl}", svc] + list(args)
+        kw = dict(cwd=project_dir, capture_output=True, text=True, errors="replace", timeout=max(1, timeout))
+        if value is None:
+            kw["stdin"] = subprocess.DEVNULL
+        else:
+            kw["input"] = value + "\n"
+        try:
+            r = subprocess.run(cmd, **kw)
+        except subprocess.TimeoutExpired:
+            drop()
+            return 124, "", "timed out"
+        except OSError as e:
+            return 127, "", f"docker could not run ({type(e).__name__})"
+        return r.returncode, r.stdout or "", r.stderr or ""
+
+    def _provider_preflight_step(self, project_dir, mode):
+        """True when every service that has keys to store gets its master key.
+
+        mode: update (before any image changes), install, keys. A compose that
+        cannot be read is not a verdict here; the import step reports it."""
+        self._keys_status = "none"
+        try:
+            return self._provider_preflight(project_dir, mode)
+        except Exception as e:
+            print(f"  {yellow('!')} Provider keys: the pre-flight check failed ({type(e).__name__}); the key step will report it.")
+            return True
+
+    def _provider_preflight(self, project_dir, mode):
+        compose, err = self._provider_compose(project_dir)
+        if compose is None:
+            print(f"  {yellow('!')} Provider keys: cannot check the compose file ({err}); the key step will report it.")
+            return True
+        plan, _notes = provider_plan(compose)
+        problems = []
+        for svc, ents in plan.items():
+            master = ents[0]["master"]
+            if not compose.get(svc, {}).get(master):
+                in_env = bool(read_env_file_var(project_dir, master))
+                problems.append((svc, master, in_env))
+        if not problems:
+            return True
+        self._keys_status = "preflight"
+        print(f"\n{red('Provider keys cannot be stored yet:')}")
+        for svc, master, in_env in problems:
+            why = ("docker-compose.yml does not pass it to the service" if in_env
+                   else "it is empty or missing in .env")
+            print(f"  - {svc}: {master}: {why}")
+        print("  The services read their provider keys from the database only, and the master key")
+        print("  protects what is stored there.")
+        if mode == "update":
+            print("  The scripts were updated, but no image was changed and the running containers are untouched.")
+        fix = {"update": "sudo ./voipbin update all", "install": "sudo ./voipbin install --resume",
+               "keys": "sudo ./voipbin update keys"}.get(mode, "sudo ./voipbin update keys")
+        print("  Fix it, then run the command again (safe to repeat):")
+        print("    1. docker-compose.yml: copy the *_CONFIG_ENCRYPTION_KEYS lines from docker-compose.yml.dist")
+        print("    2. .env: add the missing keys with the loop in README.md (\"Adopting the encryption keys\")")
+        print("       Do not run init.sh --yes or --force-reinit: they regenerate the database passwords.")
+        print(f"    3. {fix}")
+        return False
+
+    def _provider_import_step(self, project_dir, mode, check_only=False):
+        """Store the provider keys that have a value and no stored value yet.
+
+        mode: update (before `up -d`), install, keys, unpinned. Returns True
+        when nothing blocks. A key that is already stored is never touched
+        (the database is the truth after the first store); a row that is
+        unreadable, or half of a pair, is reported with the command to fix it
+        and left alone. Values only travel on stdin and are never printed."""
+        self._keys_status = "none"
+        try:
+            return self._provider_import(project_dir, mode, check_only)
+        except Exception as e:  # never let an unexpected error print a traceback with a value in it
+            self._keys_status = "failed"
+            print(f"  {red('x')} Provider keys: unexpected error ({type(e).__name__}); nothing more was stored.")
+            print("    Run 'sudo ./voipbin update keys' after fixing the cause.")
+            return False
+
+    def _provider_import(self, project_dir, mode, check_only):
+        compose, err = self._provider_compose(project_dir)
+        if compose is None:
+            self._keys_status = "failed"
+            print(f"  {red('x')} Provider keys: {err}")
+            print("    Fix docker-compose.yml / .env (docker compose config must work), then run again.")
+            return False
+        plan, notes = provider_plan(compose)
+        res = dict(stored=[], already=[], skipped=[], unsupported=[], invalid=[], attention=[], failed=[], half=[])
+        for kind, svc, key, why in notes:
+            res[kind].append((svc, key, why))
+        values = {}
+        for svc, ents in plan.items():
+            values[svc] = [e["value"] for e in ents]
+        if not plan and not notes:
+            print("  No provider keys to store (none of the provider variables in .env has a value).")
+            return True
+        if check_only:
+            for svc, ents in plan.items():
+                print(f"  {svc}: would store {', '.join(e['key'] for e in ents)} (when not stored yet)")
+            for kind, svc, key, why in notes:
+                print(f"  {yellow('!')} {svc}: {key}: {why}")
+            return True
+
+        deadline = time.monotonic() + PROVIDER_TOTAL_BUDGET
+        for svc, ents in plan.items():
+            ctl = ents[0]["ctl"]
+            vals = values[svc]
+            keys = [e["key"] for e in ents]
+            if time.monotonic() > deadline:
+                res["failed"] += [(svc, k, "time budget exhausted") for k in keys]
+                continue
+            def left():
+                return int(deadline - time.monotonic())
+
+            rc, _out, errtxt = self._provider_run(project_dir, svc, ctl, ["migrate", "up"],
+                                                  timeout=min(PROVIDER_CALL_TIMEOUT, left()))
+            verdict = provider_classify(rc, errtxt, ctl)
+            if verdict == "ok":
+                rc, out, errtxt = self._provider_run(project_dir, svc, ctl, ["config", "list"],
+                                                     timeout=min(PROVIDER_CALL_TIMEOUT, left()))
+                verdict = provider_classify(rc, errtxt, ctl)
+            if verdict == "unsupported":
+                res["unsupported"] += [(svc, k, "image has no stored config commands (old image)") for k in keys]
+                continue
+            if verdict == "failed":
+                why = provider_last_line(errtxt, vals) or f"exit {rc}"
+                res["failed"] += [(svc, k, why) for k in keys]
+                continue
+            parsed = provider_parse_list(out)
+            if parsed is None:
+                res["failed"] += [(svc, k, "config list did not print the expected JSON") for k in keys]
+                continue
+            sources = parsed[0]
+            groups = {}
+            for e in ents:
+                groups.setdefault(e["group"] or e["key"], []).append(e)
+            for members in groups.values():
+                srcs = [sources.get(m["key"]) for m in members]
+                if any(x is None for x in srcs):
+                    res["skipped"] += [(svc, m["key"], "this image does not list the key") for m in members]
+                elif all(x == PROVIDER_SOURCE_STORED for x in srcs):
+                    res["already"] += [(svc, m["key"], "") for m in members]
+                elif all(x in PROVIDER_SOURCES_EMPTY for x in srcs):
+                    for m in members:
+                        rc, _o, errtxt = self._provider_run(project_dir, svc, ctl,
+                                                            ["config", "set", "--key", m["key"], "--actor-id", PROVIDER_ACTOR_ID],
+                                                            value=m["value"], timeout=min(PROVIDER_CALL_TIMEOUT, left()))
+                        if rc == 0:
+                            res["stored"].append((svc, m["key"], ""))
+                        else:
+                            why = provider_last_line(errtxt, vals) or f"exit {rc}"
+                            res["failed"].append((svc, m["key"], why))
+                            rest = members[members.index(m) + 1:]
+                            res["failed"] += [(svc, r_["key"], "not attempted after the failure above") for r_ in rest]
+                            res["half"] += [(svc, x_[1], "") for x_ in res["stored"]
+                                            if x_[0] == svc and x_[1] in [mm["key"] for mm in members]]
+                            break
+                else:
+                    state = ", ".join(f"{m['key']}={x}" for m, x in zip(members, srcs))
+                    res["attention"] += [(svc, m["key"], f"stored state is not usable: {state}") for m in members]
+
+        self._provider_report(res, mode)
+        if res["failed"]:
+            self._keys_status = "failed"
+        elif res["attention"] or res["invalid"]:
+            self._keys_status = "attention"
+        elif res["unsupported"]:
+            self._keys_status = "skipped"
+        else:
+            self._keys_status = "ok"
+        if res["failed"]:
+            return False
+        if mode == "keys" and (res["attention"] or res["invalid"] or res["unsupported"]):
+            return False
+        return True
+
+    def _provider_report(self, res, mode):
+        icons = dict(stored=green("\u2713"), already=green("\u2713"), skipped=yellow("!"), unsupported=yellow("!"),
+                     invalid=yellow("!"), attention=yellow("!"), failed=red("x"))
+        words = dict(stored="stored", already="already stored, left as is", skipped="skipped", unsupported="skipped",
+                     invalid="not stored", attention="needs your attention", failed="FAILED")
+        for kind in ("stored", "already", "skipped", "unsupported", "invalid", "attention", "failed"):
+            for svc, key, why in res[kind]:
+                print(f"  {icons[kind]} {svc}: {key} {words[kind]}" + (f" ({why})" if why else ""))
+        print(f"  Provider keys: stored {len(res['stored'])}, already stored {len(res['already'])}, "
+              f"skipped {len(res['skipped']) + len(res['unsupported'])}, "
+              f"attention {len(res['attention']) + len(res['invalid'])}, failed {len(res['failed'])}")
+        ctl_of = {(sv, k): c for sv, c, _m, _n, _e, k, _g in PROVIDER_CONFIG_KEYS}
+
+        def replace_cmds(items):
+            print("  Replace it with the new value in NEW_VALUE (keep the value out of your shell history):")
+            for svc, key, _why in items:
+                print(f"    printf '%s' \"$NEW_VALUE\" | docker compose run --rm -T --no-deps --entrypoint "
+                      f"/app/bin/{ctl_of.get((svc, key), '<control>')} {svc} config set --key {key} --actor-id {PROVIDER_ACTOR_ID}")
+
+        if res["attention"]:
+            print("  A stored value that cannot be used is never overwritten automatically.")
+            replace_cmds(res["attention"])
+        if res["invalid"]:
+            print("  A value in .env that cannot be stored is skipped; fix or empty it in .env and run 'sudo ./voipbin update keys'.")
+        if res["unsupported"]:
+            print("  The old image of a skipped key still reads it from the environment, so nothing is lost.")
+            if mode == "keys":
+                print("  Update the image pin ('sudo ./voipbin update all') and run 'sudo ./voipbin update keys' again.")
+            else:
+                print("  Once those services run an image with stored configs, run 'sudo ./voipbin update keys'.")
+        if res["half"]:
+            print("  Only part of an AWS pair was stored. The next run reports the pair as needing attention and")
+            print("  leaves it alone; store both keys of the pair with these commands:")
+            pairs = [(sv, k, "") for sv, k in {(sv, k) for sv, k, _w in res["half"] + res["failed"]
+                                               if k.startswith("aws.")}]
+            replace_cmds(sorted(pairs))
+        if res["failed"]:
+            print("  Nothing was lost: keys already stored stay stored. Fix the cause and run the command again.")
+        if res["stored"] or res["already"]:
+            print("  From now on the database holds these keys: rotate one with '<service>-control config set' or the")
+            print("  admin API; a change in .env alone has no effect, and a key cleared in the database comes back")
+            print("  on the next run while .env still has a value. OPENAI_API_KEY, GOOGLE_API_KEY and ELEVENLABS_API_KEY are")
+            print("  also read from .env by pipecat: replace them in the database and in .env.")
+
+    def _provider_keys_unpinned(self, project_dir):
+        """Key step of the unpinned `update` path (after `up -d`). The new images
+        read provider keys from their stored configs only. This path has no
+        pre-flight and no exit code, so a failure is a loud warning, not an abort."""
+        print(f"\n{blue('==>')} Storing provider keys from .env...")
+        if not (self._provider_preflight_step(project_dir, "keys")
+                and self._provider_import_step(project_dir, "unpinned")):
+            print(f"\n{red('WARNING:')} the provider keys are NOT stored: the updated services cannot see them.")
+            print("  Fix the cause above, then run 'sudo ./voipbin update keys'.")
+
+    def _provider_stored(self, project_dir):
+        """({(service, key)} stored and readable, {service} that could not be asked).
+
+        For `status`: only asks when the database container runs, one throwaway
+        control call per service, in parallel; any failure marks the service
+        as down so the row falls back to .env."""
+        services = sorted({r[0] for r in PROVIDER_CONFIG_KEYS})
+        db = self.config.get("db_container", "voipbin-db")
+        try:
+            up = shutil.which("docker") and subprocess.run(
+                ["docker", "inspect", "-f", "{{.State.Running}}", db], stdin=subprocess.DEVNULL,
+                capture_output=True, text=True, timeout=15).stdout.strip() == "true"
+        except (OSError, subprocess.TimeoutExpired):
+            up = False
+        if not up:
+            return set(), set(services)
+        ctl_of = {r[0]: r[1] for r in PROVIDER_CONFIG_KEYS}
+
+        def ask(svc):
+            rc, out, err = self._provider_run(project_dir, svc, ctl_of[svc], ["config", "list"], tag="keys-status",
+                                              timeout=PROVIDER_STATUS_TIMEOUT)
+            parsed = provider_parse_list(out) if rc == 0 else None
+            return svc, parsed
+
+        stored, down = set(), set()
+        with ThreadPoolExecutor(max_workers=len(services)) as ex:
+            for svc, parsed in ex.map(ask, services):
+                if parsed is None:
+                    down.add(svc)
+                    continue
+                for key, src in parsed[0].items():
+                    if src == PROVIDER_SOURCE_STORED and parsed[1].get(key):
+                        stored.add((svc, key))
+        return stored, down
 
     def _print_update_result(self):
         """One machine-readable line for scripted callers; no secrets."""
         print(f"UPDATE_RESULT rc={self.last_update_rc} stage={self._update_stage} "
-              f"containers_bad={self._verify_bad} ping={self._verify_ping}")
+              f"containers_bad={self._verify_bad} ping={self._verify_ping} keys={self._keys_status}")
 
     # -------------------------------------------------------------------------
     # Pinned-repo upgrade flow (design §3.5)
@@ -6846,8 +7365,11 @@ Type 'registrar <subcommand> help' for more details.
             print("     header comment/\"_comment\" field)")
             print("  3. docker compose pull     - fetch the new pinned digests")
             print("  4. scripts/migrate.sh      - database migrations at the pinned schema revision (abort on failure)")
+            print("  4b. provider keys          - store the provider keys of .env that are not stored yet into the")
+            print("     services' stored configs (new images, before they start; abort on failure, nothing lost)")
+            print("     (before step 2b the live docker-compose.yml is checked for the master keys it needs)")
             print("  Exit codes: 0 ok, 2 busy, 10 backup, 11 scripts, 12 unpinned, 13 sync, 14 pull,")
-            print("              15 migrate, 16 up, 17-19 verify (containers / ping / both)")
+            print("              15 migrate, 16 up, 17-19 verify (containers / ping / both), 20 provider keys")
             print("  5. docker compose up -d    - recreate only containers whose digest changed")
             print("  6. verify                  - poll container health (120s) + GET api-manager /ping")
             print(f"\n{yellow('No changes made.')} Run 'update all' without --check to upgrade.")
@@ -6882,6 +7404,12 @@ Type 'registrar <subcommand> help' for more details.
             print(f"  Pre-upgrade backup: backups/{backup_ts}/")
 
         restore_hint = f"voipbin restore {backup_ts} --force" if backup_ts else "voipbin restore <ts> --force"
+
+        # ---- Provider keys preflight: nothing below changes an image until the
+        # master keys the services need to store them are in place ----
+        self._update_stage = "keys-preflight"
+        if not self._provider_preflight_step(project_dir, "update"):
+            return RC_KEYS_FAILED
 
         # ---- Step 2b: reconcile the LIVE docker-compose.yml's image digests ----
         # Both docker-compose.yml and versions.lock are untracked
@@ -6945,6 +7473,19 @@ Type 'registrar <subcommand> help' for more details.
             print(f"    4. COMPOSE_FILE={os.path.join(project_dir, 'docker-compose.yml')} bash scripts/sync-compose-images.sh")
             print("    5. voipbin start")
             return RC_MIGRATE_FAILED
+
+        # ---- Step 4b: store the provider keys of .env in the services' stored
+        # configs, from the NEW images in throwaway containers. This runs before
+        # `up -d` on purpose: the new services must find their keys when they
+        # start, and a failure here leaves the running containers untouched. ----
+        print(f"\n{blue('==>')} Step 4b/6: storing provider keys from .env (new images, before they start)...")
+        self._update_stage = "keys"
+        if not self._provider_import_step(project_dir, "update"):
+            print(f"\n{red('Upgrade aborted:')} the provider keys could not be stored (see above).")
+            print("  The running containers are untouched and still use the old images. The database schema")
+            print("  migration (step 4) is already applied and the new images are pulled; no restore is needed.")
+            print("  Fix the cause, then run 'sudo ./voipbin update all' again (safe to repeat; stored keys stay).")
+            return RC_KEYS_FAILED
 
         # ---- Step 5: recreate changed containers ----
         print(f"\n{blue('==>')} Step 5/6: recreating services (docker compose up -d)...")
@@ -7766,6 +8307,7 @@ Type 'registrar <subcommand> help' for more details.
             print(f"\n{blue('==>')} Restarting services with new images...")
             run_cmd("docker compose up -d 2>&1")
             print(green("✓ Services restarted"))
+            self._provider_keys_unpinned(project_dir)
 
         print(f"\n{bold('Image update complete!')}")
         print(f"  Run '{bold('voipbin version')}' to see pinned versions")
@@ -8668,7 +9210,7 @@ def render_help():
   stop [--all]      Stop app services (--all for everything)
   restart [service] Restart services
   logs <service>    View logs (-f to follow)
-  update [options]  Update (scripts, all, --check) - 'update all' = full pinned upgrade
+  update [options]  Update (scripts, all, keys, --check) - 'update all' = full pinned upgrade
   backup            Full data backup (MySQL + recordings + config) to backups/<ts>/
   restore <ts>      Restore DATA from a backup (DESTRUCTIVE, requires --force + stopped services)
 
