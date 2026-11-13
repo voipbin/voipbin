@@ -57,7 +57,7 @@ REAL_IMP = m.VoIPBinCLI._provider_import_step
 REAL_STORED = m.VoIPBinCLI._provider_stored
 m.VoIPBinCLI._provider_preflight_step = lambda self, project_dir, mode: True
 m.VoIPBinCLI._provider_import_step = lambda self, project_dir, mode, check_only=False: True
-m.VoIPBinCLI._provider_stored = lambda self, project_dir: (set(), {r[0] for r in m.PROVIDER_CONFIG_KEYS})
+m.VoIPBinCLI._provider_stored = lambda self, project_dir: (set(), {r[0] for r in m.PROVIDER_CONFIG_KEYS} | {m.NUMBER_SVC})
 
 
 import tempfile
@@ -508,6 +508,13 @@ CANARY = {}   # (service, compose env name) -> canary secret
 for _svc, _ctl, _master, _cname, _env, _key, _grp in m.PROVIDER_CONFIG_KEYS:
     CANARY[(_svc, _cname)] = f"canary-{_svc}-{_cname}-Zq9"
 ALL_CANARIES = list(CANARY.values())
+# number-manager (provider rows, not config keys): the secrets are canaries; the connection and profile
+# ids are not secret and do travel on argv, so they are checked separately (NID_CANARIES).
+NCANARY = {"TELNYX_TOKEN": "ncanary-telnyx-token-Zq9", "TWILIO_TOKEN": "ncanary-twilio-token-Zq9"}
+NIDS = {"TELNYX_CONNECTION_ID": "ncanary-connection-id-Zq9", "TELNYX_PROFILE_ID": "ncanary-profile-id-Zq9",
+        "TWILIO_SID": "ACncanarysid"}
+NVALUES = {**NCANARY, **NIDS}
+NID_CANARIES = [NIDS["TELNYX_CONNECTION_ID"], NIDS["TELNYX_PROFILE_ID"]]
 
 
 class FakeDocker:
@@ -518,6 +525,12 @@ class FakeDocker:
         self.calls = []       # argv lists
         self.inputs = []      # (argv, input)
         self.sets = []        # (service, key, value)
+        self.number = False   # number-manager is in `compose config` only when a test asks for it
+        self.nvalues = dict(NVALUES)
+        self.nsets = []       # (provider, stdin) of `provider secret set`
+        self.nupdates = []    # (provider, {config key: value}) of `provider update`
+        self.ndb = {"telnyx": dict(source="none", has_secret=False, enabled=True, usable=False, config={}),
+                    "twilio": dict(source="none", has_secret=False, enabled=False, usable=False, config=None)}
         self.fail = {}        # (service, sub) -> (rc, stderr)
         self.timeout = set()  # (service, sub)
         self.db = {svc: {} for svc in {r[0] for r in m.PROVIDER_CONFIG_KEYS}}
@@ -537,6 +550,11 @@ class FakeDocker:
                 e[master] = "1:masterkeymaterial"
             v = self.values.get((svc, cname))
             e[cname] = v if v is not None else ""
+        if self.number:
+            e = {"NUMBER_SECRET_ENCRYPTION_KEYS": "1:masterkeymaterial"} if self.masters else {"NUMBER_SECRET_ENCRYPTION_KEYS": ""}
+            for name in ("TELNYX_TOKEN", "TELNYX_CONNECTION_ID", "TELNYX_PROFILE_ID", "TWILIO_SID", "TWILIO_TOKEN"):
+                e[name] = self.nvalues.get(name, "")
+            services["number-manager"] = {"environment": e}
         if self.env_style == "list":
             for svc in services:
                 services[svc]["environment"] = [f"{k}={v}" for k, v in services[svc]["environment"].items()]
@@ -562,7 +580,7 @@ class FakeDocker:
             ctl = argv[i + 1].rsplit("/", 1)[1]
             svc = argv[i + 2]
             args = argv[i + 3:]
-            sub = args[0] + " " + args[1]
+            sub = " ".join(args[:3]) if args[:2] == ["provider", "secret"] else args[0] + " " + args[1]
             r = _FakeCompleted()
             if (svc, sub) in self.timeout:
                 raise m.subprocess.TimeoutExpired(argv, 1)
@@ -571,6 +589,8 @@ class FakeDocker:
                 return r
             if sub == "migrate up":
                 return r
+            if svc == "number-manager" and args[0] == "provider":
+                return self.number_provider(r, sub, args, kw)
             if sub == "config list":
                 r.stdout = "time=x level=info msg=started\n" + json.dumps(
                     [{"key": k, "source": src, "has_secret": src == "db"} for k, src in self.db[svc].items()], indent=2)
@@ -585,6 +605,34 @@ class FakeDocker:
                 r.stdout = json.dumps({"key": key, "source": "db"})
                 return r
         return _FakeCompleted()
+
+    def number_provider(self, r, sub, args, kw):
+        """The provider commands of number-control: list, update, secret set."""
+        if sub == "provider list":
+            rows = []
+            for name, row in self.ndb.items():
+                item = {"provider_name": name, "enabled": row["enabled"], "priority": 10,
+                        "has_secret": row["has_secret"], "key_version": 1 if row["has_secret"] else 0,
+                        "credential_source": row["source"], "usable": row["usable"]}
+                if row["config"]:
+                    item["config"] = row["config"]
+                rows.append(item)
+            r.stdout = "time=x level=info msg=started\n" + json.dumps(rows, indent=2)
+            return r
+        name = args[args.index("--name") + 1]
+        if sub == "provider update":
+            conf = dict(a.split("=", 1) for i_, a in enumerate(args) if i_ and args[i_ - 1] == "--config")
+            self.nupdates.append((name, conf))
+            self.ndb[name]["config"] = {**(self.ndb[name]["config"] or {}), **conf}
+            r.stdout = json.dumps({"provider_name": name})
+            return r
+        if sub == "provider secret set":
+            self.nsets.append((name, kw.get("input")))
+            row = self.ndb[name]
+            row.update(source="db", has_secret=True, usable=row["enabled"] and "connection_id" in (row["config"] or {}))
+            r.stdout = json.dumps({"provider_name": name})
+            return r
+        return r
 
     def text_all(self):
         """Everything that could leak: argv of every call."""
@@ -680,7 +728,7 @@ r, out, err = krun(kcli()._provider_import_step, kdir, "update")
 check("K5c missing control binary counts as old image", r is True and "old image" in out, out)
 
 # K6/K19/K21 failures are failures, with the cause and without the secret
-for label, rcerr in (("connection refused", "dial tcp 192.0.2.1:3306: connect: connection refused"),
+for label, rcerr in (("connection refused", "dial tcp db:3306: connect: connection refused"),
                      ("not found", "record not found"),
                      ("pull", "manifest for voipbin/x not found: manifest unknown"),
                      ("secret in error", "failed to store canary-email-manager-SENDGRID_API_KEY-Zq9")):
@@ -906,7 +954,7 @@ check("K14c unpinned key step succeeding stores the keys without a warning",
 
 # K11 status row states
 S, D = m.provider_row_state, set()
-allsvc = {r[0] for r in m.PROVIDER_CONFIG_KEYS}
+allsvc = {r[0] for r in m.PROVIDER_CONFIG_KEYS} | {m.NUMBER_SVC}
 stored_ai = {("ai-manager", "llm.openai_compat.api_key")}
 check("K11 stored -> set", S(("OPENAI_API_KEY",), set(), stored_ai, D) == "set")
 check("K11b in .env only -> pending", S(("OPENAI_API_KEY",), {"OPENAI_API_KEY"}, set(), D) == "pending")
@@ -1050,6 +1098,274 @@ i_keys = src.index('self._provider_import_step(project_dir, "install")')
 i_admin = src.index("# [6/6] admin account")
 check("K13 install: key step sits between verify (5/6) and the admin account (6/6) and aborts at step 5",
       i_verify < i_keys < i_admin and 'InstallAbort(1, 5, "provider keys could not be stored"' in src[i_keys:i_admin])
+
+
+# =====================================================================
+# N*: number-manager (the Telnyx account of .env -> the telnyx provider row)
+# =====================================================================
+def nfd(**kw):
+    fd.reset(values={})
+    fd.number = True
+    fd.nvalues.update(kw.pop("nvalues", {}))
+    for k_, v_ in kw.items():
+        setattr(fd, k_, v_)
+
+
+def ncall_names():
+    out_ = []
+    for c_ in fd.calls:
+        if c_[:3] == ["docker", "compose", "run"]:
+            i_ = c_.index("--entrypoint")
+            out_.append(" ".join(c_[i_ + 3:i_ + 6]).strip())
+    return out_
+
+
+def nleaks(text):
+    return [c_ for c_ in list(NCANARY.values()) + ALL_CANARIES if c_ in text]
+
+
+# N1 first run: config first, then the secret on stdin, then nothing again
+nfd()
+c = kcli()
+r, out, err = krun(c._provider_import_step, kdir, "update")
+check("N1 first run: migrate, list, update (config on argv), secret set (stdin), True, status ok",
+      r is True and c._keys_status == "ok" and [x.split()[0:2] for x in ncall_names()][:4] == [["migrate", "up"], ["provider", "list"], ["provider", "update"], ["provider", "secret"]]
+      and fd.nupdates == [("telnyx", {"connection_id": NIDS["TELNYX_CONNECTION_ID"], "profile_id": NIDS["TELNYX_PROFILE_ID"]})]
+      and fd.nsets == [("telnyx", NCANARY["TELNYX_TOKEN"] + "\n")] and not fd.sets, f"{r} {c._keys_status} {ncall_names()} {fd.nupdates} {fd.nsets}")
+check("N1b the token is nowhere in argv or the output; the ids are on argv only",
+      not nleaks(fd.text_all()) and not nleaks(out) and not any(i_ in out for i_ in NID_CANARIES)
+      and all(NCANARY["TWILIO_TOKEN"] not in x for x in fd.calls), out)
+check("N1c the actor id is the installer constant and the report names number-manager",
+      all(c_[c_.index("--actor-id") + 1] == m.PROVIDER_ACTOR_ID for c_ in fd.calls if "--actor-id" in c_ and "provider" in c_)
+      and "number-manager: telnyx stored" in out and "provider secret set --name telnyx" in out, out)
+n_after = len(fd.nsets)
+r, out, err = krun(kcli()._provider_import_step, kdir, "update")
+check("N2 second run: nothing is written again, 'already stored'", r is True and len(fd.nsets) == n_after == 1
+      and len(fd.nupdates) == 1 and "number-manager: telnyx already stored" in out, out)
+check("N2b the Twilio values alone are only advice: never a Twilio write", all(n_ == "telnyx" for n_, _v in fd.nsets) and all(n_ == "telnyx" for n_, _c in fd.nupdates))
+
+# N3 advice only: no master key needed, nothing stored, never blocks
+nfd(nvalues={"TELNYX_CONNECTION_ID": "", "TELNYX_PROFILE_ID": "", "TWILIO_SID": "", "TWILIO_TOKEN": ""}, masters=False)
+c = kcli()
+r, out, err = krun(c._provider_import_step, kdir, "update")
+check("N3 token without connection id: note, nothing stored, True, status ok, no master key needed",
+      r is True and c._keys_status == "ok" and not fd.nsets and not fd.nupdates and "TELNYX_CONNECTION_ID is empty" in out
+      and "number search, release and update" in out, f"{r} {c._keys_status} {out}")
+r, out, err = krun(kcli()._provider_preflight_step, kdir, "update")
+check("N3b advice only never blocks the pre-flight", r is True, out)
+for label, fail in (("database error", (1, "dial tcp db:3306: connect: connection refused")),
+                    ("old image", (1, 'Error: unknown command "provider" for "number-control"')),
+                    ("bad json", (0, ""))):
+    nfd(nvalues={"TELNYX_CONNECTION_ID": "", "TELNYX_PROFILE_ID": ""})
+    fd.fail[("number-manager", "provider list")] = fail
+    c = kcli()
+    r, out, err = krun(c._provider_import_step, kdir, "update")
+    check(f"N3c advice only, {label}: still True and ok, the note says it is not verified",
+          r is True and c._keys_status == "ok" and "not verified against the database" in out and "old image" not in out, f"{r} {c._keys_status} {out}")
+    r, out, err = krun(kcli()._provider_import_step, kdir, "keys")
+    check(f"N3d advice only, {label}: update keys is not failed either", r is True, out)
+nfd(nvalues={"TELNYX_CONNECTION_ID": "", "TELNYX_PROFILE_ID": "", "TWILIO_SID": "ACsid", "TWILIO_TOKEN": "ntoken"})
+fd.nvalues["TELNYX_TOKEN"] = ""
+c = kcli()
+r, out, err = krun(c._provider_import_step, kdir, "keys")
+check("N3e Twilio value: one note and the commands, never written, update keys still True (the pinned image could not use Twilio)",
+      r is True and not fd.nsets and not fd.nupdates and "number-manager: twilio" in out and "--config trunk_sid=<TRUNK_SID>" in out
+      and "provider secret set --name twilio" in out and "skipped 1" in out, out)
+fd.ndb["twilio"].update(source="db", has_secret=True)
+fd.ndb["telnyx"].update(source="db", has_secret=True)
+fd.nvalues["TELNYX_TOKEN"] = "x"
+r, out, err = krun(kcli()._provider_import_step, kdir, "keys")
+check("N3f stored providers print no advice", r is True and "TELNYX_CONNECTION_ID is empty" not in out and "number-manager: twilio" not in out, out)
+
+# N3g a row that claims source db but has no secret is not stored
+check("N3g number_row_stored needs both the db source and a secret",
+      m.number_row_stored(dict(source="db", has_secret=False)) is False and m.number_row_stored(dict(source="db", has_secret=True)) is True
+      and m.number_row_stored(dict(source="none", has_secret=True)) is False and m.number_row_stored(None) is False)
+
+# N15f the status read counts only a db source with a secret
+nfd()
+fd.ndb["telnyx"].update(source="db_undecryptable", has_secret=True)
+fd.ndb["twilio"].update(source="db", has_secret=False)
+with mock.patch.object(m.subprocess, "run", inspect_up), mock.patch.object(m.shutil, "which", lambda x: "/usr/bin/docker"):
+    stored_q, down_q = REAL_STORED(kcli(), kdir)
+check("N15f status: db_undecryptable with a secret, or db without a secret, is not 'stored'",
+      not any(k_[0] == "number-manager" for k_ in stored_q) and "number-manager" not in down_q, f"{stored_q} {down_q}")
+# N3h the rotation text of number-manager shows only when number-manager has something stored
+nfd(nvalues={"TELNYX_CONNECTION_ID": ""})
+r, out, err = krun(kcli()._provider_import_step, kdir, "update")
+check("N3h no stored number-manager item -> no 'now holds the Telnyx account' text", "now holds the Telnyx account" not in out, out)
+
+# N4 row state decides
+nfd()
+fd.ndb["telnyx"]["config"] = {"connection_id": "someone-elses"}
+c = kcli()
+r, out, err = krun(c._provider_import_step, kdir, "update")
+check("N4 the row has another connection id: nothing written, attention, update goes on, update first in the fix",
+      r is True and c._keys_status == "attention" and not fd.nsets and not fd.nupdates
+      and "different connection_id" in out and out.index("provider update") < out.index("secret set --name telnyx")
+      and not nleaks(out) and not any(i_ in out for i_ in NID_CANARIES), out)
+r, out, err = krun(kcli()._provider_import_step, kdir, "keys")
+check("N4b the same in update keys -> False", r is False)
+nfd()
+fd.ndb["telnyx"]["config"] = {"connection_id": NIDS["TELNYX_CONNECTION_ID"]}
+r, out, err = krun(kcli()._provider_import_step, kdir, "update")
+check("N4c a row that already has the same connection id gets only the missing profile id",
+      r is True and fd.nupdates == [("telnyx", {"profile_id": NIDS["TELNYX_PROFILE_ID"]})] and len(fd.nsets) == 1, f"{fd.nupdates}")
+nfd()
+fd.ndb["telnyx"]["config"] = {"connection_id": NIDS["TELNYX_CONNECTION_ID"], "profile_id": NIDS["TELNYX_PROFILE_ID"]}
+r, out, err = krun(kcli()._provider_import_step, kdir, "update")
+check("N4d a row with both ids equal: no update call, only the secret", r is True and not fd.nupdates and len(fd.nsets) == 1)
+for src in ("db_undecryptable", "something_new"):
+    nfd()
+    fd.ndb["telnyx"].update(source=src, has_secret=src != "x")
+    c = kcli()
+    r, out, err = krun(c._provider_import_step, kdir, "update")
+    check(f"N5 {src} -> not overwritten, attention, update goes on, update keys says no",
+          r is True and c._keys_status == "attention" and not fd.nsets and not fd.nupdates and "needs your attention" in out
+          and "provider secret set --name telnyx" in out and krun(kcli()._provider_import_step, kdir, "keys")[0] is False, out)
+nfd()
+fd.ndb["telnyx"].update(source="db", has_secret=True, enabled=False, usable=False, config={"connection_id": "c"})
+c = kcli()
+r, out, err = krun(c._provider_import_step, kdir, "keys")
+check("N6 a disabled provider with a stored secret is 'already stored', not a problem", r is True and c._keys_status == "ok" and "already stored" in out and not fd.nsets, out)
+nfd()
+fd.ndb["telnyx"].update(source="db", has_secret=True, enabled=True, usable=False, config={})
+c = kcli()
+r, out, err = krun(c._provider_import_step, kdir, "update")
+check("N6b enabled + stored + not usable -> attention", r is True and c._keys_status == "attention" and "not usable" in out, out)
+
+# N6c the fix text of an unusable row also carries the update command
+check("N6c enabled + stored + not usable: the update command comes before the secret set command",
+      "provider update --name telnyx" in out and out.index("provider update --name telnyx") < out.index("secret set --name telnyx"), out)
+# N6d garbage from provider list and over-long config values
+nfd()
+fd.number_provider_orig = fd.number_provider
+def _garbage(r, sub, args, kw, _o=fd.number_provider):
+    if sub == "provider list":
+        r.stdout = "not json at all\n"
+        return r
+    return _o(r, sub, args, kw)
+fd.number_provider = _garbage
+c = kcli()
+r, out, err = krun(c._provider_import_step, kdir, "update")
+check("N6d unparseable provider list with a store entry -> failed, nothing written", r is False and c._keys_status == "failed"
+      and "did not print the expected JSON" in out and not fd.nsets, out)
+del fd.number_provider
+nfd(nvalues={"TELNYX_CONNECTION_ID": "c" * (m.NUMBER_CONFIG_MAX_LEN + 1)})
+c = kcli()
+r, out, err = krun(c._provider_import_step, kdir, "update")
+check("N6e a config value over the service limit is invalid, not sent", not fd.nsets and not fd.nupdates and c._keys_status == "attention" and "cannot be stored" in out, out)
+nfd(nvalues={"TELNYX_CONNECTION_ID": "c" * m.NUMBER_CONFIG_MAX_LEN})
+r, out, err = krun(kcli()._provider_import_step, kdir, "update")
+check("N6f a config value of exactly the limit is stored", len(fd.nsets) == 1 and len(fd.nupdates) == 1, out)
+
+# N7 old image and failures
+nfd()
+fd.fail[("number-manager", "provider list")] = (1, 'Error: unknown command "provider" for "number-control"')
+c = kcli()
+r, out, err = krun(c._provider_import_step, kdir, "update")
+check("N7 old image (migrate ok, provider list unknown command): skipped for update, status skipped, nothing written",
+      r is True and c._keys_status == "skipped" and "old image" in out and not fd.nsets, out)
+r, out, err = krun(kcli()._provider_import_step, kdir, "keys")
+check("N7b the same in update keys -> False", r is False)
+check("N7c classify: provider is an old image only for number-control",
+      m.provider_classify(1, 'unknown command "provider" for "x"', "number-control") == "unsupported"
+      and m.provider_classify(1, 'unknown command "provider" for "x"', "tts-control") == "failed"
+      and m.provider_classify(1, 'unknown command "config" for "x"', "tts-control") == "unsupported")
+for label, key, rcerr in (("list refused", "provider list", "dial tcp db:3306: connect: connection refused"),
+                          ("update refused", "provider update", "failed to update: ncanary-connection-id-Zq9 rejected"),
+                          ("secret refused", "provider secret set", "failed to store ncanary-telnyx-token-Zq9 and ncanary-connection-id-Zq9")):
+    nfd()
+    fd.fail[("number-manager", key)] = (1, rcerr + "\n")
+    c = kcli()
+    r, out, err = krun(c._provider_import_step, kdir, "update")
+    check(f"N8 {label}: failed, update blocked, nothing leaks", r is False and c._keys_status == "failed" and not nleaks(out)
+          and not any(i_ in out for i_ in NID_CANARIES), f"{r} {out}")
+check("N8b a failed update call never reaches the secret", not fd.nsets or key == "provider secret set")
+nfd()
+fd.fail[("number-manager", "provider secret set")] = (1, "Error: failed to store the provider secret: boom\n")
+r, out, err = krun(kcli()._provider_import_step, kdir, "update")
+check("N9 config stored, secret failed: failed with the retry text", r is False and "the config was stored, the secret was not" in out and "safe to repeat" in out, out)
+fd.fail.clear()
+n_up = len(fd.nupdates)
+r, out, err = krun(kcli()._provider_import_step, kdir, "keys")
+check("N9b the retry stores the secret and does not send the config again", r is True and len(fd.nsets) == 1 and len(fd.nupdates) == n_up, f"{fd.nupdates} {out}")
+nfd()
+fd.timeout.add(("number-manager", "provider list"))
+r, out, err = krun(kcli()._provider_import_step, kdir, "update")
+check("N10 timeout of provider list -> failed", r is False and "timed out" in out, out)
+nfd(nvalues={"TELNYX_TOKEN": "line1\nline2"})
+c = kcli()
+r, out, err = krun(c._provider_import_step, kdir, "update")
+check("N11 a multi-line token is never sent: invalid, update goes on", r is True and c._keys_status == "attention" and not fd.nsets and "cannot be stored" in out, out)
+nfd(nvalues={"TELNYX_CONNECTION_ID": "  \t "})
+r, out, err = krun(kcli()._provider_import_step, kdir, "update")
+check("N11b a blank connection id counts as empty (advice, not a store)", r is True and not fd.nsets and "TELNYX_CONNECTION_ID is empty" in out, out)
+nfd(nvalues={"TELNYX_CONNECTION_ID": "  spaced-id  "})
+r, out, err = krun(kcli()._provider_import_step, kdir, "update")
+check("N11c values are stripped before they are sent", fd.nupdates and fd.nupdates[0][1]["connection_id"] == "spaced-id", str(fd.nupdates))
+nfd()
+orig_budget = m.PROVIDER_TOTAL_BUDGET
+m.PROVIDER_TOTAL_BUDGET = -1
+r, out, err = krun(kcli()._provider_import_step, kdir, "update")
+m.PROVIDER_TOTAL_BUDGET = orig_budget
+check("N12 exhausted time budget -> number-manager failed, no container call", r is False and "time budget exhausted" in out and not ncall_names(), out)
+
+# N13 pre-flight and --check
+nfd(masters=False)
+c = kcli()
+r, out, err = krun(c._provider_preflight_step, kdir, "update")
+check("N13 a Telnyx value in .env and no NUMBER_SECRET_ENCRYPTION_KEYS in the compose file -> pre-flight stops before any image changes",
+      r is False and c._keys_status == "preflight" and "number-manager: NUMBER_SECRET_ENCRYPTION_KEYS" in out
+      and "NUMBER_SECRET_ENCRYPTION_KEYS) from docker-compose.yml.dist" in out and not nleaks(out), out)
+nfd()
+r, out, err = krun(kcli()._provider_preflight_step, kdir, "update")
+check("N13b with the master key the pre-flight passes", r is True, out)
+nfd()
+r, out, err = krun(kcli()._provider_import_step, kdir, "keys", True)
+check("N14 --check: says what it would store, runs no container, writes nothing",
+      r is True and "number-manager: would store telnyx" in out and "number-manager: twilio" in out and not ncall_names() and not fd.nsets, out)
+
+# N15 status
+S = m.provider_number_row_state
+ST = {("number-manager", "telnyx")}
+check("N15 telnyx numbers row: stored set / both pending / id only incomplete / token only empty / nothing empty",
+      S("telnyx", set(), ST, set()) == "set" and S("telnyx", {"TELNYX_API_KEY", "TELNYX_CONNECTION_ID"}, set(), set()) == "pending"
+      and S("telnyx", {"TELNYX_CONNECTION_ID"}, set(), set()) == "incomplete" and S("telnyx", {"TELNYX_API_KEY"}, set(), set()) == "empty"
+      and S("telnyx", set(), set(), set()) == "empty")
+check("N15b telnyx row with the service not reachable falls back to .env (both -> set, else empty)",
+      S("telnyx", {"TELNYX_API_KEY", "TELNYX_CONNECTION_ID"}, set(), {"number-manager"}) == "set"
+      and S("telnyx", {"TELNYX_API_KEY"}, set(), {"number-manager"}) == "empty")
+check("N15c twilio row: stored set / .env only incomplete / nothing empty / unreachable empty",
+      S("twilio", set(), {("number-manager", "twilio")}, set()) == "set" and S("twilio", {"TWILIO_SID"}, set(), set()) == "incomplete"
+      and S("twilio", set(), set(), set()) == "empty" and S("twilio", {"TWILIO_SID", "TWILIO_API_KEY"}, set(), {"number-manager"}) == "empty")
+nfd()
+fd.ndb["telnyx"].update(source="db", has_secret=True)
+with mock.patch.object(m.subprocess, "run", inspect_up), mock.patch.object(m.shutil, "which", lambda x: "/usr/bin/docker"):
+    stored_q, down_q = REAL_STORED(kcli(), kdir)
+check("N15d status reads number-manager with provider list: a stored telnyx is reported, twilio (no secret) is not",
+      ("number-manager", "telnyx") in stored_q and ("number-manager", "twilio") not in stored_q and "number-manager" not in down_q
+      and any(c_[-2:] == ["provider", "list"] for c_ in fd.calls), f"{stored_q} {down_q}")
+nfd()
+fd.fail[("number-manager", "provider list")] = (1, "dial tcp: connection refused")
+with mock.patch.object(m.subprocess, "run", inspect_up), mock.patch.object(m.shutil, "which", lambda x: "/usr/bin/docker"):
+    stored_q, down_q = REAL_STORED(kcli(), kdir)
+check("N15e a failing number-manager is marked down", "number-manager" in down_q and ("number-manager", "telnyx") not in stored_q, f"{down_q}")
+
+# N16 parser, compose names
+check("N16 provider list parser: logs skipped, null config ok, missing fields -> None",
+      m.provider_parse_number_list('x\n[\n {"provider_name":"telnyx","credential_source":"none","config":null}\n]')["telnyx"]["config"] == {}
+      and m.provider_parse_number_list('[{"provider_name":"telnyx"}]') is None and m.provider_parse_number_list("[]") is None
+      and m.provider_parse_number_list("nothing") is None
+      and m.provider_parse_number_list('[{"provider_name":"telnyx","credential_source":"db","has_secret":true,"enabled":true,"usable":true,"config":{"connection_id":"c"}}]')["telnyx"]
+      == dict(source="db", has_secret=True, enabled=True, usable=True, config={"connection_id": "c"}))
+nenv = dist["number-manager"]["environment"]
+nnames = {e.split("=", 1)[0] for e in nenv} if isinstance(nenv, list) else set(nenv)
+nwant = {m.NUMBER_MASTER, m.NUMBER_TELNYX_SECRET, *(c_ for _k, c_ in m.NUMBER_TELNYX_CONFIG), *m.NUMBER_TWILIO_VARS}
+check("N17 docker-compose.yml.dist passes the number-manager master key and every compose name the installer reads", nwant <= nnames, str(nwant - nnames))
+check("N17b provider_compose_services keeps the number-manager names",
+      set(m.provider_compose_services({"services": {"number-manager": {"environment": {k_: "v" for k_ in nwant | {"OTHER"}}}}})["number-manager"]) == nwant)
+fd.reset()
 
 print()
 failed = [r for r in results if not r[1]]

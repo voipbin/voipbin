@@ -1924,6 +1924,28 @@ PROVIDER_MAX_VALUE_LEN = 512     # longest value the services accept
 PROVIDER_SOURCES_EMPTY = ("none", "env", "default")
 PROVIDER_SOURCE_STORED = "db"
 
+# number-manager keeps its provider credentials in the rows of number_providers
+# (an encrypted secret plus non-secret config), written with
+# `number-control provider ...`; it has no `config` commands, so it is handled
+# next to the table above, not in it. The names are the compose environment names
+# (what the container used to receive, filled from .env).
+NUMBER_SVC = "number-manager"
+NUMBER_CTL = "number-control"
+NUMBER_MASTER = "NUMBER_SECRET_ENCRYPTION_KEYS"
+NUMBER_TELNYX_SECRET = "TELNYX_TOKEN"
+NUMBER_TELNYX_CONFIG = (("connection_id", "TELNYX_CONNECTION_ID"), ("profile_id", "TELNYX_PROFILE_ID"))
+NUMBER_TWILIO_VARS = ("TWILIO_SID", "TWILIO_TOKEN")
+NUMBER_CONFIG_MAX_LEN = 256      # longest config value the service accepts
+# Only Telnyx is stored from .env. Twilio needs a trunk SID that .env cannot carry.
+NUMBER_ADVICE = {
+    "telnyx": "TELNYX_API_KEY is set but TELNYX_CONNECTION_ID is empty, so number search, release and update "
+              "cannot use Telnyx; put the connection id of your Telnyx account in .env and run "
+              "'sudo ./voipbin update keys' (ignore this if Telnyx is only used for SMS)",
+    "twilio": "TWILIO_SID / TWILIO_API_KEY in .env are not stored: Twilio also needs a trunk SID and the "
+              "account auth token (an API key SID starting with SK is not supported); see README.md "
+              "\"Provider keys\" to enter it",
+}
+
 
 def provider_mask(text, values):
     """Hide secret values (and anything longer than a short line) in text."""
@@ -1950,6 +1972,8 @@ def provider_classify(rc, err, ctl):
         return "ok"
     err = err or ""
     if re.search(r'unknown command "(config|migrate)"', err):
+        return "unsupported"
+    if ctl == NUMBER_CTL and re.search(r'unknown command "provider"', err):
         return "unsupported"
     if f"/app/bin/{ctl}" in err and re.search(r"no such file or directory|executable file not found", err):
         return "unsupported"
@@ -1983,6 +2007,7 @@ def provider_compose_services(data):
     wanted = {}
     for svc, _ctl, master, cname, _env, _key, _grp in PROVIDER_CONFIG_KEYS:
         wanted.setdefault(svc, set()).update((master, cname))
+    wanted[NUMBER_SVC] = {NUMBER_MASTER, NUMBER_TELNYX_SECRET, *(c for _k, c in NUMBER_TELNYX_CONFIG), *NUMBER_TWILIO_VARS}
     out = {}
     services = data.get("services") if isinstance(data, dict) else None
     if not isinstance(services, dict):
@@ -2035,6 +2060,96 @@ def provider_plan(compose):
             continue
         plan.setdefault(svc, []).extend(ents)
     return plan, notes
+
+
+def number_plan(compose):
+    """What to do for number-manager: (store, advice, invalid).
+
+    store: None or dict(secret, config) for the Telnyx provider (a token and a
+    connection id; the profile id when set). advice: provider names that .env
+    cannot store but the operator should hear about (a Telnyx token without a
+    connection id; any Twilio value). invalid: notes for values that cannot be
+    stored. Values are stripped; blank means empty."""
+    env = compose.get(NUMBER_SVC)
+    if env is None:
+        return None, [], []
+
+    def val(name):
+        return (env.get(name) or "").strip()
+
+    token = val(NUMBER_TELNYX_SECRET)
+    conf = {k: val(c) for k, c in NUMBER_TELNYX_CONFIG if val(c)}
+    store, advice, invalid = None, [], []
+    if token and conf.get("connection_id"):
+        values = [token] + list(conf.values())
+        if (any("\n" in v or "\r" in v for v in values) or len(token.encode()) > PROVIDER_MAX_VALUE_LEN
+                or any(len(v.encode()) > NUMBER_CONFIG_MAX_LEN for v in conf.values())):
+            invalid.append(("invalid", NUMBER_SVC, "telnyx",
+                            "a value of TELNYX_API_KEY, TELNYX_CONNECTION_ID or TELNYX_PROFILE_ID cannot be stored "
+                            "(more than one line or too long); fix or empty it in .env"))
+        else:
+            store = dict(secret=token, config=conf)
+    elif token:
+        advice.append("telnyx")
+    if any(val(v) for v in NUMBER_TWILIO_VARS):
+        advice.append("twilio")
+    return store, advice, invalid
+
+
+def provider_parse_number_list(out):
+    """{provider: dict(source, has_secret, enabled, usable, config)} from the
+    JSON array `number-control provider list` prints, or None.
+
+    Lines before the array (logs) are ignored. Every item must be an object with
+    a string provider_name and credential_source; config may be null."""
+    lines = (out or "").splitlines()
+    for i, line in enumerate(lines):
+        if not line.lstrip().startswith("["):
+            continue
+        try:
+            data, _ = json.JSONDecoder().raw_decode("\n".join(lines[i:]).lstrip())
+        except ValueError:
+            continue
+        if not (isinstance(data, list) and data and all(
+                isinstance(r, dict) and isinstance(r.get("provider_name"), str)
+                and isinstance(r.get("credential_source"), str) for r in data)):
+            continue
+        rows = {}
+        for r in data:
+            cfg = r.get("config")
+            rows[r["provider_name"]] = dict(
+                source=r["credential_source"], has_secret=bool(r.get("has_secret")),
+                enabled=bool(r.get("enabled")), usable=bool(r.get("usable")),
+                config={k: v for k, v in cfg.items() if isinstance(k, str) and isinstance(v, str)} if isinstance(cfg, dict) else {})
+        return rows
+    return None
+
+
+def number_row_stored(row):
+    """A provider row the installer treats as stored: a secret in the database."""
+    return bool(row) and row["source"] == PROVIDER_SOURCE_STORED and row["has_secret"]
+
+
+def provider_number_row_state(provider, env_set, stored, down):
+    """State of a number-manager status row: set | pending | incomplete | empty.
+
+    env_set: the .env variables with a value; stored: {(service, name)}
+    readable in the database; down: services that could not be asked (Twilio is
+    then empty: the installer never stores it; Telnyx falls back to .env)."""
+    if provider == "twilio":
+        if NUMBER_SVC in down:
+            return "empty"
+        if (NUMBER_SVC, "twilio") in stored:
+            return "set"
+        return "incomplete" if env_set & {"TWILIO_SID", "TWILIO_API_KEY"} else "empty"
+    token, conn = "TELNYX_API_KEY" in env_set, "TELNYX_CONNECTION_ID" in env_set
+    if NUMBER_SVC in down:
+        return "set" if token and conn else "empty"
+    if (NUMBER_SVC, "telnyx") in stored:
+        return "set"
+    if token and conn:
+        return "pending"
+    return "incomplete" if conn else "empty"
 
 
 def provider_row_state(group_vars, env_set, stored, down):
@@ -3096,7 +3211,7 @@ class VoIPBinCLI:
             "install": ("Guided install (checks, configuration, host setup, start, admin account)", "install [--yes] [--admin-email <email>] [--admin-password-file <path>]\n          [--mode internal|external --domain <d> --tls byo --cert <f> --key <f>]\n          [--web-reverse-proxy] [--resume] [--reset-admin-password]\n  install                     Interactive: asks before changing the host and for the admin email\n  install --yes --admin-email <e> --admin-password-file <path>\n                              Non-interactive; the generated admin password is written to <path> (0600,\n                              must not exist; a relative path is relative to this directory)\n  install --resume            Continue an install that stopped after the configuration step\n  --reset-admin-password      Set a new password when the admin account already exists\n  Last line: VOIPBIN_INSTALL: status=ok|error ...  Exit code 0 ok, 1 user/verification error, 2 environment error"),
             "init": ("Generate configuration only (.env, certificates)", "init [init.sh options]\n  Runs scripts/init.sh with the given options (for example --yes, --mode external ...)\n  'install' runs this for you."),
             "clean": ("Remove containers, data or generated files", "clean [options] [--force]\n  clean --containers  Remove app containers (keeps db/redis/mq/dns)\n  clean --volumes     Remove docker volumes (database, recordings, redis, rabbitmq)\n  clean --images      Remove docker images\n  clean --network     Teardown VoIP network interfaces\n  clean --dns         Remove DNS configuration\n  clean --purge       Remove generated files (.env, certs, configs, docker-compose.yml, versions.lock)\n  clean --all         All of the above (full reset)\n  --volumes/--images/--purge/--all list what will be removed and ask for 'yes';\n  --force skips the question (required when not run from a terminal)"),
-            "update": ("Update the install", "update [subcommand] [--check] [--skip-backup]\n  update               Pull latest Docker images + restart services\n                       (pinned repo: pulls pinned digests only; real upgrades = 'update all')\n  update --check       Dry-run: show available image updates\n  update scripts       Update scripts/configs from GitHub (with backup)\n  update scripts --check  Dry-run: show what would change\n  update all           Full upgrade. Pinned repo: backup -> git pull -> compose pull\n                       -> migrate -> store provider keys -> up -d -> verify (safe-ordered)\n  update all --skip-backup  Skip the automatic pre-upgrade backup (pinned repo)\n  update all --check   Dry-run: describe the upgrade plan, change nothing\n  update keys          Store the provider keys of .env that are not stored yet (the services read\n                       them from the database); safe to repeat, never overwrites a stored key\n  update keys --check  Show which keys would be stored, change nothing"),
+            "update": ("Update the install", "update [subcommand] [--check] [--skip-backup]\n  update               Pull latest Docker images + restart services\n                       (pinned repo: pulls pinned digests only; real upgrades = 'update all')\n  update --check       Dry-run: show available image updates\n  update scripts       Update scripts/configs from GitHub (with backup)\n  update scripts --check  Dry-run: show what would change\n  update all           Full upgrade. Pinned repo: backup -> git pull -> compose pull\n                       -> migrate -> store provider keys -> up -d -> verify (safe-ordered)\n  update all --skip-backup  Skip the automatic pre-upgrade backup (pinned repo)\n  update all --check   Dry-run: describe the upgrade plan, change nothing\n  update keys          Store the provider keys of .env that are not stored yet (the services read\n                       them from the database, number-manager its Telnyx account); safe to repeat,\n                       never overwrites a stored key\n  update keys --check  Show which keys would be stored, change nothing"),
             "backup": ("Create a full data backup", "backup\n  Dumps MySQL (all databases), archives recording volumes, and copies\n  .env/certs/versions.lock into backups/<timestamp>/ (chmod 700/600).\n  Runs while services are up (mysqldump --single-transaction).\n  Retention: last 7 backups are kept.\n  NOTE: backups contain your full .env secrets in plaintext - copy them\n  off-host (rsync/rclone) for real disaster recovery."),
             "restore": ("Restore data from a backup (DESTRUCTIVE)", "restore <timestamp> --force\n  restore              List available backups\n  restore <ts> --force Restore MySQL dump + recordings + config from backups/<ts>/\n  DESTRUCTIVE: overwrites current DATA. Requires --force AND all services\n  stopped except db and redis. Flushes Redis after import.\n  (restore = DATA from backups/. rollback = image override history, unpinned repos only.)"),
             "rollback": ("Rollback to previous version", "rollback [N]\n  rollback             Interactive version selection\n  rollback N           Restore version by number (e.g., rollback 2)\n  rollback --list      Show available versions\n  NOTE: rollback replays docker-compose.override.yml IMAGE snapshots and only\n  applies to UNPINNED repos (refused when versions.lock exists).\n  For DATA restore use 'restore <ts>' instead."),
@@ -3348,12 +3463,19 @@ class VoIPBinCLI:
             gcp_state = "set"
         rows = [("GOOGLE_APPLICATION_CREDENTIALS", gcp_state)]
         env_set = {v for keys in OPTIONAL_PROVIDER_KEYS for v in keys if get_env_var(v)}
+        if get_env_var("TELNYX_CONNECTION_ID"):
+            env_set.add("TELNYX_CONNECTION_ID")
         try:
             stored, down = self._provider_stored(self.config.get("project_dir", "."))
         except Exception:
-            stored, down = set(), {r[0] for r in PROVIDER_CONFIG_KEYS}
+            stored, down = set(), {r[0] for r in PROVIDER_CONFIG_KEYS} | {NUMBER_SVC}
         for keys in OPTIONAL_PROVIDER_KEYS:
+            if keys == ("TWILIO_SID", "TWILIO_API_KEY"):
+                rows.append((" + ".join(keys), provider_number_row_state("twilio", env_set, stored, down)))
+                continue
             rows.append((" + ".join(keys), provider_row_state(keys, env_set, stored, down)))
+            if keys == ("TELNYX_API_KEY",):
+                rows.append(("TELNYX_CONNECTION_ID (numbers)", provider_number_row_state("telnyx", env_set, stored, down)))
         for label, state in rows:
             icon = green('●') if state == "set" else (yellow('◐') if state in ("pending", "incomplete") else gray('○'))
             shown = green(state) if state == "set" else (yellow(state) if state in ("pending", "incomplete") else gray(state))
@@ -7081,6 +7203,9 @@ Type 'registrar <subcommand> help' for more details.
             if not compose.get(svc, {}).get(master):
                 in_env = bool(read_env_file_var(project_dir, master))
                 problems.append((svc, master, in_env))
+        nstore, _nadvice, _ninvalid = number_plan(compose)
+        if nstore and not compose.get(NUMBER_SVC, {}).get(NUMBER_MASTER):
+            problems.append((NUMBER_SVC, NUMBER_MASTER, bool(read_env_file_var(project_dir, NUMBER_MASTER))))
         if not problems:
             return True
         self._keys_status = "preflight"
@@ -7096,7 +7221,7 @@ Type 'registrar <subcommand> help' for more details.
         fix = {"update": "sudo ./voipbin update all", "install": "sudo ./voipbin install --resume",
                "keys": "sudo ./voipbin update keys"}.get(mode, "sudo ./voipbin update keys")
         print("  Fix it, then run the command again (safe to repeat):")
-        print("    1. docker-compose.yml: copy the *_CONFIG_ENCRYPTION_KEYS lines from docker-compose.yml.dist")
+        print("    1. docker-compose.yml: copy the encryption key lines (*_CONFIG_ENCRYPTION_KEYS, NUMBER_SECRET_ENCRYPTION_KEYS) from docker-compose.yml.dist")
         print("    2. .env: add the missing keys with the loop in README.md (\"Adopting the encryption keys\")")
         print("       Do not run init.sh --yes or --force-reinit: they regenerate the database passwords.")
         print(f"    3. {fix}")
@@ -7127,20 +7252,26 @@ Type 'registrar <subcommand> help' for more details.
             print("    Fix docker-compose.yml / .env (docker compose config must work), then run again.")
             return False
         plan, notes = provider_plan(compose)
+        nstore, nadvice, ninvalid = number_plan(compose)
+        notes = list(notes) + ninvalid
         res = dict(stored=[], already=[], skipped=[], unsupported=[], invalid=[], attention=[], failed=[], half=[])
         for kind, svc, key, why in notes:
             res[kind].append((svc, key, why))
         values = {}
         for svc, ents in plan.items():
             values[svc] = [e["value"] for e in ents]
-        if not plan and not notes:
+        if not plan and not notes and not nstore and not nadvice:
             print("  No provider keys to store (none of the provider variables in .env has a value).")
             return True
         if check_only:
             for svc, ents in plan.items():
                 print(f"  {svc}: would store {', '.join(e['key'] for e in ents)} (when not stored yet)")
+            if nstore:
+                print(f"  {NUMBER_SVC}: would store telnyx (when not stored yet)")
             for kind, svc, key, why in notes:
                 print(f"  {yellow('!')} {svc}: {key}: {why}")
+            for a in nadvice:
+                print(f"  {yellow('!')} {NUMBER_SVC}: {a}: {NUMBER_ADVICE[a]} (if not stored yet)")
             return True
 
         deadline = time.monotonic() + PROVIDER_TOTAL_BUDGET
@@ -7201,6 +7332,9 @@ Type 'registrar <subcommand> help' for more details.
                     state = ", ".join(f"{m['key']}={x}" for m, x in zip(members, srcs))
                     res["attention"] += [(svc, m["key"], f"stored state is not usable: {state}") for m in members]
 
+        if nstore or nadvice:
+            self._provider_import_number(project_dir, nstore, nadvice, res, deadline)
+
         self._provider_report(res, mode)
         if res["failed"]:
             self._keys_status = "failed"
@@ -7215,6 +7349,96 @@ Type 'registrar <subcommand> help' for more details.
         if mode == "keys" and (res["attention"] or res["invalid"] or res["unsupported"]):
             return False
         return True
+
+    def _provider_import_number(self, project_dir, store, advice, res, deadline):
+        """number-manager: store the Telnyx token and connection id of .env in the
+        `telnyx` provider row when that provider has no stored secret yet.
+
+        The order is fixed by the service: the config first (the row is created
+        with its defaults), then the secret, which is refused without the
+        required config. Only the non-secret config goes on argv; the token goes
+        on stdin. A provider that already has a stored secret is never touched,
+        and a row whose config differs from .env is left alone. `advice` names
+        providers .env cannot store: they are printed unless stored, and when
+        there is nothing to store a failure to ask only says "not verified"."""
+        svc, ctl, key = NUMBER_SVC, NUMBER_CTL, "telnyx"
+        secrets = ([store["secret"]] + list(store["config"].values())) if store else []
+
+        def left():
+            return int(deadline - time.monotonic())
+
+        def advise(rows):
+            for a in advice:
+                if rows is None:
+                    res["skipped"].append((svc, a, NUMBER_ADVICE[a] + " (not verified against the database)"))
+                elif not number_row_stored(rows.get(a)):
+                    res["skipped"].append((svc, a, NUMBER_ADVICE[a]))
+
+        if time.monotonic() > deadline:
+            if store:
+                res["failed"].append((svc, key, "time budget exhausted"))
+            else:
+                advise(None)
+            return
+        rc, _out, errtxt = self._provider_run(project_dir, svc, ctl, ["migrate", "up"],
+                                              timeout=min(PROVIDER_CALL_TIMEOUT, left()))
+        verdict = provider_classify(rc, errtxt, ctl)
+        out = ""
+        if verdict == "ok":
+            rc, out, errtxt = self._provider_run(project_dir, svc, ctl, ["provider", "list"],
+                                                 timeout=min(PROVIDER_CALL_TIMEOUT, max(1, left())))
+            verdict = provider_classify(rc, errtxt, ctl)
+        rows = provider_parse_number_list(out) if verdict == "ok" else None
+        if not store:
+            advise(rows)
+            return
+        if verdict == "unsupported":
+            res["unsupported"].append((svc, key, "image has no provider commands (old image)"))
+            advise(None)
+            return
+        if verdict == "failed":
+            res["failed"].append((svc, key, provider_last_line(errtxt, secrets) or f"exit {rc}"))
+            return
+        if rows is None:
+            res["failed"].append((svc, key, "provider list did not print the expected JSON"))
+            return
+        advise(rows)
+        row = rows.get(key)
+        if row is None:
+            res["skipped"].append((svc, key, "this image does not list the provider"))
+        elif number_row_stored(row):
+            if row["enabled"] and not row["usable"]:
+                res["attention"].append((svc, key, "stored, but not usable (is a required config key missing?)"))
+            else:
+                res["already"].append((svc, key, ""))
+        elif row["source"] not in ("none",):
+            res["attention"].append((svc, key, f"stored state is not usable: credential_source={row['source']}"))
+        else:
+            differ = sorted(k for k, v in store["config"].items() if row["config"].get(k) and row["config"][k] != v)
+            if differ:
+                res["attention"].append((svc, key, "the row already has a different " + ", ".join(differ) +
+                                         " than .env; the .env token was not paired with it"))
+                return
+            send = {k: v for k, v in store["config"].items() if not row["config"].get(k)}
+            if send:
+                args = ["provider", "update", "--name", key, "--actor-id", PROVIDER_ACTOR_ID]
+                for k, v in send.items():
+                    args += ["--config", f"{k}={v}"]
+                rc, _o, errtxt = self._provider_run(project_dir, svc, ctl, args,
+                                                    timeout=min(PROVIDER_CALL_TIMEOUT, max(1, left())))
+                if rc != 0:
+                    res["failed"].append((svc, key, provider_last_line(errtxt, secrets) or f"exit {rc}"))
+                    return
+            rc, _o, errtxt = self._provider_run(project_dir, svc, ctl,
+                                                ["provider", "secret", "set", "--name", key, "--actor-id", PROVIDER_ACTOR_ID],
+                                                value=store["secret"], timeout=min(PROVIDER_CALL_TIMEOUT, max(1, left())))
+            if rc == 0:
+                res["stored"].append((svc, key, ""))
+            else:
+                why = provider_last_line(errtxt, secrets) or f"exit {rc}"
+                if send:
+                    why = "the config was stored, the secret was not; run 'sudo ./voipbin update keys' again (safe to repeat): " + why
+                res["failed"].append((svc, key, why))
 
     def _provider_report(self, res, mode):
         icons = dict(stored=green("\u2713"), already=green("\u2713"), skipped=yellow("!"), unsupported=yellow("!"),
@@ -7231,12 +7455,19 @@ Type 'registrar <subcommand> help' for more details.
 
         def replace_cmds(items):
             print("  Replace it with the new value in NEW_VALUE (keep the value out of your shell history):")
-            for svc, key, _why in items:
+            for svc, key, why in items:
+                if svc == NUMBER_SVC:
+                    run = f"docker compose run --rm -T --no-deps --entrypoint /app/bin/{NUMBER_CTL} {svc} provider"
+                    if "different" in why or "not usable" in why:
+                        print(f"    {run} update --name {key} --actor-id {PROVIDER_ACTOR_ID} --config connection_id=<CONNECTION_ID>")
+                        print("    (check first that the token belongs to the Telnyx account of that connection id)")
+                    print(f"    printf '%s' \"$NEW_VALUE\" | {run} secret set --name {key} --actor-id {PROVIDER_ACTOR_ID}")
+                    continue
                 print(f"    printf '%s' \"$NEW_VALUE\" | docker compose run --rm -T --no-deps --entrypoint "
                       f"/app/bin/{ctl_of.get((svc, key), '<control>')} {svc} config set --key {key} --actor-id {PROVIDER_ACTOR_ID}")
 
         if res["attention"]:
-            print("  A stored value that cannot be used is never overwritten automatically.")
+            print("  A stored value that cannot be used, or that does not match .env, is never overwritten automatically.")
             replace_cmds(res["attention"])
         if res["invalid"]:
             print("  A value in .env that cannot be stored is skipped; fix or empty it in .env and run 'sudo ./voipbin update keys'.")
@@ -7254,11 +7485,21 @@ Type 'registrar <subcommand> help' for more details.
             replace_cmds(sorted(pairs))
         if res["failed"]:
             print("  Nothing was lost: keys already stored stay stored. Fix the cause and run the command again.")
-        if res["stored"] or res["already"]:
+        if any(x[0] != NUMBER_SVC for x in res["stored"] + res["already"]):
             print("  From now on the database holds these keys: rotate one with '<service>-control config set' or the")
             print("  admin API; a change in .env alone has no effect, and a key cleared in the database comes back")
             print("  on the next run while .env still has a value. OPENAI_API_KEY, GOOGLE_API_KEY and ELEVENLABS_API_KEY are")
             print("  also read from .env by pipecat: replace them in the database and in .env.")
+        if any(x[0] == NUMBER_SVC for x in res["stored"] + res["already"]):
+            print("  number-manager now holds the Telnyx account in the database: rotate the token with")
+            print("  'number-control provider secret set --name telnyx' (value on stdin) or the admin API; a change in .env")
+            print("  alone has no effect. message-manager stores TELNYX_API_KEY separately, so rotate it there too.")
+        if any(x[0] == NUMBER_SVC and x[1] == "twilio" for x in res["skipped"]):
+            run = f"docker compose run --rm -T --no-deps --entrypoint /app/bin/{NUMBER_CTL} {NUMBER_SVC} provider"
+            print("  To use Twilio for phone numbers, enter its account and trunk, then the account auth token (value on stdin):")
+            print(f"    {run} update --name twilio --actor-id {PROVIDER_ACTOR_ID} --config sid=<ACCOUNT_SID> --config trunk_sid=<TRUNK_SID>")
+            print(f"    printf '%s' \"$AUTH_TOKEN\" | {run} secret set --name twilio --actor-id {PROVIDER_ACTOR_ID}")
+            print("  Twilio stays disabled until you enable it in the admin API.")
 
     def _provider_keys_unpinned(self, project_dir):
         """Key step of the unpinned `update` path (after `up -d`). The new images
@@ -7276,7 +7517,7 @@ Type 'registrar <subcommand> help' for more details.
         For `status`: only asks when the database container runs, one throwaway
         control call per service, in parallel; any failure marks the service
         as down so the row falls back to .env."""
-        services = sorted({r[0] for r in PROVIDER_CONFIG_KEYS})
+        services = sorted({r[0] for r in PROVIDER_CONFIG_KEYS}) + [NUMBER_SVC]
         db = self.config.get("db_container", "voipbin-db")
         try:
             up = shutil.which("docker") and subprocess.run(
@@ -7287,8 +7528,17 @@ Type 'registrar <subcommand> help' for more details.
         if not up:
             return set(), set(services)
         ctl_of = {r[0]: r[1] for r in PROVIDER_CONFIG_KEYS}
+        ctl_of[NUMBER_SVC] = NUMBER_CTL
 
         def ask(svc):
+            if svc == NUMBER_SVC:
+                rc, out, err = self._provider_run(project_dir, svc, NUMBER_CTL, ["provider", "list"], tag="keys-status",
+                                                  timeout=PROVIDER_STATUS_TIMEOUT)
+                rows = provider_parse_number_list(out) if rc == 0 else None
+                if rows is None:
+                    return svc, None
+                held = {k: True for k, r in rows.items() if number_row_stored(r)}
+                return svc, ({k: PROVIDER_SOURCE_STORED for k in held}, held)
             rc, out, err = self._provider_run(project_dir, svc, ctl_of[svc], ["config", "list"], tag="keys-status",
                                               timeout=PROVIDER_STATUS_TIMEOUT)
             parsed = provider_parse_list(out) if rc == 0 else None
@@ -7366,7 +7616,8 @@ Type 'registrar <subcommand> help' for more details.
             print("  3. docker compose pull     - fetch the new pinned digests")
             print("  4. scripts/migrate.sh      - database migrations at the pinned schema revision (abort on failure)")
             print("  4b. provider keys          - store the provider keys of .env that are not stored yet into the")
-            print("     services' stored configs (new images, before they start; abort on failure, nothing lost)")
+            print("     services' stored configs and the Telnyx account into number-manager (new images, before they")
+            print("     start; abort on failure, nothing lost)")
             print("     (before step 2b the live docker-compose.yml is checked for the master keys it needs)")
             print("  Exit codes: 0 ok, 2 busy, 10 backup, 11 scripts, 12 unpinned, 13 sync, 14 pull,")
             print("              15 migrate, 16 up, 17-19 verify (containers / ping / both), 20 provider keys")

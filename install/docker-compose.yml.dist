@@ -1049,7 +1049,7 @@ services:
     command: ./message-manager
 
   number-manager:
-    image: voipbin/bin-number-manager@sha256:b18a32b5a8084a802ed9fd0213b0342990e4f3ff0df9a279d7df76104bae6c37
+    image: voipbin/bin-number-manager@sha256:6ba6169f4ed18715de2868b25b72cd54c10263fdd3fe34d87bbf14c974db435c
     logging: *default-logging
     healthcheck:
       test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://127.0.0.1:2112/metrics"]
@@ -1073,6 +1073,14 @@ services:
       - REDIS_DATABASE=1
       - PROMETHEUS_ENDPOINT=/metrics
       - PROMETHEUS_LISTEN_ADDRESS=:2112
+      # Encryption key for the provider secrets stored in the database. init.sh
+      # generates the key at install time and writes it to .env only. Without a
+      # valid key no provider can be used and a secret cannot be stored.
+      # Back up .env.
+      - NUMBER_SECRET_ENCRYPTION_KEYS=${NUMBER_SECRET_ENCRYPTION_KEYS:-}
+      # The five lines below are no longer read by the service (the provider
+      # credentials are stored settings in the database). Kept as the values
+      # `voipbin update keys` copies from, and for a rollback to an older image.
       - TWILIO_SID=${TWILIO_SID:-}
       - TWILIO_TOKEN=${TWILIO_API_KEY:-}
       - TELNYX_CONNECTION_ID=${TELNYX_CONNECTION_ID:-}

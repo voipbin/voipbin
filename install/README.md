@@ -249,10 +249,11 @@ endpoints. The stored configs need the newer images of ai-manager,
 email-manager, message-manager, transcribe-manager, tts-manager and
 api-manager; `sudo ./voipbin update all` brings their digests from
 `versions.lock.dist` into your `docker-compose.yml`, so run it after the steps
-below. These five services read their provider keys from the database only, so
-`update all` stops before it changes any image when a service that has a key in
-`.env` is not given its master key (see [Provider keys](#provider-keys)). The
-other services keep their current images.
+below. These five services, and number-manager for its Telnyx account, read
+their provider credentials from the database only, so `update all` stops before
+it changes any image when a service that has a key in `.env` is not given its
+master key (see [Provider keys](#provider-keys)). The other services keep their
+current images, except number-manager, whose image moves too.
 
 Do **not** run `init.sh --yes` or `init.sh --force-reinit` to get the new
 keys: they regenerate the database and RabbitMQ passwords, which no longer
@@ -270,12 +271,13 @@ match your existing volumes.
    - `tts-manager`: `TTS_CONFIG_ENCRYPTION_KEYS`.
    - `transcribe-manager`: `TRANSCRIBE_CONFIG_ENCRYPTION_KEYS`.
    - `message-manager`: `MESSAGE_CONFIG_ENCRYPTION_KEYS`.
-2. Create the seven encryption keys in `.env` if they are not there yet (a line
+   - `number-manager`: `NUMBER_SECRET_ENCRYPTION_KEYS`.
+2. Create the eight encryption keys in `.env` if they are not there yet (a line
    with an empty or quoted-empty value counts as not there). This appends
    them without printing them:
 
    ```bash
-   for k in MCP_SECRET_ENCRYPTION_KEYS ENGINE_BASE_KEY_ENCRYPTION_KEYS AI_CONFIG_ENCRYPTION_KEYS EMAIL_CONFIG_ENCRYPTION_KEYS TTS_CONFIG_ENCRYPTION_KEYS TRANSCRIBE_CONFIG_ENCRYPTION_KEYS MESSAGE_CONFIG_ENCRYPTION_KEYS; do
+   for k in MCP_SECRET_ENCRYPTION_KEYS ENGINE_BASE_KEY_ENCRYPTION_KEYS AI_CONFIG_ENCRYPTION_KEYS EMAIL_CONFIG_ENCRYPTION_KEYS TTS_CONFIG_ENCRYPTION_KEYS TRANSCRIBE_CONFIG_ENCRYPTION_KEYS MESSAGE_CONFIG_ENCRYPTION_KEYS NUMBER_SECRET_ENCRYPTION_KEYS; do
      grep -Eq "^${k}=[^[:space:]\"']" .env || printf '\n%s=1:%s\n' "$k" "$(openssl rand -base64 32)" >> .env
    done
    ```
@@ -290,9 +292,11 @@ entered again. A malformed `MCP_SECRET_ENCRYPTION_KEYS` or
 empty config key (`AI_CONFIG_ENCRYPTION_KEYS`, `EMAIL_CONFIG_ENCRYPTION_KEYS`,
 `TTS_CONFIG_ENCRYPTION_KEYS`, `TRANSCRIBE_CONFIG_ENCRYPTION_KEYS` or
 `MESSAGE_CONFIG_ENCRYPTION_KEYS`) does not stop its service, but stored config
-secrets cannot be saved until it is fixed. The format is
+secrets cannot be saved until it is fixed; a malformed or empty
+`NUMBER_SECRET_ENCRYPTION_KEYS` does not stop number-manager either, but no
+phone number provider can be used and no provider secret can be stored. The format is
 `<version>:<base64 of 32 random bytes>`, comma separated for several versions.
-A fresh install gets all seven keys from `init.sh`, and re-running `init.sh`
+A fresh install gets all eight keys from `init.sh`, and re-running `init.sh`
 keeps the values already in `.env`.
 
 #### Provider keys
@@ -338,8 +342,9 @@ What this means for you:
   well when you want a key gone for good.
 - **Two keys live in two places.** `OPENAI_API_KEY`, `GOOGLE_API_KEY` and
   `ELEVENLABS_API_KEY` are also read from `.env` by pipecat-manager and
-  pipecat-script-runner, and `TELNYX_API_KEY` is also the number service's
-  token. Replace such a key in the database and in `.env`.
+  pipecat-script-runner. Replace such a key in the database and in `.env`.
+  `TELNYX_API_KEY` is stored by message-manager (SMS) and, separately, by
+  number-manager (phone numbers, below): rotate it in both.
 - **Before `update all` an existing install needs the master keys** in `.env`
   and in `docker-compose.yml` (the steps above). Without them `update all`
   stops (code 20, stage `keys-preflight`) before it changes any image; add
@@ -361,7 +366,67 @@ What this means for you:
   `pending` (in `.env`, not stored yet), `incomplete` (only one key of the AWS
   pair is in `.env`) or `empty`. The AWS row is `set` when the pair is stored
   in tts-manager or in transcribe-manager. When the database cannot be asked
-  (stack down), the row falls back to what `.env` has.
+  (stack down), the row falls back to what `.env` has. Two rows show the phone
+  numbers of number-manager: `TELNYX_CONNECTION_ID (numbers)` is `set` when the
+  Telnyx provider has a stored secret, `pending` when `TELNYX_API_KEY` and
+  `TELNYX_CONNECTION_ID` are in `.env` and not stored yet, `incomplete` with a
+  connection id and no token; `TWILIO_SID + TWILIO_API_KEY` is `set` when Twilio
+  is stored and `incomplete` when only `.env` has it (see below). A token
+  without a connection id shows `empty` on the numbers row (it is the SMS-only
+  setup). With the stack down the Telnyx row shows what `.env` has, which is not
+  a check of the database, and the Twilio row shows `empty` (nothing of it is
+  ever stored from `.env`).
+
+#### Phone numbers (number-manager)
+
+number-manager keeps the account it buys, searches, releases and updates phone
+numbers with in the database too: the `telnyx` row of its providers holds an
+encrypted secret (the Telnyx API key) and the non-secret `connection_id` and
+optional `profile_id`. The secret is encrypted with `NUMBER_SECRET_ENCRYPTION_KEYS`
+(generated by `init.sh`, see above). The service no longer reads `TELNYX_*` or
+`TWILIO_*` from its environment. `sudo ./voipbin install`, `update all` and
+`update keys` copy the Telnyx account of `.env` into that row:
+
+| `.env` variable | Stored as |
+|---|---|
+| `TELNYX_API_KEY` | the secret of the `telnyx` provider |
+| `TELNYX_CONNECTION_ID` | `connection_id` (required for a stored secret) |
+| `TELNYX_PROFILE_ID` | `profile_id` (optional) |
+
+- It only fills a provider that has no stored secret yet. A provider with a
+  stored secret is never touched (also not when you disabled it). When the row
+  already holds a different connection id than `.env`, the installer leaves it
+  alone and prints the commands, so a token is never paired with another
+  account's connection.
+- The API key goes in on standard input only. The connection and profile ids are
+  not secret and are passed as arguments of `number-control provider update`.
+- `update all` stores before the containers are recreated, so number purchase,
+  search and release have no gap. The unpinned `update` path (no
+  `versions.lock`) stores after the restart and only warns when it fails.
+- **Rotate** with
+  `docker compose exec -T number-manager /app/bin/number-control provider secret set --name telnyx --actor-id <uuid>`
+  (value on standard input) or the admin API; a change in `.env` alone does not
+  reach the stored key. `provider secret delete` leaves the provider without a
+  secret and does **not** go back to the environment; a value still in `.env`
+  is stored again by the next `update all` or `update keys`.
+- **A Telnyx key without `TELNYX_CONNECTION_ID`** cannot be stored (the service
+  refuses a secret without it), so number search, release and update cannot use
+  Telnyx. If you use Telnyx for SMS only, ignore the note the installer prints
+  for it; otherwise put the connection id of your Telnyx account in `.env` and
+  run `sudo ./voipbin update keys`.
+- **Twilio is not copied from `.env`.** The service needs the account SID, a
+  trunk SID and the account auth token (an API key SID starting with `SK` is not
+  supported). Enter them with `number-control provider update --name twilio
+  --actor-id <uuid> --config sid=<account SID> --config trunk_sid=<trunk SID>`
+  and then `provider secret set --name twilio --actor-id <uuid>` (token on
+  standard input); Twilio stays disabled until you enable it with the admin API.
+  The previously pinned number-manager image could not use Twilio, so no
+  existing Twilio setup is lost.
+- Only non-secret values reach a command line. The API key never does.
+- On a fresh install the number-manager log can show "No provider is usable for a
+  number purchase" once at its start: the installer stores the account right
+  after the containers start. The providers are read from the database on use,
+  so the warning goes away at the next start and nothing has to be restarted.
 
 #### Exit codes of `update all`
 
@@ -592,10 +657,11 @@ of its own).
    `DATABASE_ASTERISK_PASSWORD`, and `POSTGRES_PASSWORD` with brand-new
    random values (`AMI_PASSWORD` is the one exception since VOIP-1329 — it's
    always the fixed `asterisk`, never regenerated; an existing valid
-   value of each of the seven encryption keys (`MCP_SECRET_ENCRYPTION_KEYS`,
+   value of each of the eight encryption keys (`MCP_SECRET_ENCRYPTION_KEYS`,
    `ENGINE_BASE_KEY_ENCRYPTION_KEYS`, `AI_CONFIG_ENCRYPTION_KEYS`,
    `EMAIL_CONFIG_ENCRYPTION_KEYS`, `TTS_CONFIG_ENCRYPTION_KEYS`,
-   `TRANSCRIBE_CONFIG_ENCRYPTION_KEYS`, `MESSAGE_CONFIG_ENCRYPTION_KEYS`) is also kept).
+   `TRANSCRIBE_CONFIG_ENCRYPTION_KEYS`, `MESSAGE_CONFIG_ENCRYPTION_KEYS`,
+   `NUMBER_SECRET_ENCRYPTION_KEYS`) is also kept).
    Those new values will
    not match the credentials already baked into your existing database and
    RabbitMQ Docker volumes, so your services will fail to authenticate
@@ -1146,7 +1212,7 @@ mkcert -install
 > | Admin Account (opt-in, `VOIPBIN_SANDBOX_DEV_SEED=true`) | `admin@localhost` / `admin@localhost` |
 > | Extensions (opt-in, `VOIPBIN_SANDBOX_DEV_SEED=true`) | `1000` / `pass1000`, `2000` / `pass2000`, `3000` / `pass3000` |
 > | JWT Secret | Auto-generated in `.env` |
-> | Stored-secret encryption keys (ai-manager, email-manager, tts-manager, transcribe-manager, message-manager) | Randomly generated per install, in `.env` (`MCP_SECRET_ENCRYPTION_KEYS`, `ENGINE_BASE_KEY_ENCRYPTION_KEYS`, `AI_CONFIG_ENCRYPTION_KEYS`, `EMAIL_CONFIG_ENCRYPTION_KEYS`, `TTS_CONFIG_ENCRYPTION_KEYS`, `TRANSCRIBE_CONFIG_ENCRYPTION_KEYS`, `MESSAGE_CONFIG_ENCRYPTION_KEYS`). Back up `.env`: a lost key cannot be recovered |
+> | Stored-secret encryption keys (ai-manager, email-manager, tts-manager, transcribe-manager, message-manager, number-manager) | Randomly generated per install, in `.env` (`MCP_SECRET_ENCRYPTION_KEYS`, `ENGINE_BASE_KEY_ENCRYPTION_KEYS`, `AI_CONFIG_ENCRYPTION_KEYS`, `EMAIL_CONFIG_ENCRYPTION_KEYS`, `TTS_CONFIG_ENCRYPTION_KEYS`, `TRANSCRIBE_CONFIG_ENCRYPTION_KEYS`, `MESSAGE_CONFIG_ENCRYPTION_KEYS`, `NUMBER_SECRET_ENCRYPTION_KEYS`). Back up `.env`: a lost key cannot be recovered |
 >
 > The admin/extension credentials above are a dev/test seed account, off by default. It is only
 > created if you explicitly set `VOIPBIN_SANDBOX_DEV_SEED=true` in `.env`. Never set this on an
@@ -1735,9 +1801,9 @@ Add API keys to your `.env` file to enable telephony and messaging features:
 
 ```bash
 # Telephony Providers (for PSTN connectivity)
-TWILIO_SID=AC...
-TWILIO_API_KEY=SK...
 TELNYX_API_KEY=KEY...
+TELNYX_CONNECTION_ID=...
+# Twilio is not read from .env: see "Phone numbers (number-manager)" under Provider keys
 
 # Email Providers
 SENDGRID_API_KEY=SG...
@@ -2056,8 +2122,8 @@ The keys marked (stored) are copied into the services' stored configs by
 | `OPENROUTER_API_KEY` | OpenRouter (pipecat-script-runner, platform-managed models such as Claude, Llama, DeepSeek, Qwen, Mistral). The installer pins `pipecat-script-runner` by image digest, so the key only takes effect after the runner image that contains the `platform_openrouter` branch is adopted (`scripts/sync-compose-images.sh`). Empty key: these models fail at runner init with `OpenRouter is not configured`. Invalid non-empty key: OpenRouter's 401 is classified as an authentication error. |
 | `GOOGLE_APPLICATION_CREDENTIALS` | GCP service account JSON path |
 | `LOCAL_LLM_ENDPOINTS`, `LOCAL_LLM_MODELS` | Self-hosted OpenAI-compatible LLM servers (off by default, format and enabling order in `.env.template`) |
-| `TWILIO_SID`, `TWILIO_API_KEY` | Twilio (phone numbers) |
-| `TELNYX_API_KEY` | Telnyx (telephony; the SMS/MMS token of message-manager is stored) |
+| `TWILIO_SID`, `TWILIO_API_KEY` | Not stored from `.env`: Twilio is entered with `number-control` (see Provider keys, Phone numbers) |
+| `TELNYX_API_KEY`, `TELNYX_CONNECTION_ID`, `TELNYX_PROFILE_ID` | Telnyx (phone numbers of number-manager and the SMS/MMS token of message-manager; both are stored) |
 | `SENDGRID_API_KEY` | SendGrid (email) (stored) |
 | `AWS_ACCESS_KEY`, `AWS_SECRET_KEY` | AWS (transcription, text-to-speech) (stored) |
 
