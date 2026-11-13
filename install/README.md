@@ -423,6 +423,10 @@ optional `profile_id`. The secret is encrypted with `NUMBER_SECRET_ENCRYPTION_KE
   The previously pinned number-manager image could not use Twilio, so no
   existing Twilio setup is lost.
 - Only non-secret values reach a command line. The API key never does.
+- On a fresh install the number-manager log can show "No provider is usable for a
+  number purchase" once at its start: the installer stores the account right
+  after the containers start. The providers are read from the database on use,
+  so the warning goes away at the next start and nothing has to be restarted.
 
 #### Exit codes of `update all`
 
