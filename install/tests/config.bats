@@ -439,7 +439,7 @@ compose_service_block() {
     grep -qF -- '- MCP_SECRET_ENCRYPTION_KEYS=${MCP_SECRET_ENCRYPTION_KEYS:-}' <<< "$block"
     grep -qF -- '- ENGINE_BASE_KEY_ENCRYPTION_KEYS=${ENGINE_BASE_KEY_ENCRYPTION_KEYS:-}' <<< "$block"
     grep -qF -- '- AI_CONFIG_ENCRYPTION_KEYS=${AI_CONFIG_ENCRYPTION_KEYS:-}' <<< "$block"
-    if grep -qE 'EMAIL_CONFIG_ENCRYPTION_KEYS|TTS_CONFIG_ENCRYPTION_KEYS|TRANSCRIBE_CONFIG_ENCRYPTION_KEYS|MESSAGE_CONFIG_ENCRYPTION_KEYS' <<< "$block"; then return 1; fi
+    if grep -qE 'EMAIL_CONFIG_ENCRYPTION_KEYS|TTS_CONFIG_ENCRYPTION_KEYS|TRANSCRIBE_CONFIG_ENCRYPTION_KEYS|MESSAGE_CONFIG_ENCRYPTION_KEYS|NUMBER_SECRET_ENCRYPTION_KEYS' <<< "$block"; then return 1; fi
     local count
     count="$(grep -cE 'MCP_SECRET_ENCRYPTION_KEYS|ENGINE_BASE_KEY_ENCRYPTION_KEYS|AI_CONFIG_ENCRYPTION_KEYS' "$PROJECT_ROOT/docker-compose.yml.dist")"
     [[ "$count" -eq 3 ]]
@@ -452,13 +452,13 @@ compose_service_block() {
     local count
     count="$(grep -cE '^[[:space:]]*- EMAIL_CONFIG_ENCRYPTION_KEYS=' "$PROJECT_ROOT/docker-compose.yml.dist")"
     [[ "$count" -eq 1 ]]
-    # The other six keys belong to other services, not email-manager.
-    if grep -qE 'MCP_SECRET_ENCRYPTION_KEYS|ENGINE_BASE_KEY_ENCRYPTION_KEYS|AI_CONFIG_ENCRYPTION_KEYS|TTS_CONFIG_ENCRYPTION_KEYS|TRANSCRIBE_CONFIG_ENCRYPTION_KEYS|MESSAGE_CONFIG_ENCRYPTION_KEYS' <<< "$block"; then return 1; fi
+    # The other seven keys belong to other services, not email-manager.
+    if grep -qE 'MCP_SECRET_ENCRYPTION_KEYS|ENGINE_BASE_KEY_ENCRYPTION_KEYS|AI_CONFIG_ENCRYPTION_KEYS|TTS_CONFIG_ENCRYPTION_KEYS|TRANSCRIBE_CONFIG_ENCRYPTION_KEYS|MESSAGE_CONFIG_ENCRYPTION_KEYS|NUMBER_SECRET_ENCRYPTION_KEYS' <<< "$block"; then return 1; fi
 }
 
-# Each of tts-manager, transcribe-manager and message-manager reads exactly its
-# own config key (empty default), the key appears once in the whole file, and
-# the block carries none of the other six keys.
+# Each of tts-manager, transcribe-manager, message-manager and number-manager
+# reads exactly its own key (empty default), the key appears once in the whole
+# file, and the block carries none of the other seven keys.
 compose_check_own_config_key() {
     local svc="$1" var="$2" block count
     block="$(compose_service_block "$svc")"
@@ -466,7 +466,7 @@ compose_check_own_config_key() {
     count="$(grep -cE "^[[:space:]]*- ${var}=" "$PROJECT_ROOT/docker-compose.yml.dist")"
     [[ "$count" -eq 1 ]]
     local other
-    for other in MCP_SECRET_ENCRYPTION_KEYS ENGINE_BASE_KEY_ENCRYPTION_KEYS AI_CONFIG_ENCRYPTION_KEYS EMAIL_CONFIG_ENCRYPTION_KEYS TTS_CONFIG_ENCRYPTION_KEYS TRANSCRIBE_CONFIG_ENCRYPTION_KEYS MESSAGE_CONFIG_ENCRYPTION_KEYS; do
+    for other in MCP_SECRET_ENCRYPTION_KEYS ENGINE_BASE_KEY_ENCRYPTION_KEYS AI_CONFIG_ENCRYPTION_KEYS EMAIL_CONFIG_ENCRYPTION_KEYS TTS_CONFIG_ENCRYPTION_KEYS TRANSCRIBE_CONFIG_ENCRYPTION_KEYS MESSAGE_CONFIG_ENCRYPTION_KEYS NUMBER_SECRET_ENCRYPTION_KEYS; do
         [[ "$other" == "$var" ]] && continue
         if grep -q "$other" <<< "$block"; then return 1; fi
     done
@@ -484,9 +484,31 @@ compose_check_own_config_key() {
     compose_check_own_config_key message-manager MESSAGE_CONFIG_ENCRYPTION_KEYS
 }
 
+@test "docker-compose.yml.dist number-manager reads NUMBER_SECRET_ENCRYPTION_KEYS with an empty default, and only number-manager does" {
+    compose_check_own_config_key number-manager NUMBER_SECRET_ENCRYPTION_KEYS
+}
+
+@test "docker-compose.yml.dist number-manager still passes the five variables update keys copies from" {
+    local block
+    block="$(compose_service_block number-manager)"
+    grep -qF -- '- TELNYX_TOKEN=${TELNYX_API_KEY:-}' <<< "$block"
+    grep -qF -- '- TELNYX_CONNECTION_ID=${TELNYX_CONNECTION_ID:-}' <<< "$block"
+    grep -qF -- '- TELNYX_PROFILE_ID=${TELNYX_PROFILE_ID:-}' <<< "$block"
+    grep -qF -- '- TWILIO_SID=${TWILIO_SID:-}' <<< "$block"
+    grep -qF -- '- TWILIO_TOKEN=${TWILIO_API_KEY:-}' <<< "$block"
+}
+
+@test "versions.lock.dist and docker-compose.yml.dist pin the same number-manager image" {
+    local lock compose
+    lock="$(python3 -c "import json,sys; print(json.load(open(sys.argv[1]))['images']['voipbin/bin-number-manager'])" "$PROJECT_ROOT/versions.lock.dist")"
+    compose="$(grep -E '^[[:space:]]+image: voipbin/bin-number-manager@' "$PROJECT_ROOT/docker-compose.yml.dist" | sed 's/.*@//')"
+    [[ "$lock" =~ ^sha256:[0-9a-f]{64}$ ]]
+    [[ "$compose" == "$lock" ]]
+}
+
 @test "docker-compose.yml.dist carries no key-shaped or URL-shaped literal for the new variables" {
     # Values must be \${...} references or the empty defaults, never a literal.
-    if grep -E '(MCP_SECRET_ENCRYPTION_KEYS|ENGINE_BASE_KEY_ENCRYPTION_KEYS|AI_CONFIG_ENCRYPTION_KEYS|EMAIL_CONFIG_ENCRYPTION_KEYS|TTS_CONFIG_ENCRYPTION_KEYS|TRANSCRIBE_CONFIG_ENCRYPTION_KEYS|MESSAGE_CONFIG_ENCRYPTION_KEYS)=[^$]' "$PROJECT_ROOT/docker-compose.yml.dist"; then return 1; fi
+    if grep -E '(MCP_SECRET_ENCRYPTION_KEYS|ENGINE_BASE_KEY_ENCRYPTION_KEYS|AI_CONFIG_ENCRYPTION_KEYS|EMAIL_CONFIG_ENCRYPTION_KEYS|TTS_CONFIG_ENCRYPTION_KEYS|TRANSCRIBE_CONFIG_ENCRYPTION_KEYS|MESSAGE_CONFIG_ENCRYPTION_KEYS|NUMBER_SECRET_ENCRYPTION_KEYS)=[^$]' "$PROJECT_ROOT/docker-compose.yml.dist"; then return 1; fi
     if grep -E 'LOCAL_LLM_(MODELS|ENDPOINTS)=[^$]' "$PROJECT_ROOT/docker-compose.yml.dist"; then return 1; fi
     if grep -Eq '[0-9]+:[A-Za-z0-9+/]{43}=' "$PROJECT_ROOT/docker-compose.yml.dist"; then return 1; fi
 }
@@ -497,7 +519,7 @@ compose_render_new_keys() {
     env -u MCP_SECRET_ENCRYPTION_KEYS -u ENGINE_BASE_KEY_ENCRYPTION_KEYS \
         -u AI_CONFIG_ENCRYPTION_KEYS -u EMAIL_CONFIG_ENCRYPTION_KEYS \
         -u TTS_CONFIG_ENCRYPTION_KEYS -u TRANSCRIBE_CONFIG_ENCRYPTION_KEYS \
-        -u MESSAGE_CONFIG_ENCRYPTION_KEYS \
+        -u MESSAGE_CONFIG_ENCRYPTION_KEYS -u NUMBER_SECRET_ENCRYPTION_KEYS \
         -u LOCAL_LLM_MODELS -u LOCAL_LLM_ENDPOINTS \
         docker compose --env-file "$1" -f "$PROJECT_ROOT/docker-compose.yml.dist" config \
         > "$TEST_TEMP_DIR/render.out" 2> "$TEST_TEMP_DIR/render.err"
@@ -527,7 +549,7 @@ EOF
     [[ "$status" -eq 0 ]]
     # No warning mentions any of the new variables (the older references
     # without defaults are filled by the fixture).
-    if grep -Eq 'MCP_SECRET_ENCRYPTION_KEYS|ENGINE_BASE_KEY_ENCRYPTION_KEYS|AI_CONFIG_ENCRYPTION_KEYS|EMAIL_CONFIG_ENCRYPTION_KEYS|TTS_CONFIG_ENCRYPTION_KEYS|TRANSCRIBE_CONFIG_ENCRYPTION_KEYS|MESSAGE_CONFIG_ENCRYPTION_KEYS|LOCAL_LLM' "$TEST_TEMP_DIR/render.err"; then return 1; fi
+    if grep -Eq 'MCP_SECRET_ENCRYPTION_KEYS|ENGINE_BASE_KEY_ENCRYPTION_KEYS|AI_CONFIG_ENCRYPTION_KEYS|EMAIL_CONFIG_ENCRYPTION_KEYS|TTS_CONFIG_ENCRYPTION_KEYS|TRANSCRIBE_CONFIG_ENCRYPTION_KEYS|MESSAGE_CONFIG_ENCRYPTION_KEYS|NUMBER_SECRET_ENCRYPTION_KEYS|LOCAL_LLM' "$TEST_TEMP_DIR/render.err"; then return 1; fi
     [[ "$(grep -c 'LOCAL_LLM_MODELS:' "$TEST_TEMP_DIR/render.out")" -eq 2 ]]
     grep -Eq "LOCAL_LLM_MODELS: '?\[\]'?$" "$TEST_TEMP_DIR/render.out"
     grep -Eq "LOCAL_LLM_ENDPOINTS: '?\{\}'?$" "$TEST_TEMP_DIR/render.out"
@@ -539,6 +561,7 @@ EOF
     grep -Eq "TTS_CONFIG_ENCRYPTION_KEYS: (\"\"|'')$" "$TEST_TEMP_DIR/render.out"
     grep -Eq "TRANSCRIBE_CONFIG_ENCRYPTION_KEYS: (\"\"|'')$" "$TEST_TEMP_DIR/render.out"
     grep -Eq "MESSAGE_CONFIG_ENCRYPTION_KEYS: (\"\"|'')$" "$TEST_TEMP_DIR/render.out"
+    grep -Eq "NUMBER_SECRET_ENCRYPTION_KEYS: (\"\"|'')$" "$TEST_TEMP_DIR/render.out"
     grep -q 'GOOGLE_APPLICATION_CREDENTIALS: /tmp/google_service_account.json' "$TEST_TEMP_DIR/render.out"
     grep -Eq 'DATABASE_DSN: root:.*@tcp\(db:3306\)/bin_manager' "$TEST_TEMP_DIR/render.out"
 }
@@ -548,11 +571,11 @@ EOF
         skip "docker compose not available"
     fi
     compose_write_fixture_env
-    local mcp engine aicfg emailcfg ttscfg transcribecfg messagecfg
+    local mcp engine aicfg emailcfg ttscfg transcribecfg messagecfg numbercfg
     mcp="1:$(openssl rand -base64 32)"; engine="1:$(openssl rand -base64 32)"
     aicfg="1:$(openssl rand -base64 32)"; emailcfg="1:$(openssl rand -base64 32)"
     ttscfg="1:$(openssl rand -base64 32)"; transcribecfg="1:$(openssl rand -base64 32)"
-    messagecfg="1:$(openssl rand -base64 32)"
+    messagecfg="1:$(openssl rand -base64 32)"; numbercfg="1:$(openssl rand -base64 32)"
     {
         cat "$TEST_TEMP_DIR/fixture.env"
         echo "MCP_SECRET_ENCRYPTION_KEYS=$mcp"
@@ -562,6 +585,7 @@ EOF
         echo "TTS_CONFIG_ENCRYPTION_KEYS=$ttscfg"
         echo "TRANSCRIBE_CONFIG_ENCRYPTION_KEYS=$transcribecfg"
         echo "MESSAGE_CONFIG_ENCRYPTION_KEYS=$messagecfg"
+        echo "NUMBER_SECRET_ENCRYPTION_KEYS=$numbercfg"
         echo 'LOCAL_LLM_MODELS=[{"endpoint":"lab","id":"m1","label":"M1"}]'
         echo 'LOCAL_LLM_ENDPOINTS={"lab":{"base_url":"http://llm.example.invalid:8000/v1","api_key":""}}'
     } > "$TEST_TEMP_DIR/set.env"
@@ -576,6 +600,7 @@ EOF
     grep -qF "$ttscfg" "$TEST_TEMP_DIR/render.out"
     grep -qF "$transcribecfg" "$TEST_TEMP_DIR/render.out"
     grep -qF "$messagecfg" "$TEST_TEMP_DIR/render.out"
+    grep -qF "$numbercfg" "$TEST_TEMP_DIR/render.out"
     grep -qF 'llm.example.invalid:8000/v1' "$TEST_TEMP_DIR/render.out"
     grep -qF '"endpoint":"lab"' "$TEST_TEMP_DIR/render.out"
 }

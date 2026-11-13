@@ -581,8 +581,9 @@ generate_random_key_short() {
 # MCP_SECRET_ENCRYPTION_KEYS and ENGINE_BASE_KEY_ENCRYPTION_KEYS (ai-manager),
 # AI_CONFIG_ENCRYPTION_KEYS (ai-manager), EMAIL_CONFIG_ENCRYPTION_KEYS
 # (email-manager), TTS_CONFIG_ENCRYPTION_KEYS (tts-manager),
-# TRANSCRIBE_CONFIG_ENCRYPTION_KEYS (transcribe-manager) and
-# MESSAGE_CONFIG_ENCRYPTION_KEYS (message-manager) protect secrets that those
+# TRANSCRIBE_CONFIG_ENCRYPTION_KEYS (transcribe-manager),
+# MESSAGE_CONFIG_ENCRYPTION_KEYS (message-manager) and
+# NUMBER_SECRET_ENCRYPTION_KEYS (number-manager) protect secrets that those
 # services store in the database.
 # Each is a comma separated list of <version>:<base64 of 32 bytes>; the highest
 # version encrypts and every listed version decrypts. They are generated here
@@ -626,7 +627,9 @@ is_valid_encryption_keys() {
 #     ENGINE_BASE_KEY_ENCRYPTION_KEYS; the config keys (AI_CONFIG_ENCRYPTION_KEYS,
 #     EMAIL_CONFIG_ENCRYPTION_KEYS, TTS_CONFIG_ENCRYPTION_KEYS,
 #     TRANSCRIBE_CONFIG_ENCRYPTION_KEYS, MESSAGE_CONFIG_ENCRYPTION_KEYS) do not
-#     stop their service, but config secrets cannot be saved with them. Either
+#     stop their service, but config secrets cannot be saved with them;
+#     NUMBER_SECRET_ENCRYPTION_KEYS does not stop number-manager either, but no
+#     provider can be used and no provider secret can be stored with it. Either
 #     way the operator must fix it; overwriting it could destroy a key they
 #     still need. A value with shell metacharacters is single-quoted because
 #     start.sh sources .env; one containing a single quote cannot be preserved
@@ -677,6 +680,9 @@ resolve_encryption_key() {
         AI_CONFIG_ENCRYPTION_KEYS|EMAIL_CONFIG_ENCRYPTION_KEYS|TTS_CONFIG_ENCRYPTION_KEYS|TRANSCRIBE_CONFIG_ENCRYPTION_KEYS|MESSAGE_CONFIG_ENCRYPTION_KEYS)
             log_warn "  $_rek_name in the existing .env is not a valid key list and was kept unchanged; stored config secrets cannot be saved until you fix it or clear the line and re-run init.sh"
             ;;
+        NUMBER_SECRET_ENCRYPTION_KEYS)
+            log_warn "  $_rek_name in the existing .env is not a valid key list and was kept unchanged; number-manager cannot use any provider and no provider secret can be stored until you fix it or clear the line and re-run init.sh"
+            ;;
         *)
             log_warn "  $_rek_name in the existing .env is not a valid key list and was kept unchanged; ai-manager will refuse to start until you fix it or clear the line and re-run init.sh"
             ;;
@@ -690,10 +696,11 @@ resolve_encryption_key() {
 }
 
 # ensure_encryption_keys
-# Resolves the seven keys into MCP_SECRET_ENCRYPTION_KEYS,
+# Resolves the eight keys into MCP_SECRET_ENCRYPTION_KEYS,
 # ENGINE_BASE_KEY_ENCRYPTION_KEYS, AI_CONFIG_ENCRYPTION_KEYS,
 # EMAIL_CONFIG_ENCRYPTION_KEYS, TTS_CONFIG_ENCRYPTION_KEYS,
-# TRANSCRIBE_CONFIG_ENCRYPTION_KEYS and MESSAGE_CONFIG_ENCRYPTION_KEYS. Called
+# TRANSCRIBE_CONFIG_ENCRYPTION_KEYS, MESSAGE_CONFIG_ENCRYPTION_KEYS and
+# NUMBER_SECRET_ENCRYPTION_KEYS. Called
 # from main() right after check_existing_env_compat (which includes the
 # overwrite prompt: answering N exits there) and before anything is written, so
 # the old values are still readable and a failure here changes nothing.
@@ -713,6 +720,8 @@ ensure_encryption_keys() {
     TRANSCRIBE_CONFIG_ENCRYPTION_KEYS="$_REK_RESULT"
     resolve_encryption_key MESSAGE_CONFIG_ENCRYPTION_KEYS
     MESSAGE_CONFIG_ENCRYPTION_KEYS="$_REK_RESULT"
+    resolve_encryption_key NUMBER_SECRET_ENCRYPTION_KEYS
+    NUMBER_SECRET_ENCRYPTION_KEYS="$_REK_RESULT"
     echo ""
 }
 
@@ -1116,7 +1125,7 @@ AWS_SECRET_KEY=
 JWT_KEY=$JWT_KEY
 MYSQL_ROOT_PASSWORD=$MYSQL_ROOT_PASSWORD
 # Encryption keys for secrets ai-manager, email-manager, tts-manager,
-# transcribe-manager and message-manager store in the database. Generated once
+# transcribe-manager, message-manager and number-manager store in the database. Generated once
 # and reused when init.sh is re-run. Back up this file: a lost key cannot be
 # recovered and the secrets stored under it become unreadable.
 MCP_SECRET_ENCRYPTION_KEYS=$MCP_SECRET_ENCRYPTION_KEYS
@@ -1126,6 +1135,7 @@ EMAIL_CONFIG_ENCRYPTION_KEYS=$EMAIL_CONFIG_ENCRYPTION_KEYS
 TTS_CONFIG_ENCRYPTION_KEYS=$TTS_CONFIG_ENCRYPTION_KEYS
 TRANSCRIBE_CONFIG_ENCRYPTION_KEYS=$TRANSCRIBE_CONFIG_ENCRYPTION_KEYS
 MESSAGE_CONFIG_ENCRYPTION_KEYS=$MESSAGE_CONFIG_ENCRYPTION_KEYS
+NUMBER_SECRET_ENCRYPTION_KEYS=$NUMBER_SECRET_ENCRYPTION_KEYS
 DATABASE_ASTERISK_USERNAME=$DATABASE_ASTERISK_USERNAME
 DATABASE_ASTERISK_PASSWORD=$DATABASE_ASTERISK_PASSWORD
 RABBITMQ_DEFAULT_USER=$RABBITMQ_DEFAULT_USER

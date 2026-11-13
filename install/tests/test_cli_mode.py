@@ -1318,6 +1318,39 @@ if [[ "$1 $2" == "compose ps" ]]; then printf "voipbin-db\\tUp 5 minutes\\nvoipb
     print("ok test_status_never_prints_service_passwords")
 
 
+def test_status_number_manager_rows(cli_module, tmp_dir, stub_bin, log_path):
+    """The Telnyx (numbers) and Twilio rows read the stored state of number-manager."""
+    cli, project_dir = make_cli(tmp_dir, INTERNAL_ENV + ["TELNYX_API_KEY=fake-telnyx", "TELNYX_CONNECTION_ID=fake-conn",
+                                                         "TWILIO_SID=ACfake", "TWILIO_API_KEY=fake-twilio"], cli_module)
+    set_docker_stub(stub_bin, log_path, '''
+if [[ "$1 $2" == "compose ps" ]]; then printf "voipbin-db\\tUp 5 minutes\\n"; exit 0; fi
+''')
+    real = cli_module.VoIPBinCLI._provider_stored
+    prev = os.getcwd()
+    os.chdir(project_dir)
+    try:
+        # asked: number-manager answers with nothing stored -> pending / incomplete
+        cli_module.VoIPBinCLI._provider_stored = lambda self, pd: (set(), set())
+        out = capture(cli.cmd_status, [])
+        assert re.search(r"TELNYX_CONNECTION_ID \(numbers\)\s+\S*pending", out), out
+        assert re.search(r"TWILIO_SID \+ TWILIO_API_KEY\s+\S*incomplete", out), out
+        # stored telnyx -> set
+        cli_module.VoIPBinCLI._provider_stored = lambda self, pd: ({(cli_module.NUMBER_SVC, "telnyx")}, set())
+        out = capture(cli.cmd_status, [])
+        assert re.search(r"TELNYX_CONNECTION_ID \(numbers\)\s+\S*set", out), out
+        # not asked (database down): telnyx falls back to .env, twilio is never shown as set
+        cli_module.VoIPBinCLI._provider_stored = lambda self, pd: (set(), {cli_module.NUMBER_SVC})
+        out = capture(cli.cmd_status, [])
+        assert re.search(r"TELNYX_CONNECTION_ID \(numbers\)\s+\S*set", out), out
+        assert re.search(r"TWILIO_SID \+ TWILIO_API_KEY\s+\S*empty", out), out
+    finally:
+        cli_module.VoIPBinCLI._provider_stored = real
+        os.chdir(prev)
+        reset_docker_stub(stub_bin, log_path)
+    assert "fake-telnyx" not in out and "fake-twilio" not in out and "fake-conn" not in out, out
+    print("ok test_status_number_manager_rows")
+
+
 # ---------------------------------------------------------------------------
 # Interactive TUI: pure render/parse functions, fallback, REPL loop
 # ---------------------------------------------------------------------------
@@ -2308,7 +2341,7 @@ def main():
         cli_module.VoIPBinCLI._provider_preflight_step = lambda self, project_dir, mode: True
         cli_module.VoIPBinCLI._provider_import_step = lambda self, project_dir, mode, check_only=False: True
         cli_module.VoIPBinCLI._provider_stored = lambda self, project_dir: (
-            set(), {r[0] for r in cli_module.PROVIDER_CONFIG_KEYS})
+            set(), {r[0] for r in cli_module.PROVIDER_CONFIG_KEYS} | {cli_module.NUMBER_SVC})
 
         test_dns_external_gate(cli_module, tmp_dir, log_path)
         test_dns_internal_not_gated(cli_module, tmp_dir, log_path)
@@ -2342,6 +2375,7 @@ def main():
         test_user_facing_text_has_no_sandbox_and_honors_no_color(cli_module, tmp_dir, log_path)
         test_help_and_version_need_no_root(cli_module, tmp_dir)
         test_status_never_prints_service_passwords(cli_module, tmp_dir, stub_bin, log_path)
+        test_status_number_manager_rows(cli_module, tmp_dir, stub_bin, log_path)
         test_tui_wanted(cli_module)
         test_tui_clip_and_widths(cli_module)
         test_tui_render_header_notice_statusbar(cli_module)
