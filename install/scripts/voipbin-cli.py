@@ -1170,7 +1170,7 @@ def show_welcome_dashboard():
 {yellow("   /______\\")}        {bold("install")}       Guided install (checks, configuration, host setup,
                                  services, admin account). Nothing to edit first.
 
-                AI provider keys are optional: add them to .env later, then 'restart'."""
+                AI provider keys are optional: add them to .env later, then 'update keys'."""
         print(warning)
         print()
         print(separator)
@@ -1886,12 +1886,12 @@ def repl_loop(cli, info=None):
 # OPTIONAL sections). Grouped keys count as set only when all are set.
 OPTIONAL_PROVIDER_KEYS = (
     ("OPENAI_API_KEY",), ("GOOGLE_API_KEY",), ("XAI_API_KEY",), ("OPENROUTER_API_KEY",),
-    ("ELEVENLABS_API_KEY",), ("CARTESIA_API_KEY",), ("DEEPGRAM_API_KEY",),
+    ("ELEVENLABS_API_KEY",), ("CARTESIA_API_KEY",), ("DEEPGRAM_API_KEY",), ("LOCAL_LLM_ENDPOINTS",),
     ("AWS_ACCESS_KEY", "AWS_SECRET_KEY"), ("TWILIO_SID", "TWILIO_API_KEY"),
     ("TELNYX_API_KEY",), ("SENDGRID_API_KEY",), ("MAILGUN_API_KEY",),
 )
 
-# Provider secrets of five services are read from the stored configs (database)
+# Provider secrets of six services are read from the stored configs (database)
 # only; the services no longer read the environment variables. These rows tell
 # the installer how to copy the value the container used to receive (the compose
 # environment name, filled from .env) into the stored config of the service:
@@ -1911,6 +1911,14 @@ PROVIDER_CONFIG_KEYS = (
     ("tts-manager", "tts-control", "TTS_CONFIG_ENCRYPTION_KEYS", "AWS_ACCESS_KEY", "AWS_ACCESS_KEY", "aws.access_key", "aws"),
     ("tts-manager", "tts-control", "TTS_CONFIG_ENCRYPTION_KEYS", "AWS_SECRET_KEY", "AWS_SECRET_KEY", "aws.secret_key", "aws"),
     ("tts-manager", "tts-control", "TTS_CONFIG_ENCRYPTION_KEYS", "ELEVENLABS_API_KEY", "ELEVENLABS_API_KEY", "elevenlabs.api_key", None),
+    ("pipecat-manager", "pipecat-control", "PIPECAT_CONFIG_ENCRYPTION_KEYS", "OPENAI_API_KEY", "OPENAI_API_KEY", "openai.api_key", None),
+    ("pipecat-manager", "pipecat-control", "PIPECAT_CONFIG_ENCRYPTION_KEYS", "XAI_API_KEY", "XAI_API_KEY", "xai.api_key", None),
+    ("pipecat-manager", "pipecat-control", "PIPECAT_CONFIG_ENCRYPTION_KEYS", "GOOGLE_API_KEY", "GOOGLE_API_KEY", "google.api_key", None),
+    ("pipecat-manager", "pipecat-control", "PIPECAT_CONFIG_ENCRYPTION_KEYS", "OPENROUTER_API_KEY", "OPENROUTER_API_KEY", "openrouter.api_key", None),
+    ("pipecat-manager", "pipecat-control", "PIPECAT_CONFIG_ENCRYPTION_KEYS", "DEEPGRAM_API_KEY", "DEEPGRAM_API_KEY", "deepgram.api_key", None),
+    ("pipecat-manager", "pipecat-control", "PIPECAT_CONFIG_ENCRYPTION_KEYS", "CARTESIA_API_KEY", "CARTESIA_API_KEY", "cartesia.api_key", None),
+    ("pipecat-manager", "pipecat-control", "PIPECAT_CONFIG_ENCRYPTION_KEYS", "ELEVENLABS_API_KEY", "ELEVENLABS_API_KEY", "elevenlabs.api_key", None),
+    ("pipecat-manager", "pipecat-control", "PIPECAT_CONFIG_ENCRYPTION_KEYS", "LOCAL_LLM_ENDPOINTS", "LOCAL_LLM_ENDPOINTS", "local_llm.endpoints", None),
 )
 # Recorded as the person who made the change in the history of a stored key.
 # Not a secret; any non-zero UUID is accepted by the control binaries.
@@ -1919,6 +1927,9 @@ PROVIDER_CALL_TIMEOUT = 120      # seconds for one control binary call
 PROVIDER_TOTAL_BUDGET = 600      # seconds for all calls of one import
 PROVIDER_STATUS_TIMEOUT = 20     # seconds for one call made only to show `status`
 PROVIDER_MAX_VALUE_LEN = 512     # longest value the services accept
+# Stored keys that accept a longer value (bytes): the local LLM endpoints of
+# pipecat-manager are one line of JSON.
+PROVIDER_MAX_VALUE_LEN_BY_KEY = {"local_llm.endpoints": 2020}
 # Stored config sources that mean "no value stored yet" (an old image can still
 # report env or default) and the one that means "stored and readable".
 PROVIDER_SOURCES_EMPTY = ("none", "env", "default")
@@ -1945,6 +1956,11 @@ NUMBER_ADVICE = {
               "account auth token (an API key SID starting with SK is not supported); see README.md "
               "\"Provider keys\" to enter it",
 }
+
+
+def provider_max_len(key):
+    """Longest value (bytes) the service accepts for a stored config key."""
+    return PROVIDER_MAX_VALUE_LEN_BY_KEY.get(key, PROVIDER_MAX_VALUE_LEN)
 
 
 def provider_mask(text, values):
@@ -2051,7 +2067,7 @@ def provider_plan(compose):
                 notes.append(("skipped", svc, e["key"], "incomplete pair, no value for " + ", ".join(missing)))
             continue
         bad = [e for e in ents if "\n" in e["value"] or "\r" in e["value"]
-               or len(e["value"].encode()) > 4096 or len(e["value"].encode()) > PROVIDER_MAX_VALUE_LEN]
+               or len(e["value"].encode()) > provider_max_len(e["key"])]
         if bad:
             for e in ents:
                 notes.append(("invalid", svc, e["key"],
@@ -2170,7 +2186,9 @@ def provider_row_state(group_vars, env_set, stored, down):
         complete = any(all((s, k) in stored for v in group_vars for s2, k in mapped[v] if s2 == s) and
                        all(any(s2 == s for s2, _k in mapped[v]) for v in group_vars) for s in svcs)
     else:
-        complete = all(any(t in stored for t in mapped[v]) for v in group_vars)
+        # A variable that feeds several services (OPENAI_API_KEY, GOOGLE_API_KEY,
+        # ELEVENLABS_API_KEY) is set only when every one of them holds it.
+        complete = all(all(t in stored for t in mapped[v]) for v in group_vars)
     if complete:
         return "set"
     if legacy:
@@ -7472,7 +7490,7 @@ Type 'registrar <subcommand> help' for more details.
         if res["invalid"]:
             print("  A value in .env that cannot be stored is skipped; fix or empty it in .env and run 'sudo ./voipbin update keys'.")
         if res["unsupported"]:
-            print("  The old image of a skipped key still reads it from the environment, so nothing is lost.")
+            print("  The image of a skipped key has no stored configs yet, so that key was not stored.")
             if mode == "keys":
                 print("  Update the image pin ('sudo ./voipbin update all') and run 'sudo ./voipbin update keys' again.")
             else:
@@ -7489,7 +7507,7 @@ Type 'registrar <subcommand> help' for more details.
             print("  From now on the database holds these keys: rotate one with '<service>-control config set' or the")
             print("  admin API; a change in .env alone has no effect, and a key cleared in the database comes back")
             print("  on the next run while .env still has a value. OPENAI_API_KEY, GOOGLE_API_KEY and ELEVENLABS_API_KEY are")
-            print("  also read from .env by pipecat: replace them in the database and in .env.")
+            print("  stored separately for pipecat-manager: rotate them in each service that holds them.")
         if any(x[0] == NUMBER_SVC for x in res["stored"] + res["already"]):
             print("  number-manager now holds the Telnyx account in the database: rotate the token with")
             print("  'number-control provider secret set --name telnyx' (value on stdin) or the admin API; a change in .env")

@@ -691,8 +691,8 @@ fd.reset()
 before = open(envfile, "rb").read()
 c = kcli()
 r, out, err = krun(c._provider_import_step, kdir, "update")
-check("K4 first run stores all 11 keys, True, status ok",
-      r is True and len(fd.sets) == 11 and c._keys_status == "ok", f"{r} {len(fd.sets)} {c._keys_status} {out}")
+check("K4 first run stores all 19 keys, True, status ok",
+      r is True and len(fd.sets) == 19 and c._keys_status == "ok", f"{r} {len(fd.sets)} {c._keys_status} {out}")
 check("K4b every value arrived on stdin as value + newline, for the right key",
       all(v == CANARY[(svc, [r_[3] for r_ in m.PROVIDER_CONFIG_KEYS if r_[0] == svc and r_[5] == key][0])] + "\n"
           for svc, key, v in fd.sets), str(len(fd.sets)))
@@ -705,8 +705,8 @@ check("K22 .env is not touched", open(envfile, "rb").read() == before)
 n_sets = len(fd.sets)
 fd.calls.clear()
 r, out, err = krun(kcli()._provider_import_step, kdir, "update")
-check("K3/K9 second run: nothing set, 11 already stored, True",
-      r is True and len(fd.sets) == n_sets and "already stored 11" in out, f"{len(fd.sets)} {out[-200:]}")
+check("K3/K9 second run: nothing set, 19 already stored, True",
+      r is True and len(fd.sets) == n_sets and "already stored 19" in out, f"{len(fd.sets)} {out[-200:]}")
 
 # K5 old image: unknown command -> skipped, not a failure for update; keys mode reports it
 fd.reset()
@@ -714,8 +714,8 @@ for svc in ("tts-manager", "transcribe-manager", "message-manager"):
     fd.fail[(svc, "migrate up")] = (1, 'Error: unknown command "migrate" for "x-control"\n')
 c = kcli()
 r, out, err = krun(c._provider_import_step, kdir, "update")
-check("K5 old image skipped with a warning; update goes on; ai/email stored",
-      r is True and c._keys_status == "skipped" and {s_ for s_, _k, _v in fd.sets} == {"ai-manager", "email-manager"}
+check("K5 old image skipped with a warning; update goes on; ai/email/pipecat stored",
+      r is True and c._keys_status == "skipped" and {s_ for s_, _k, _v in fd.sets} == {"ai-manager", "email-manager", "pipecat-manager"}
       and "old image" in out, f"{r} {c._keys_status} {out}")
 fd.reset()
 for svc in ("tts-manager", "transcribe-manager", "message-manager"):
@@ -802,7 +802,7 @@ fd.values[("ai-manager", "GOOGLE_API_KEY")] = "ab$$cd"
 r, out, err = krun(kcli()._provider_import_step, kdir, "update")
 got = {(s_, k_): v for s_, k_, v in fd.sets}
 check("K10 list-style environment works and '$$' becomes '$'",
-      got.get(("ai-manager", "llm.gemini.api_key")) == "ab$cd\n" and len(fd.sets) == 11, str(len(fd.sets)))
+      got.get(("ai-manager", "llm.gemini.api_key")) == "ab$cd\n" and len(fd.sets) == 19, str(len(fd.sets)))
 check("K10b JSON null / missing values count as empty",
       m.provider_compose_services({"services": {"ai-manager": {"environment": {"GOOGLE_API_KEY": None}}}})["ai-manager"]["GOOGLE_API_KEY"] == "")
 
@@ -917,7 +917,7 @@ fd.reset()
 c = kcli()
 _, out, err = krun(c.cmd_update, ["keys"])
 check("K12 update keys: stores, rc 0, UPDATE_RESULT stage=keys keys=ok, lock released",
-      rc_of(c) == 0 and len(fd.sets) == 11 and "UPDATE_RESULT rc=0 stage=keys" in out and "keys=ok" in out
+      rc_of(c) == 0 and len(fd.sets) == 19 and "UPDATE_RESULT rc=0 stage=keys" in out and "keys=ok" in out
       and not os.path.exists(os.path.join(kdir, ".voipbin-op.lock")), f"{rc_of(c)} {out[-300:]}")
 fd.reset()
 c = kcli()
@@ -950,13 +950,76 @@ fd.reset()
 c = kcli()
 r, out, err = krun(c._provider_keys_unpinned, kdir)
 check("K14c unpinned key step succeeding stores the keys without a warning",
-      len(fd.sets) == 11 and "NOT stored" not in out, out[-200:])
+      len(fd.sets) == 19 and "NOT stored" not in out, out[-200:])
+
+# P: pipecat-manager rows (eight platform keys through pipecat-control, own master key)
+PC = "pipecat-manager"
+check("P1 the table has the eight pipecat-manager rows, all through pipecat-control with its master key",
+      sorted(r_[5] for r_ in m.PROVIDER_CONFIG_KEYS if r_[0] == PC)
+      == sorted(["openai.api_key", "xai.api_key", "google.api_key", "openrouter.api_key", "deepgram.api_key",
+                 "cartesia.api_key", "elevenlabs.api_key", "local_llm.endpoints"])
+      and all(r_[1] == "pipecat-control" and r_[2] == "PIPECAT_CONFIG_ENCRYPTION_KEYS" and r_[6] is None
+              for r_ in m.PROVIDER_CONFIG_KEYS if r_[0] == PC))
+fd.reset(values={(PC, "OPENAI_API_KEY"): CANARY[(PC, "OPENAI_API_KEY")]})
+fd.db["ai-manager"]["llm.openai_compat.api_key"] = "db"
+c = kcli()
+r, out, err = krun(c._provider_import_step, kdir, "update")
+check("P2 a key stored for ai-manager only: the rerun stores the pipecat-manager copy and nothing else",
+      r is True and fd.sets == [(PC, "openai.api_key", CANARY[(PC, "OPENAI_API_KEY")] + "\n")]
+      and any("/app/bin/pipecat-control" in a_ and PC in a_ for a_ in fd.calls if "config" in a_ and "set" in a_), f"{r} {fd.sets} {out}")
+check("P2b the pipecat copy never leaks to argv or output", not canary_leaks(fd.text_all()) and not canary_leaks(out))
+line = "x" * 2020
+fd.reset(values={(PC, "LOCAL_LLM_ENDPOINTS"): line})
+c = kcli()
+r, out, err = krun(c._provider_import_step, kdir, "update")
+check("P3 local_llm.endpoints of exactly 2020 bytes is stored", r is True and fd.sets == [(PC, "local_llm.endpoints", line + "\n")], f"{r} {len(fd.sets)} {out}")
+fd.reset(values={(PC, "LOCAL_LLM_ENDPOINTS"): "x" * 2021})
+c = kcli()
+r, out, err = krun(c._provider_import_step, kdir, "update")
+check("P3b 2021 bytes is invalid: nothing sent, update goes on", r is True and not fd.sets and c._keys_status == "attention" and "cannot be stored" in out, f"{r} {c._keys_status} {out}")
+fd.reset(values={(PC, "OPENAI_API_KEY"): "x" * 513})
+c = kcli()
+r, out, err = krun(c._provider_import_step, kdir, "update")
+check("P3c another key keeps the 512 byte limit (513 is invalid)", r is True and not fd.sets and c._keys_status == "attention", f"{r} {c._keys_status} {out}")
+fd.reset(values={(PC, "OPENAI_API_KEY"): "x" * 512})
+r, out, err = krun(kcli()._provider_import_step, kdir, "update")
+check("P3d 512 bytes is stored", r is True and len(fd.sets) == 1, f"{r} {len(fd.sets)}")
+check("P3e provider_max_len: 2020 for the endpoints, 512 for everything else",
+      m.provider_max_len("local_llm.endpoints") == 2020 and m.provider_max_len("openai.api_key") == 512
+      and m.provider_max_len("aws.access_key") == 512)
+_optional = {v_ for keys_ in m.OPTIONAL_PROVIDER_KEYS for v_ in keys_}
+check("P7 status has a row for every pipecat-manager .env variable (LOCAL_LLM_ENDPOINTS included)",
+      {r_[4] for r_ in m.PROVIDER_CONFIG_KEYS if r_[0] == PC} <= _optional and ("LOCAL_LLM_ENDPOINTS",) in m.OPTIONAL_PROVIDER_KEYS)
+fd.reset(values={(PC, "LOCAL_LLM_ENDPOINTS"): ""})
+c = kcli()
+r, out, err = krun(c._provider_import_step, kdir, "update")
+check("P4 an empty LOCAL_LLM_ENDPOINTS is not stored", r is True and not fd.sets and "No provider keys to store" in out, f"{r} {fd.sets} {out}")
+fd.reset(values={(PC, "OPENAI_API_KEY"): CANARY[(PC, "OPENAI_API_KEY")]}, masters=False)
+ok_pre, out, _ = krun(kcli()._provider_preflight_step, kdir, "update")
+check("P5 preflight stops when pipecat-manager gets no master key", ok_pre is False and "PIPECAT_CONFIG_ENCRYPTION_KEYS" in out, out)
+fd.reset(values={(PC, "OPENAI_API_KEY"): CANARY[(PC, "OPENAI_API_KEY")]})
+fd.fail[(PC, "config list")] = (1, 'Error: unknown command "config" for "pipecat-control"\n')
+c = kcli()
+r, out, err = krun(c._provider_import_step, kdir, "update")
+check("P6 an old pipecat image is skipped with a neutral text, nothing written", r is True and c._keys_status == "skipped" and not fd.sets
+      and "still reads it from the environment" not in out, f"{r} {c._keys_status} {out}")
+fd.reset()
 
 # K11 status row states
 S, D = m.provider_row_state, set()
 allsvc = {r[0] for r in m.PROVIDER_CONFIG_KEYS} | {m.NUMBER_SVC}
 stored_ai = {("ai-manager", "llm.openai_compat.api_key")}
-check("K11 stored -> set", S(("OPENAI_API_KEY",), set(), stored_ai, D) == "set")
+stored_pc = {("pipecat-manager", "openai.api_key")}
+check("K11 stored in every service that holds it -> set", S(("OPENAI_API_KEY",), set(), stored_ai | stored_pc, D) == "set")
+check("K11h OPENAI stored in one service only -> pending with .env, empty without (never set)",
+      S(("OPENAI_API_KEY",), {"OPENAI_API_KEY"}, stored_ai, D) == "pending"
+      and S(("OPENAI_API_KEY",), {"OPENAI_API_KEY"}, stored_pc, D) == "pending"
+      and S(("OPENAI_API_KEY",), set(), stored_ai, D) == "empty")
+check("K11i GOOGLE and ELEVENLABS need both of their services too",
+      S(("GOOGLE_API_KEY",), {"GOOGLE_API_KEY"}, {("ai-manager", "llm.gemini.api_key")}, D) == "pending"
+      and S(("GOOGLE_API_KEY",), set(), {("ai-manager", "llm.gemini.api_key"), ("pipecat-manager", "google.api_key")}, D) == "set"
+      and S(("ELEVENLABS_API_KEY",), {"ELEVENLABS_API_KEY"}, {("tts-manager", "elevenlabs.api_key")}, D) == "pending"
+      and S(("ELEVENLABS_API_KEY",), set(), {("tts-manager", "elevenlabs.api_key"), ("pipecat-manager", "elevenlabs.api_key")}, D) == "set")
 check("K11b in .env only -> pending", S(("OPENAI_API_KEY",), {"OPENAI_API_KEY"}, set(), D) == "pending")
 check("K11c nowhere -> empty", S(("OPENAI_API_KEY",), set(), set(), D) == "empty")
 check("K11d service not reachable -> falls back to .env",
@@ -965,8 +1028,14 @@ check("K11e AWS pair: one in .env -> incomplete, both -> pending, stored in tts 
       S(("AWS_ACCESS_KEY", "AWS_SECRET_KEY"), {"AWS_ACCESS_KEY"}, set(), D) == "incomplete"
       and S(("AWS_ACCESS_KEY", "AWS_SECRET_KEY"), {"AWS_ACCESS_KEY", "AWS_SECRET_KEY"}, set(), D) == "pending"
       and S(("AWS_ACCESS_KEY", "AWS_SECRET_KEY"), set(), {("tts-manager", "aws.access_key"), ("tts-manager", "aws.secret_key")}, D) == "set")
-check("K11f keys the services do not store keep the .env rule",
-      S(("XAI_API_KEY",), {"XAI_API_KEY"}, set(), D) == "set" and S(("XAI_API_KEY",), set(), set(), D) == "empty")
+check("K11f variables no service stores keep the .env rule",
+      S(("TWILIO_API_KEY",), {"TWILIO_API_KEY"}, set(), D) == "set" and S(("TWILIO_API_KEY",), set(), set(), D) == "empty")
+check("K11j the pipecat-only variables follow the stored state (XAI, LOCAL_LLM_ENDPOINTS)",
+      S(("XAI_API_KEY",), {"XAI_API_KEY"}, set(), D) == "pending"
+      and S(("XAI_API_KEY",), set(), {("pipecat-manager", "xai.api_key")}, D) == "set"
+      and S(("LOCAL_LLM_ENDPOINTS",), {"LOCAL_LLM_ENDPOINTS"}, set(), D) == "pending"
+      and S(("LOCAL_LLM_ENDPOINTS",), set(), {("pipecat-manager", "local_llm.endpoints")}, D) == "set"
+      and S(("LOCAL_LLM_ENDPOINTS",), set(), set(), D) == "empty")
 fd.reset()
 
 

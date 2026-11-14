@@ -1116,7 +1116,7 @@ services:
     command: ./outdial-manager
 
   pipecat-manager:
-    image: voipbin/bin-pipecat-manager@sha256:0c323f32ef67a3b48a6ed0799649b123e02999ef7edfe2a47e7cf4c2eeb802aa
+    image: voipbin/bin-pipecat-manager@sha256:077a86c2c6972cf390f826ac5e26688fd28a924711e21d7695672a202498bd40
     logging: *default-logging
     healthcheck:
       # python image (Debian trixie) ships NEITHER wget nor curl - use python3.
@@ -1140,11 +1140,25 @@ services:
       - REDIS_DATABASE=1
       - PROMETHEUS_ENDPOINT=/metrics
       - PROMETHEUS_LISTEN_ADDRESS=:2112
+      # Encryption key for the platform keys stored in the database. init.sh
+      # generates the key at install time and writes it to .env only. Without a
+      # valid key no stored platform key can be used and none can be stored.
+      # Back up .env.
+      - PIPECAT_CONFIG_ENCRYPTION_KEYS=${PIPECAT_CONFIG_ENCRYPTION_KEYS:-}
+      # The eight lines below are no longer read by the service or by the
+      # runner (the platform keys are stored settings in the database, read when
+      # a session starts). Kept as the values `voipbin update keys` copies from
+      # when a key is not stored yet. LOCAL_LLM_ENDPOINTS holds URLs and keys of
+      # self-hosted OpenAI-compatible servers ({name: {base_url, api_key}}); empty
+      # disables them.
       - CARTESIA_API_KEY=${CARTESIA_API_KEY:-}
       - ELEVENLABS_API_KEY=${ELEVENLABS_API_KEY:-}
       - OPENAI_API_KEY=${OPENAI_API_KEY:-}
       - DEEPGRAM_API_KEY=${DEEPGRAM_API_KEY:-}
       - XAI_API_KEY=${XAI_API_KEY:-}
+      - GOOGLE_API_KEY=${GOOGLE_API_KEY:-}
+      - OPENROUTER_API_KEY=${OPENROUTER_API_KEY:-}
+      - LOCAL_LLM_ENDPOINTS=${LOCAL_LLM_ENDPOINTS:-}
       - POD_IP=${POD_IP:-pipecat-manager}
       # Same value as ai-manager's (the model list the two services agree on).
       - LOCAL_LLM_MODELS=${LOCAL_LLM_MODELS:-[]}
@@ -1163,28 +1177,16 @@ services:
   # SIDECAR_PAIRS, which enforces this pairing automatically). Never restart
   # pipecat-manager in isolation.
   pipecat-script-runner:
-    image: voipbin/bin-pipecat-manager@sha256:0c323f32ef67a3b48a6ed0799649b123e02999ef7edfe2a47e7cf4c2eeb802aa
+    image: voipbin/bin-pipecat-manager@sha256:077a86c2c6972cf390f826ac5e26688fd28a924711e21d7695672a202498bd40
     logging: *default-logging
     restart: always
     network_mode: "service:pipecat-manager"
     depends_on:
       pipecat-manager:
         condition: service_healthy
-    # Same env set the GKE pipecat-script-runner container received - the
-    # Python side calls the STT/LLM/TTS APIs directly. GOOGLE_API_KEY and
-    # OPENROUTER_API_KEY are intentionally only read here: the Go side
-    # (pipecat-manager above) never consumes them.
+    # The runner holds no platform key: pipecat-manager reads the stored keys
+    # when a session starts and sends them with the start request.
     environment:
-      - CARTESIA_API_KEY=${CARTESIA_API_KEY:-}
-      - ELEVENLABS_API_KEY=${ELEVENLABS_API_KEY:-}
-      - OPENAI_API_KEY=${OPENAI_API_KEY:-}
-      - DEEPGRAM_API_KEY=${DEEPGRAM_API_KEY:-}
-      - XAI_API_KEY=${XAI_API_KEY:-}
-      - GOOGLE_API_KEY=${GOOGLE_API_KEY:-}
-      - OPENROUTER_API_KEY=${OPENROUTER_API_KEY:-}
-      # Self-hosted OpenAI-compatible endpoints ({name: {base_url, api_key}});
-      # {} disables them. Holds URLs and keys, so only this container gets it.
-      - LOCAL_LLM_ENDPOINTS=${LOCAL_LLM_ENDPOINTS:-{}}
       # Google speech services read their credentials from this file. The
       # default is the dummy file init.sh creates (not a valid credential); set
       # GOOGLE_APPLICATION_CREDENTIALS in .env to a real service account file.
