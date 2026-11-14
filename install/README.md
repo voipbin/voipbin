@@ -249,8 +249,9 @@ endpoints. The stored configs need the newer images of ai-manager,
 email-manager, message-manager, transcribe-manager, tts-manager and
 api-manager; `sudo ./voipbin update all` brings their digests from
 `versions.lock.dist` into your `docker-compose.yml`, so run it after the steps
-below. These five services, and number-manager for its Telnyx account, read
-their provider credentials from the database only, so `update all` stops before
+below. These five services, number-manager for its Telnyx account and
+pipecat-manager for its platform keys, read their provider credentials from the
+database only, so `update all` stops before
 it changes any image when a service that has a key in `.env` is not given its
 master key (see [Provider keys](#provider-keys)). The other services keep their
 current images, except number-manager, whose image moves too.
@@ -262,9 +263,14 @@ match your existing volumes.
 1. In `docker-compose.yml`, copy these from `docker-compose.yml.dist`:
    - `timeline-manager`: the `DATABASE_DSN` line (the same line other services
      use, with your `DB_HOST`/`DB_PORT` settings if you changed them) and `db` with `condition: service_healthy` under `depends_on`.
-   - `pipecat-script-runner`: `GOOGLE_APPLICATION_CREDENTIALS`,
-     `LOCAL_LLM_ENDPOINTS` and the `volumes:` entry for the credentials file.
-   - `pipecat-manager`: `LOCAL_LLM_MODELS`.
+   - `pipecat-script-runner`: `GOOGLE_APPLICATION_CREDENTIALS` and the
+     `volumes:` entry for the credentials file. It holds no platform key any
+     more: remove its `CARTESIA_API_KEY`, `ELEVENLABS_API_KEY`, `OPENAI_API_KEY`,
+     `DEEPGRAM_API_KEY`, `XAI_API_KEY`, `GOOGLE_API_KEY`, `OPENROUTER_API_KEY`
+     and `LOCAL_LLM_ENDPOINTS` lines.
+   - `pipecat-manager`: `PIPECAT_CONFIG_ENCRYPTION_KEYS`, `LOCAL_LLM_MODELS`,
+     and the `GOOGLE_API_KEY`, `OPENROUTER_API_KEY` and `LOCAL_LLM_ENDPOINTS`
+     lines (the other platform key lines are already there).
    - `ai-manager`: `MCP_SECRET_ENCRYPTION_KEYS`, `ENGINE_BASE_KEY_ENCRYPTION_KEYS`,
      `AI_CONFIG_ENCRYPTION_KEYS` and `LOCAL_LLM_MODELS`.
    - `email-manager`: `EMAIL_CONFIG_ENCRYPTION_KEYS`.
@@ -272,12 +278,12 @@ match your existing volumes.
    - `transcribe-manager`: `TRANSCRIBE_CONFIG_ENCRYPTION_KEYS`.
    - `message-manager`: `MESSAGE_CONFIG_ENCRYPTION_KEYS`.
    - `number-manager`: `NUMBER_SECRET_ENCRYPTION_KEYS`.
-2. Create the eight encryption keys in `.env` if they are not there yet (a line
+2. Create the nine encryption keys in `.env` if they are not there yet (a line
    with an empty or quoted-empty value counts as not there). This appends
    them without printing them:
 
    ```bash
-   for k in MCP_SECRET_ENCRYPTION_KEYS ENGINE_BASE_KEY_ENCRYPTION_KEYS AI_CONFIG_ENCRYPTION_KEYS EMAIL_CONFIG_ENCRYPTION_KEYS TTS_CONFIG_ENCRYPTION_KEYS TRANSCRIBE_CONFIG_ENCRYPTION_KEYS MESSAGE_CONFIG_ENCRYPTION_KEYS NUMBER_SECRET_ENCRYPTION_KEYS; do
+   for k in MCP_SECRET_ENCRYPTION_KEYS ENGINE_BASE_KEY_ENCRYPTION_KEYS AI_CONFIG_ENCRYPTION_KEYS EMAIL_CONFIG_ENCRYPTION_KEYS TTS_CONFIG_ENCRYPTION_KEYS TRANSCRIBE_CONFIG_ENCRYPTION_KEYS MESSAGE_CONFIG_ENCRYPTION_KEYS NUMBER_SECRET_ENCRYPTION_KEYS PIPECAT_CONFIG_ENCRYPTION_KEYS; do
      grep -Eq "^${k}=[^[:space:]\"']" .env || printf '\n%s=1:%s\n' "$k" "$(openssl rand -base64 32)" >> .env
    done
    ```
@@ -294,17 +300,21 @@ empty config key (`AI_CONFIG_ENCRYPTION_KEYS`, `EMAIL_CONFIG_ENCRYPTION_KEYS`,
 `MESSAGE_CONFIG_ENCRYPTION_KEYS`) does not stop its service, but stored config
 secrets cannot be saved until it is fixed; a malformed or empty
 `NUMBER_SECRET_ENCRYPTION_KEYS` does not stop number-manager either, but no
-phone number provider can be used and no provider secret can be stored. The format is
+phone number provider can be used and no provider secret can be stored; a
+malformed or empty `PIPECAT_CONFIG_ENCRYPTION_KEYS` does not stop pipecat-manager
+either, but no stored platform key can be used (AI sessions that need one are
+rejected) and none can be stored. The format is
 `<version>:<base64 of 32 random bytes>`, comma separated for several versions.
-A fresh install gets all eight keys from `init.sh`, and re-running `init.sh`
+A fresh install gets all nine keys from `init.sh`, and re-running `init.sh`
 keeps the values already in `.env`.
 
 #### Provider keys
 
 The provider keys of ai-manager, email-manager, message-manager,
-transcribe-manager and tts-manager are stored settings of those services, kept
+transcribe-manager, tts-manager and pipecat-manager are stored settings of those services, kept
 in the database and encrypted with the service's master key
-(`*_CONFIG_ENCRYPTION_KEYS`). The services no longer read the matching
+(`*_CONFIG_ENCRYPTION_KEYS`, and `PIPECAT_CONFIG_ENCRYPTION_KEYS` for
+pipecat-manager). The services no longer read the matching
 variables from the environment. `.env` is where you enter a key the first time:
 
 | `.env` variable | Service | Stored key |
@@ -317,6 +327,14 @@ variables from the environment. `.env` is where you enter a key the first time:
 | `TELNYX_API_KEY` | message-manager | `provider.telnyx.auth_token` |
 | `AWS_ACCESS_KEY`, `AWS_SECRET_KEY` | transcribe-manager and tts-manager | `aws.access_key`, `aws.secret_key` (stored together) |
 | `ELEVENLABS_API_KEY` | tts-manager | `elevenlabs.api_key` |
+| `OPENAI_API_KEY` | pipecat-manager (its own copy) | `openai.api_key` |
+| `XAI_API_KEY` | pipecat-manager | `xai.api_key` |
+| `GOOGLE_API_KEY` | pipecat-manager (its own copy, Gemini only) | `google.api_key` |
+| `OPENROUTER_API_KEY` | pipecat-manager (platform OpenRouter key) | `openrouter.api_key` |
+| `DEEPGRAM_API_KEY` | pipecat-manager | `deepgram.api_key` |
+| `CARTESIA_API_KEY` | pipecat-manager | `cartesia.api_key` |
+| `ELEVENLABS_API_KEY` | pipecat-manager (its own copy) | `elevenlabs.api_key` |
+| `LOCAL_LLM_ENDPOINTS` | pipecat-manager | `local_llm.endpoints` (one line of JSON, at most 2020 bytes) |
 
 `sudo ./voipbin install`, `sudo ./voipbin update all` and
 `sudo ./voipbin update keys` copy each of these values into the stored config
@@ -333,16 +351,20 @@ What this means for you:
 
 - **A key in `.env` changes nothing once it is stored.** Rotate a stored key
   with `docker compose exec -T <service> /app/bin/<name>-control config set --key <key> --actor-id <uuid>`
-  (`<name>` is `ai`, `email`, `message`, `transcribe` or `tts`; the value is read from
+  (`<name>` is `ai`, `email`, `message`, `transcribe`, `tts` or `pipecat`; the value is read from
   standard input) or with the admin API. A key that is not stored
   yet is stored by `sudo ./voipbin update keys` (no restart is needed).
 - **`config clear` removes the key.** The service then has no key; it does not
   fall back to the environment. A value that is still in `.env` is stored
   again by the next `update all` or `update keys`, so remove it from `.env` as
   well when you want a key gone for good.
-- **Two keys live in two places.** `OPENAI_API_KEY`, `GOOGLE_API_KEY` and
-  `ELEVENLABS_API_KEY` are also read from `.env` by pipecat-manager and
-  pipecat-script-runner. Replace such a key in the database and in `.env`.
+- **Some keys live in two services.** `OPENAI_API_KEY`, `GOOGLE_API_KEY` and
+  `ELEVENLABS_API_KEY` are stored for pipecat-manager as well (its platform
+  keys, used by AI voice sessions) and separately for ai-manager or
+  tts-manager. pipecat-manager and pipecat-script-runner do not read them from
+  `.env`; the daemon reads the stored keys when a session starts and hands them to
+  the runner, so a rotated key is used by the next session without a restart.
+  Rotate such a key in each service that holds it.
   `TELNYX_API_KEY` is stored by message-manager (SMS) and, separately, by
   number-manager (phone numbers, below): rotate it in both.
 - **Before `update all` an existing install needs the master keys** in `.env`
@@ -365,7 +387,11 @@ What this means for you:
 - `sudo ./voipbin status` shows each key as `set` (stored in the database),
   `pending` (in `.env`, not stored yet), `incomplete` (only one key of the AWS
   pair is in `.env`) or `empty`. The AWS row is `set` when the pair is stored
-  in tts-manager or in transcribe-manager. When the database cannot be asked
+  in tts-manager or in transcribe-manager. `OPENAI_API_KEY`, `GOOGLE_API_KEY` and
+  `ELEVENLABS_API_KEY` are `set` only when every service that holds them has
+  the key stored (ai-manager or tts-manager, and pipecat-manager); with the key
+  in `.env` and one copy missing the row is `pending`, and with only one copy
+  stored and `.env` empty it is `empty`. When the database cannot be asked
   (stack down), the row falls back to what `.env` has. Two rows show the phone
   numbers of number-manager: `TELNYX_CONNECTION_ID (numbers)` is `set` when the
   Telnyx provider has a stored secret, `pending` when `TELNYX_API_KEY` and
@@ -657,11 +683,11 @@ of its own).
    `DATABASE_ASTERISK_PASSWORD`, and `POSTGRES_PASSWORD` with brand-new
    random values (`AMI_PASSWORD` is the one exception since VOIP-1329 — it's
    always the fixed `asterisk`, never regenerated; an existing valid
-   value of each of the eight encryption keys (`MCP_SECRET_ENCRYPTION_KEYS`,
+   value of each of the nine encryption keys (`MCP_SECRET_ENCRYPTION_KEYS`,
    `ENGINE_BASE_KEY_ENCRYPTION_KEYS`, `AI_CONFIG_ENCRYPTION_KEYS`,
    `EMAIL_CONFIG_ENCRYPTION_KEYS`, `TTS_CONFIG_ENCRYPTION_KEYS`,
    `TRANSCRIBE_CONFIG_ENCRYPTION_KEYS`, `MESSAGE_CONFIG_ENCRYPTION_KEYS`,
-   `NUMBER_SECRET_ENCRYPTION_KEYS`) is also kept).
+   `NUMBER_SECRET_ENCRYPTION_KEYS`, `PIPECAT_CONFIG_ENCRYPTION_KEYS`) is also kept).
    Those new values will
    not match the credentials already baked into your existing database and
    RabbitMQ Docker volumes, so your services will fail to authenticate
@@ -1212,7 +1238,7 @@ mkcert -install
 > | Admin Account (opt-in, `VOIPBIN_SANDBOX_DEV_SEED=true`) | `admin@localhost` / `admin@localhost` |
 > | Extensions (opt-in, `VOIPBIN_SANDBOX_DEV_SEED=true`) | `1000` / `pass1000`, `2000` / `pass2000`, `3000` / `pass3000` |
 > | JWT Secret | Auto-generated in `.env` |
-> | Stored-secret encryption keys (ai-manager, email-manager, tts-manager, transcribe-manager, message-manager, number-manager) | Randomly generated per install, in `.env` (`MCP_SECRET_ENCRYPTION_KEYS`, `ENGINE_BASE_KEY_ENCRYPTION_KEYS`, `AI_CONFIG_ENCRYPTION_KEYS`, `EMAIL_CONFIG_ENCRYPTION_KEYS`, `TTS_CONFIG_ENCRYPTION_KEYS`, `TRANSCRIBE_CONFIG_ENCRYPTION_KEYS`, `MESSAGE_CONFIG_ENCRYPTION_KEYS`, `NUMBER_SECRET_ENCRYPTION_KEYS`). Back up `.env`: a lost key cannot be recovered |
+> | Stored-secret encryption keys (ai-manager, email-manager, tts-manager, transcribe-manager, message-manager, number-manager, pipecat-manager) | Randomly generated per install, in `.env` (`MCP_SECRET_ENCRYPTION_KEYS`, `ENGINE_BASE_KEY_ENCRYPTION_KEYS`, `AI_CONFIG_ENCRYPTION_KEYS`, `EMAIL_CONFIG_ENCRYPTION_KEYS`, `TTS_CONFIG_ENCRYPTION_KEYS`, `TRANSCRIBE_CONFIG_ENCRYPTION_KEYS`, `MESSAGE_CONFIG_ENCRYPTION_KEYS`, `NUMBER_SECRET_ENCRYPTION_KEYS`, `PIPECAT_CONFIG_ENCRYPTION_KEYS`). Back up `.env`: a lost key cannot be recovered |
 >
 > The admin/extension credentials above are a dev/test seed account, off by default. It is only
 > created if you explicitly set `VOIPBIN_SANDBOX_DEV_SEED=true` in `.env`. Never set this on an
@@ -1685,11 +1711,11 @@ CARTESIA_API_KEY=...
 ```
 
 Store the keys in the services (a key is stored once; see
-[Provider keys](#provider-keys) for rotating one):
+[Provider keys](#provider-keys) for rotating one). pipecat-manager reads its
+stored keys when a session starts, so no restart is needed:
 
 ```bash
 sudo ./voipbin update keys
-sudo ./voipbin restart pipecat-manager
 ```
 
 ### AI Manager Services
@@ -2117,11 +2143,12 @@ The keys marked (stored) are copied into the services' stored configs by
 
 | Variable | Service |
 |----------|---------|
-| `OPENAI_API_KEY` | OpenAI (AI features) (stored; also read from `.env` by pipecat) |
-| `GOOGLE_API_KEY` | Google AI (ai-manager's Gemini key, stored; pipecat-script-runner's Gemini access reads `.env`) |
-| `OPENROUTER_API_KEY` | OpenRouter (pipecat-script-runner, platform-managed models such as Claude, Llama, DeepSeek, Qwen, Mistral). The installer pins `pipecat-script-runner` by image digest, so the key only takes effect after the runner image that contains the `platform_openrouter` branch is adopted (`scripts/sync-compose-images.sh`). Empty key: these models fail at runner init with `OpenRouter is not configured`. Invalid non-empty key: OpenRouter's 401 is classified as an authentication error. |
+| `OPENAI_API_KEY` | OpenAI (AI features) (stored for ai-manager and, separately, for pipecat-manager) |
+| `GOOGLE_API_KEY` | Google AI (Gemini; stored for ai-manager and, separately, for pipecat-manager) |
+| `OPENROUTER_API_KEY` | OpenRouter (platform-managed models such as Claude, Llama, DeepSeek, Qwen, Mistral; stored for pipecat-manager). Empty key: these models are rejected with `OpenRouter is not configured`. Invalid non-empty key: OpenRouter's 401 is classified as an authentication error. |
+| `XAI_API_KEY`, `DEEPGRAM_API_KEY`, `CARTESIA_API_KEY` | xAI, Deepgram and Cartesia (stored for pipecat-manager) |
 | `GOOGLE_APPLICATION_CREDENTIALS` | GCP service account JSON path |
-| `LOCAL_LLM_ENDPOINTS`, `LOCAL_LLM_MODELS` | Self-hosted OpenAI-compatible LLM servers (off by default, format and enabling order in `.env.template`) |
+| `LOCAL_LLM_ENDPOINTS`, `LOCAL_LLM_MODELS` | Self-hosted OpenAI-compatible LLM servers (off by default; the endpoints are stored for pipecat-manager like a provider key, the models are read from `.env`; format and enabling order in `.env.template`) |
 | `TWILIO_SID`, `TWILIO_API_KEY` | Not stored from `.env`: Twilio is entered with `number-control` (see Provider keys, Phone numbers) |
 | `TELNYX_API_KEY`, `TELNYX_CONNECTION_ID`, `TELNYX_PROFILE_ID` | Telnyx (phone numbers of number-manager and the SMS/MMS token of message-manager; both are stored) |
 | `SENDGRID_API_KEY` | SendGrid (email) (stored) |

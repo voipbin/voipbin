@@ -55,7 +55,7 @@ INIT_SCRIPTS=(
 # 4. optional-feature-default - docker-compose.yml reads these as
 #    ${VAR:-default} with a default matching the template (feature off), and
 #    init.sh does not write them because they are an operator opt-in:
-#    LOCAL_LLM_MODELS ([]) and LOCAL_LLM_ENDPOINTS ({}).
+#    LOCAL_LLM_MODELS ([]) and LOCAL_LLM_ENDPOINTS (empty).
 TEMPLATE_ONLY_VARS=(
     # compose-internal-default
     DB_HOST
