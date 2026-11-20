@@ -44,3 +44,20 @@ docker-compose.yml.tmp
 # Copies kept by hand before merging upstream changes (see README)
 .env.pre-merge
 docker-compose.yml.pre-merge
+
+# Komodo (local state and secrets, never commit). Exception-list style so that
+# any new file under komodo/ is ignored until it is listed below.
+# .env.komodo is the rendered copy of the Komodo Variables; .env.new is the
+# temporary copy written while cleaning .env; the pre-restore copies are made by
+# restore. The two marker files record pending certificate work. The hook token
+# is a one-time local file.
+.env.*
+.certs-pending
+.certs-sync-pending
+.voipbin-hook-token
+komodo/*
+# Negations come last: a later pattern wins.
+!.env.template
+!komodo/docker-compose.yml
+!komodo/versions.env
+!komodo/.env.example

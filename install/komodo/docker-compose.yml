@@ -1,0 +1,56 @@
+# Komodo core + mongo (compose project "komodo", separate from the main stack).
+#
+# Started by scripts/komodo-setup.sh, which passes the pinned image references
+# (versions.env) and the generated secrets (.env) as env files:
+#
+#   docker compose -p komodo -f komodo/docker-compose.yml \
+#     --env-file komodo/versions.env --env-file komodo/.env up -d
+#
+# periphery is not part of this file: it runs as a host systemd service and
+# connects out to core on 127.0.0.1:9120.
+
+services:
+  mongo:
+    image: ${KOMODO_MONGO_IMAGE:?set in komodo/versions.env}
+    container_name: voipbin-komodo-mongo
+    restart: unless-stopped
+    command: --quiet --wiredTigerCacheSizeGB 0.25
+    volumes:
+      - mongo-data:/data/db
+      - mongo-config:/data/configdb
+    environment:
+      MONGO_INITDB_ROOT_USERNAME: ${KOMODO_DATABASE_USERNAME:?set in komodo/.env}
+      MONGO_INITDB_ROOT_PASSWORD: ${KOMODO_DATABASE_PASSWORD:?set in komodo/.env}
+
+  core:
+    image: ${KOMODO_CORE_IMAGE:?set in komodo/versions.env}
+    container_name: voipbin-komodo-core
+    init: true
+    restart: unless-stopped
+    depends_on:
+      - mongo
+    ports:
+      # loopback only: periphery runs on this host and dials this port
+      - 127.0.0.1:9120:9120
+    environment:
+      KOMODO_DATABASE_ADDRESS: mongo:27017
+      KOMODO_DATABASE_USERNAME: ${KOMODO_DATABASE_USERNAME:?set in komodo/.env}
+      KOMODO_DATABASE_PASSWORD: ${KOMODO_DATABASE_PASSWORD:?set in komodo/.env}
+      KOMODO_DATABASE_DB_NAME: komodo
+      KOMODO_HOST: http://127.0.0.1:9120
+      KOMODO_LOCAL_AUTH: "true"
+      KOMODO_INIT_ADMIN_USERNAME: ${KOMODO_INIT_ADMIN_USERNAME:?set in komodo/.env}
+      KOMODO_INIT_ADMIN_PASSWORD: ${KOMODO_INIT_ADMIN_PASSWORD:?set in komodo/.env}
+      KOMODO_DISABLE_USER_REGISTRATION: "true"
+      KOMODO_ENABLE_NEW_USERS: "false"
+      KOMODO_DISABLE_NON_ADMIN_CREATE: "true"
+      KOMODO_JWT_SECRET: ${KOMODO_JWT_SECRET:?set in komodo/.env}
+      KOMODO_WEBHOOK_SECRET: ${KOMODO_WEBHOOK_SECRET:?set in komodo/.env}
+    volumes:
+      # core key pair (periphery pins the public half)
+      - keys:/config/keys
+
+volumes:
+  mongo-data:
+  mongo-config:
+  keys:
