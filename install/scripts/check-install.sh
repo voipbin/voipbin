@@ -295,7 +295,7 @@ check_realm() {
     if [[ "$running_ext" == "$CHECK_DOMAIN_EXT" ]]; then
         check_result realm pass "registrar-manager DOMAIN_NAME_EXTENSION=$running_ext matches .env"
     else
-        check_result realm fail "running=$running_ext .env=$CHECK_DOMAIN_EXT — recreate: $(compose_hint rm -fsv registrar-manager) && $(compose_hint up -d registrar-manager)"
+        check_result realm fail "running=$running_ext .env=$CHECK_DOMAIN_EXT — recreate: $(realm_recreate_hint)"
     fi
 }
 

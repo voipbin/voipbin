@@ -367,11 +367,18 @@ mark_certs_pending() {
     komodo_write_marker .certs-pending "$(absolute_path "$CERT_FILE")" "$(absolute_path "$KEY_FILE")" "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
 }
 
-# komodo_precheck_failed <exit-code>: marker, result line, exit.
+# komodo_precheck_failed <exit-code>: marker, result line, exit. Only 21 means
+# that Komodo itself is unavailable; 2 is a value Komodo cannot hold, anything
+# else is a failed write or service recreation.
 komodo_precheck_failed() {
-    local rc="$1"
+    local rc="$1" reason
+    case "$rc" in
+        21) reason="komodo-unavailable" ;;
+        2) reason="komodo-rejected" ;;
+        *) reason="komodo-write-failed" ;;
+    esac
     mark_certs_pending
-    emit_result error "reason=komodo-unavailable retry=\"$(retry_command)\""
+    emit_result error "reason=$reason retry=\"$(retry_command)\""
     exit "$rc"
 }
 

@@ -104,6 +104,18 @@ now() { date +%s; }
     [ "$status" -eq 7 ]
 }
 
+@test "token time with a leading zero (octal looking digits) is refused with exit 7, not a shell error" {
+    write_lock "$LIVE_PID"
+    write_token "$LIVE_PID" "09"
+    run_hook
+    [ "$status" -eq 7 ]
+    [[ "$output" == *"token expired"* ]]
+    write_token "$LIVE_PID" "0000000000000000001"
+    run_hook
+    [ "$status" -eq 7 ]
+    [[ "$output" == *"no valid token"* ]]
+}
+
 @test "token pid does not match the lock pid: refused" {
     write_lock "$LIVE_PID"
     write_token "$(( LIVE_PID + 1 ))" "$(now)"

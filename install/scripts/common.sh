@@ -299,7 +299,8 @@ compose_env_setup() {
 # compose_exec <verb> [args...]
 # The only entry for compose calls that change state. none: the arguments go
 # to `docker compose` unchanged. adopted: komodo_lib.py exec with the service
-# names only (option arguments are dropped, the verb fixes the meaning).
+# names only (the value-less flags -d -f -s -v and their combinations are dropped, the verb
+# fixes their meaning; any other option is refused with 1).
 # broken: refused with 21.
 compose_exec() {
     local verb="${1:-}"
@@ -310,7 +311,15 @@ compose_exec() {
         adopted)
             local arg services=()
             for arg in "$@"; do
-                [[ "$arg" == -* ]] || services+=("$arg")
+                case "$arg" in
+                    # flags without a value: the verb fixes their meaning
+                    -d|-f|-s|-v|-sf|-fs|-sv|-fsv) ;;
+                    -*)
+                        log_error "compose_exec: option $arg is not supported with Komodo" >&2
+                        return 1
+                        ;;
+                    *) services+=("$arg") ;;
+                esac
             done
             _komodo_run exec "$verb" ${services[@]+"${services[@]}"}
             ;;
@@ -499,6 +508,17 @@ compose_hint() {
         stop|down) echo "voipbin stop" ;;
         *) echo "voipbin start${services[*]:+ ${services[*]}}" ;;
     esac
+}
+
+# realm_recreate_hint: how to recreate registrar-manager. none: remove, then
+# start (historic text). With Komodo one start applies the new value, so the
+# two steps would print the same command twice.
+realm_recreate_hint() {
+    if [[ "$(komodo_mode)" == "none" ]]; then
+        echo "$(compose_hint rm -fsv registrar-manager) && $(compose_hint up -d registrar-manager)"
+    else
+        compose_hint up -d registrar-manager
+    fi
 }
 
 # host_env_read <KEY>

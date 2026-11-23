@@ -2570,14 +2570,14 @@ class Config:
 # =============================================================================
 
 def compose_env_apply(directory=None):
-    """Point compose at the Komodo rendering when it is present and readable
+    """Point compose at the Komodo rendering when it is present
     (COMPOSE_ENV_FILES=.env,.env.komodo). Every child process inherits the
     environment, so run_cmd and the direct subprocess calls all pass through
-    here. Without .env.komodo nothing is set, as before. Returns True when the
-    two files are in effect."""
+    here. Without .env.komodo nothing is set, as before. A file that exists but
+    cannot be read is still named, so compose stops instead of running with the
+    container values missing. Returns True when the two files are in effect."""
     try:
-        path = os.path.join(directory or os.getcwd(), ".env.komodo")
-        usable = os.path.isfile(path) and os.access(path, os.R_OK)
+        usable = os.path.lexists(os.path.join(directory or os.getcwd(), ".env.komodo"))
     except OSError:
         usable = False
     if usable:
@@ -6804,6 +6804,8 @@ Type 'registrar <subcommand> help' for more details.
             # [3/7] Komodo (control plane; the main stack is not touched before it is up)
             step = 3
             self._install_step(3, "Setting up Komodo (the control plane for the services)")
+            print("  This step installs the Komodo agent as the systemd service 'periphery' (/usr/local/bin/periphery),")
+            print("  and starts Komodo core and its database on 127.0.0.1:9120. Undo it with: sudo ./voipbin clean --purge")
             rc = subprocess.call(["bash", self._komodo_setup_script(project_dir)],
                                  cwd=project_dir, env=self._install_child_env())
             if rc != 0:
@@ -7025,6 +7027,8 @@ Type 'registrar <subcommand> help' for more details.
 
         project_dir = self.config.get("project_dir", ".")
         scripts_dir = os.path.join(project_dir, "scripts")
+        # Decided once: --purge removes the files this decision is read from.
+        clean_mode = self._komodo_mode(project_dir)
 
         # Data-destroying options list their targets and need an explicit
         # 'yes' (or --force) before anything runs.
@@ -7037,6 +7041,8 @@ Type 'registrar <subcommand> help' for more details.
             if purge:
                 print("  - generated files: .env (passwords and encryption keys), certs/, config/coredns,")
                 print("    docker-compose.yml, versions.lock, version pins and the install marker")
+                if clean_mode != "none":
+                    print("  - Komodo: its containers and data, the periphery service, .env.komodo and the Komodo variables")
             if teardown_network:
                 print("  - the VoIP network interfaces")
             if teardown_dns:
@@ -7100,7 +7106,18 @@ Type 'registrar <subcommand> help' for more details.
                 print("No containers running")
         else:
             print("Stopping services...")
-            run_cmd("docker compose down 2>&1")
+            if clean_mode == "adopted":
+                # through Komodo; only an unreachable Komodo falls back to removing
+                # the containers directly (same rule as scripts/clean.sh)
+                rc = komodo_lib.exec_verb(project_dir, "down", [])
+                if rc == RC_KOMODO_UNAVAILABLE:
+                    print(yellow("! Komodo is not available, removing the containers directly"))
+                    run_cmd("docker compose down 2>&1")
+                elif rc != 0:
+                    self.last_rc = rc
+                    return
+            else:
+                run_cmd("docker compose down 2>&1")
             print(green("✓ Services stopped"))
 
         # Remove images
@@ -7175,6 +7192,14 @@ Type 'registrar <subcommand> help' for more details.
                 ("versions.lock.dist.flock", "versions.lock.dist lock file"),
                 (INSTALL_MARKER, "install marker"),
             ]
+            if clean_mode != "none":
+                # Komodo leftovers: the rendered copy and the certificate state files
+                files_to_remove += [
+                    (".env.komodo", "Komodo variable copy"),
+                    (".certs-pending", "certificate state file"),
+                    (".certs-sync-pending", "certificate state file"),
+                    (".voipbin-hook-token", "deploy hook token"),
+                ]
 
             for path, desc in files_to_remove:
                 full_path = os.path.join(project_dir, path)
@@ -7187,6 +7212,10 @@ Type 'registrar <subcommand> help' for more details.
                     print(f"  Removed {desc}")
 
             print(green("✓ Generated files purged"))
+            if clean_mode != "none":
+                # Komodo itself goes last: nothing above needs it any more
+                print("\nRemoving Komodo...")
+                self._clean_komodo_teardown(project_dir)
 
         print(f"\n{bold('Cleanup complete!')}")
         if clean_volumes and not teardown_network and any(os.path.exists(f"/sys/class/net/{n}") for n in INSTALL_VOIP_INTERFACES):
@@ -7196,6 +7225,22 @@ Type 'registrar <subcommand> help' for more details.
             print("The VoIP network interfaces were kept. Before installing again, remove them:")
             print("  sudo ./voipbin clean --network --force")
         print("Run 'install' to set up again (or 'init', then 'start').")
+
+    def _clean_komodo_teardown(self, project_dir):
+        """komodo-setup.sh --teardown (periphery service, hook, Komodo containers and data)."""
+        script = self._komodo_setup_script(project_dir)
+        if not os.path.exists(script):
+            print(yellow("! komodo-setup.sh not found, Komodo was not removed"))
+            return
+        cmd = ["bash", script, "--teardown"]
+        if os.geteuid() != 0:
+            if subprocess.run(["sudo", "-n", "true"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL).returncode != 0:
+                print(yellow("! Requires sudo. Run: sudo ./scripts/komodo-setup.sh --teardown"))
+                return
+            cmd = ["sudo"] + cmd
+        rc = subprocess.call(cmd, cwd=project_dir, env=self._install_child_env())
+        if rc != 0:
+            print(yellow("! Komodo teardown failed. Run: sudo ./scripts/komodo-setup.sh --teardown"))
 
     def _show_running_images(self, project_dir, json_output=False):
         """Show currently running container images when no override file exists"""
@@ -7988,7 +8033,8 @@ Type 'registrar <subcommand> help' for more details.
             print("     start; abort on failure, nothing lost)")
             print("     (before step 2b the live docker-compose.yml is checked for the master keys it needs)")
             print("  Exit codes: 0 ok, 2 busy, 10 backup, 11 scripts, 12 unpinned, 13 sync, 14 pull,")
-            print("              15 migrate, 16 up, 17-19 verify (containers / ping / both), 20 provider keys")
+            print("              15 migrate, 16 up, 17-19 verify (containers / ping / both), 20 provider keys,")
+            print("              21 Komodo not available (installs set up with Komodo)")
             print("  5. docker compose up -d    - recreate only containers whose digest changed")
             print("  6. verify                  - poll container health (120s) + GET api-manager /ping")
             print(f"\n{yellow('No changes made.')} Run 'update all' without --check to upgrade.")
@@ -8512,6 +8558,10 @@ Type 'registrar <subcommand> help' for more details.
         """Create backups/<ts>/ with mysql dump, recordings tars, config copies
         and a manifest. Returns the timestamp string on success, None on failure
         (callers MUST abort on None)."""
+        if self._komodo_mode(project_dir) == "broken":
+            # a backup without the Komodo data could not be restored later
+            print(f"{red('✗')} {komodo_lib.BROKEN_HINT}")
+            return None
         ts = datetime.now().strftime("%Y%m%d-%H%M%S")
         backups_base = os.path.join(project_dir, self.DATA_BACKUP_DIR)
         backup_dir = os.path.join(backups_base, ts)
@@ -8767,7 +8817,7 @@ Type 'registrar <subcommand> help' for more details.
                 print("  Nothing was changed.")
                 self.last_rc = 1
                 return
-        up_db = "docker compose up -d db redis" if km == "none" else "voipbin start db redis"
+        up_db = "docker compose up -d db redis" if km == "none" else "voipbin start db && voipbin start redis"
 
         # Guard: all services must be stopped except db and redis.
         # Scope: the compose PROJECT the target db container belongs to
@@ -8855,6 +8905,8 @@ Type 'registrar <subcommand> help' for more details.
         if rc != 0:
             print(f"{red('✗')} MySQL import failed (exit {rc}). Database may be in a partial state.")
             print(f"  Re-run 'restore {ts} --force' after fixing the problem.")
+            if km == "adopted":
+                self._restore_komodo_partial()
             return
         print(f"  {green('✓')} MySQL restored")
 
@@ -8877,6 +8929,8 @@ Type 'registrar <subcommand> help' for more details.
                 print(f"  {yellow('Note:')} MySQL was already imported from this backup, so the stack")
                 print("  is in a PARTIALLY-restored state. Fix the volume issue and re-run")
                 print(f"  'restore {ts} --force' before starting services.")
+                if km == "adopted":
+                    self._restore_komodo_partial()
                 return
             print(f"  {green('✓')} {volume} restored")
 
@@ -8919,6 +8973,8 @@ Type 'registrar <subcommand> help' for more details.
             except Exception as e:
                 print(f"  {red('✗')} .env restore failed: {e}")
                 print(f"  Copy it manually: cp backups/{ts}/config/.env .env")
+                if km == "adopted":
+                    self._restore_komodo_partial()
                 return
         cfg_dir = os.path.join(backup_dir, "config")
         if os.path.isdir(cfg_dir):
@@ -8940,6 +8996,13 @@ Type 'registrar <subcommand> help' for more details.
             print("  1. voipbin start")
         print("  2. voipbin status         (verify all services are healthy)")
 
+    def _restore_komodo_partial(self):
+        """The Komodo state is already back at the backup, a later step failed:
+        the install must not be started before the same restore is run again."""
+        self.last_rc = 1
+        print(f"  {yellow('!')} The Komodo state was already restored from this backup. Run the same restore")
+        print("    again before 'voipbin start'; starting now mixes new Komodo values with the old data.")
+
     def _restore_komodo_precheck(self, backup_dir):
         """Checks before anything is changed. Returns a problem text or None."""
         archive = os.path.join(backup_dir, KOMODO_MONGO_ARCHIVE)
@@ -8947,11 +9010,16 @@ Type 'registrar <subcommand> help' for more details.
             return f"{KOMODO_MONGO_ARCHIVE} is corrupt"
         names = run_cmd("docker ps -a --format '{{.Names}}' 2>/dev/null") or ""
         existing = {n.strip() for n in names.split("\n") if n.strip()}
+        running = {n.strip() for n in (run_cmd("docker ps --format '{{.Names}}' 2>/dev/null") or "").split("\n") if n.strip()}
         for label, key, default in (("database", "komodo_mongo_container", KOMODO_MONGO_CONTAINER),
                                     ("core", "komodo_core_container", KOMODO_CORE_CONTAINER)):
             name = self.config.get(key, default)
             if name not in existing:
                 return f"the Komodo {label} container ({name}) does not exist; run: sudo ./voipbin komodo setup"
+        mongo = self.config.get("komodo_mongo_container", KOMODO_MONGO_CONTAINER)
+        if mongo not in running:
+            # core would be stopped for nothing: the restore into a stopped database cannot work
+            return f"the Komodo database container ({mongo}) is not running; run: sudo ./voipbin komodo setup"
         return None
 
     def _restore_komodo_state(self, project_dir, backup_dir):

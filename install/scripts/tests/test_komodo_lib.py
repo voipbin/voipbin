@@ -604,7 +604,7 @@ bad_inputs = {
     "10001 characters": [("API_SSL_CERT_BASE64", "A" * 10001)],
     "brackets": [("API_URL", "x[[y")],
     "duplicate key": [("API_URL", "a"), ("API_URL", "b")],
-    "one bad key blocks the good ones": [("KAMAILIO_EXTERNAL_IP", "10.0.0.5"), ("API_URL", "")],
+    "one bad key blocks the good ones": [("KAMAILIO_EXTERNAL_IP", "192.0.2.5"), ("API_URL", "")],
 }
 for label, pairs in bad_inputs.items():
     SRV.calls.clear()
@@ -619,7 +619,7 @@ check("G4 a rejected value is not echoed", "x[[y" not in "".join(ALL_OUTPUT))
 print("== G5 order: HOST_EXTERNAL_IP last")
 fresh()
 p = adopted_project()
-pairs = [("HOST_EXTERNAL_IP", "10.0.2.69"), ("KAMAILIO_EXTERNAL_IP", "10.0.2.77"), ("RTPENGINE_EXTERNAL_IP", "10.0.2.78"),
+pairs = [("HOST_EXTERNAL_IP", "192.0.2.69"), ("KAMAILIO_EXTERNAL_IP", "192.0.2.77"), ("RTPENGINE_EXTERNAL_IP", "192.0.2.78"),
          ("API_URL", "https://api.example.test/"), ("WEBSOCKET_URL", "wss://api.example.test/ws")]
 rv, out, err = run(K.var_set, p, pairs)
 order = SRV.names("UpdateVariableValue")
@@ -628,7 +628,7 @@ check("G5 HOST_EXTERNAL_IP is written last even when passed first", rv == 0 and 
 check("G5 other keys keep the given order", order[:4] == [K.VAR_PREFIX + k for k in ("KAMAILIO_EXTERNAL_IP", "RTPENGINE_EXTERNAL_IP", "API_URL", "WEBSOCKET_URL")])
 st = status_line(err)
 check("G5 status line ok with written names, no values", st.get("status") == "ok" and names(st["written"]) == set(k for k, _ in pairs)
-      and "10.0.2.69" not in err, err)
+      and "192.0.2.69" not in err, err)
 check("G5 stdout stays empty", out == "")
 rv, out, err = run(K.var_set, p, pairs)
 st = status_line(err)
@@ -636,9 +636,9 @@ check("G5 same values again: all unchanged", rv == 0 and st.get("written") == ""
 
 # ==============================================================================
 print("== G6 k-th call failure: written/pending, HOST_EXTERNAL_IP unwritten, idempotent rerun")
-ip_pairs = [("KAMAILIO_EXTERNAL_IP", "10.0.2.77"), ("RTPENGINE_EXTERNAL_IP", "10.0.2.78"),
+ip_pairs = [("KAMAILIO_EXTERNAL_IP", "192.0.2.77"), ("RTPENGINE_EXTERNAL_IP", "192.0.2.78"),
             ("API_URL", "https://api.example.test/"), ("WEBSOCKET_URL", "wss://api.example.test/ws"),
-            ("HOST_EXTERNAL_IP", "10.0.2.69")]
+            ("HOST_EXTERNAL_IP", "192.0.2.69")]
 for k in range(1, 6):
     fresh()
     p = adopted_project()
@@ -651,7 +651,7 @@ for k in range(1, 6):
     check("G6 failure at call %d: exit 21 with written and pending names" % k,
           rv == 21 and st.get("status") == "error" and names(st["written"]) == exp_written and names(st["pending"]) == exp_pending, err)
     check("G6 failure at call %d: HOST_EXTERNAL_IP is not written to Komodo or the copy" % k,
-          K.VAR_PREFIX + "HOST_EXTERNAL_IP" not in [n for n in SRV.names("UpdateVariableValue") if SRV.variables[n]["value"] == "10.0.2.69"]
+          K.VAR_PREFIX + "HOST_EXTERNAL_IP" not in [n for n in SRV.names("UpdateVariableValue") if SRV.variables[n]["value"] == "192.0.2.69"]
           and copy["HOST_EXTERNAL_IP"] == key_value("HOST_EXTERNAL_IP"))
     check("G6 failure at call %d: copy has only the written keys' new values" % k,
           all(copy[x] == dict(ip_pairs)[x] for x in exp_written) and all(copy[x] == key_value(x) for x in exp_pending))
@@ -678,11 +678,11 @@ fresh()
 p = adopted_project()
 os.chmod(os.path.join(p, ".env.komodo"), 0o640)
 st0 = os.stat(os.path.join(p, ".env.komodo"))
-rv, out, err = run(K.var_set, p, [("KAMAILIO_EXTERNAL_IP", "10.1.1.1"), ("API_SSL_CERT_BASE64", "AAAA")])
+rv, out, err = run(K.var_set, p, [("KAMAILIO_EXTERNAL_IP", "192.0.2.11"), ("API_SSL_CERT_BASE64", "AAAA")])
 st1 = os.stat(os.path.join(p, ".env.komodo"))
 copy_lines = rd(p, ".env.komodo")
 check("G7 copy keeps owner and mode", rv == 0 and (st0.st_uid, st0.st_gid) == (st1.st_uid, st1.st_gid) and stat.S_IMODE(st1.st_mode) == 0o640)
-check("G7 only the written lines change", "KAMAILIO_EXTERNAL_IP=10.1.1.1" in copy_lines.split("\n")
+check("G7 only the written lines change", "KAMAILIO_EXTERNAL_IP=192.0.2.11" in copy_lines.split("\n")
       and "API_SSL_CERT_BASE64=AAAA" in copy_lines.split("\n") and "HOST_EXTERNAL_IP=%s" % key_value("HOST_EXTERNAL_IP") in copy_lines.split("\n"))
 check("G7 no temp file is left behind", [f for f in os.listdir(p) if f.startswith(".env.komodo.")] == [])
 # a key without a line is appended
@@ -706,12 +706,12 @@ def readonly_run(pairs):
         return pp, run(K.var_set, pp, pairs)
     finally:
         os.chmod(pp, 0o755)
-pp, (rv, out, err) = readonly_run([("KAMAILIO_EXTERNAL_IP", "10.1.1.1")])
+pp, (rv, out, err) = readonly_run([("KAMAILIO_EXTERNAL_IP", "192.0.2.11")])
 check("G7 read-only copy and an IP key -> 21 reason=env-copy (Komodo was written)",
-      rv == 21 and status_line(err).get("reason") == "env-copy" and SRV.variables[K.VAR_PREFIX + "KAMAILIO_EXTERNAL_IP"]["value"] == "10.1.1.1", err)
+      rv == 21 and status_line(err).get("reason") == "env-copy" and SRV.variables[K.VAR_PREFIX + "KAMAILIO_EXTERNAL_IP"]["value"] == "192.0.2.11", err)
 not_escalated = []
 for ipk in K.IP_KEYS:
-    pp, (rv, out, err) = readonly_run([(ipk, "10.9.9.9")])
+    pp, (rv, out, err) = readonly_run([(ipk, "192.0.2.99")])
     if rv != 21 or status_line(err).get("reason") != "env-copy":
         not_escalated.append(ipk)
 check("G7 every IP key escalates an env-copy failure to 21", not_escalated == [], not_escalated)
@@ -779,7 +779,7 @@ rv, out, err = with_url(DEAD_URL, run, K.var_set, p, ip_pairs)
 check("G10 core down -> 21 komodo-unreachable, all keys pending, nothing written", rv == 21
       and status_line(err).get("reason") == "komodo-unreachable" and names(status_line(err)["pending"]) == set(k for k, _ in ip_pairs)
       and status_line(err)["written"] == "", (rv, err))
-check("G10 core down leaves the copy alone", "10.0.2.77" not in rd(p, ".env.komodo"))
+check("G10 core down leaves the copy alone", "192.0.2.77" not in rd(p, ".env.komodo"))
 fresh()
 p = adopted_project()
 SRV.mongo_sleep = 1.2
@@ -1333,11 +1333,11 @@ rv, out, err = run(K.provision, p)
 check("G16 missing .env -> 2", rv == 2 and SRV.calls == [])
 p = provision_case()
 rv, out, err = with_url(DEAD_URL, run, K.provision, p)
-check("G16 Komodo unreachable -> 1 (other failure), .env unchanged", rv == 1 and no_marker(p) and "JWT_KEY=" in rd(p, ".env"))
+check("G16 Komodo unreachable -> 21, .env unchanged", rv == 21 and no_marker(p) and "JWT_KEY=" in rd(p, ".env"))
 p = provision_case(key=False)
 wr(p, "komodo/admin-password", "wrong\n", 0o600)
 rv, out, err = run(K.provision, p)
-check("G16 wrong admin password -> 1, not echoed", rv == 1 and "wrong" not in out + err, (rv, err))
+check("G16 wrong admin password -> 21 (login rejected), not echoed", rv == 21 and "wrong" not in out + err, (rv, err))
 # 9 keys: a value over the limit stops the import
 big = env_text().replace("API_SSL_CERT_BASE64=%s" % key_value("API_SSL_CERT_BASE64"), "API_SSL_CERT_BASE64=" + "A" * 10001)
 p = provision_case(env=big)
@@ -1484,6 +1484,23 @@ SRV.inject[("GetCoreInfo", SRV.counts.get("GetCoreInfo", 0) + 1)] = "http500"
 rv, out, err = run(K.onboard, p, ok_, ko_)
 check("G17 other Komodo error -> 1", rv == 1)
 
+# ------------------------------------------------------------------------------
+print("== G17b server registration (server-ok)")
+fresh()
+p = make_project(key=False)
+os.environ["VOIPBIN_PROJECT_DIR"] = p
+SRV.server_state = "Ok"
+check("G17b the server is registered and Ok -> True", K.server_registered(p) is True)
+SRV.server_state = "NotOk"
+check("G17b a server that is listed but not Ok -> False", K.server_registered(p) is False)
+SRV.server_state = "Ok"
+check("G17b Komodo unreachable -> False", with_url(DEAD_URL, lambda: K.server_registered(p)) is False)
+wr(p, "komodo/admin-password", "wrong-password\n", 0o600)
+check("G17b login rejected -> False", K.server_registered(p) is False)
+os.unlink(os.path.join(p, "komodo/admin-password"))
+check("G17b admin password file missing -> False", K.server_registered(p) is False)
+wr(p, "komodo/admin-password", FakeKomodo.ADMIN[1] + "\n", 0o600)
+
 # ==============================================================================
 print("== G18 CLI entry points (subprocess)")
 def cli(args, stdin="", project=None, url=None):
@@ -1496,9 +1513,9 @@ def cli(args, stdin="", project=None, url=None):
     return r
 fresh()
 p = adopted_project()
-r = cli(["var-set"], "KAMAILIO_EXTERNAL_IP=10.5.5.5\nHOST_EXTERNAL_IP=10.5.5.6\n", p)
+r = cli(["var-set"], "KAMAILIO_EXTERNAL_IP=192.0.2.55\nHOST_EXTERNAL_IP=192.0.2.56\n", p)
 check("G18 var-set reads KEY=VALUE lines from stdin, status line on stderr, stdout empty",
-      r.returncode == 0 and r.stdout == "" and "status=ok" in r.stderr and "10.5.5.5" not in r.stderr, (r.returncode, r.stderr))
+      r.returncode == 0 and r.stdout == "" and "status=ok" in r.stderr and "192.0.2.55" not in r.stderr, (r.returncode, r.stderr))
 r = cli(["var-set"], "JWT_KEY=x\n", p)
 check("G18 var-set rejects a key outside the allow list with exit 2", r.returncode == 2 and "reason=invalid" in r.stderr)
 r = cli(["var-set"], "no-equals-sign\n", p)
@@ -1513,6 +1530,12 @@ r = cli(["exec"], "", p)
 check("G18 exec without a verb -> 1", r.returncode == 1)
 r = cli(["mode"], "", p)
 check("G18 mode", r.stdout == "adopted\n" and r.returncode == 0)
+r = cli(["server-ok"], "", p)
+check("G18 server-ok prints nothing and exits 0 when the server is Ok", r.returncode == 0 and r.stdout == "" and r.stderr == "", (r.returncode, r.stderr))
+SRV.server_state = "NotOk"
+r = cli(["server-ok"], "", p)
+check("G18 server-ok exits 1 when the server is not Ok", r.returncode == 1 and r.stdout == "")
+SRV.server_state = "Ok"
 r = cli(["bogus"], "", p)
 check("G18 unknown sub command -> 2", r.returncode == 2)
 r = cli(["onboard", "--out-key", os.path.join(p, "a")], "", p)

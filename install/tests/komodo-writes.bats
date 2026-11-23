@@ -346,6 +346,7 @@ HOST_EXTERNAL_IP=203.0.113.5" ]
 stub_mkcert() {
     mock_command_script mkcert '
 cert=""; key=""
+echo "$*" >> "$T/mkcert.args"
 while [[ $# -gt 0 ]]; do
     case "$1" in
         -cert-file) cert="$2"; shift 2 ;;
@@ -568,6 +569,22 @@ dns_fixture() {
     [ "$MKCERT_RESTART_PENDING" = "true" ]
     [ ! -e "$T/lib.log" ]
     [ -z "$(docker_calls | grep '^compose')" ]
+}
+
+@test "setup_mkcert: the host address of the new API certificate comes from the Variable copy with Komodo and from .env without" {
+    load_start_functions
+    stub_mkcert
+    printf 'TLS_MODE=mkcert\nHOST_EXTERNAL_IP=203.0.113.5\n' > "$PROJECT_DIR/.env"
+    printf 'voipbin-api-mgr\n' > "$T/ps.out"
+    setup_mkcert > "$T/out.txt"
+    grep -q -- '-key-file .*api/privkey.pem .*203.0.113.5' "$T/mkcert.args"
+    rm -rf "$PROJECT_DIR/certs" "$T/mkcert.args"
+    mark_adopted
+    printf 'TLS_MODE=mkcert\n' > "$PROJECT_DIR/.env"
+    make_copy "HOST_EXTERNAL_IP=198.51.100.7"
+    MKCERT_RESTART_PENDING=false
+    setup_mkcert > "$T/out.txt"
+    grep -q -- '-key-file .*api/privkey.pem .*198.51.100.7' "$T/mkcert.args"
 }
 
 @test "restart_cert_consumers: restarts through the bridge once, only when mkcert asked for it" {
@@ -896,6 +913,7 @@ HOOK_SSL_PRIVKEY_BASE64=$key_b64" ]
     [ -f "$PROJECT_DIR/certs/api/cert.pem" ]
     [ -f "$PROJECT_DIR/.certs-pending" ]
     [ "$(lib_count exec)" -eq 0 ]
+    [[ "$output" == *"status=error reason=komodo-unavailable "* ]]
 }
 
 @test "install-certs.sh adopted: a failed recreate leaves the marker and keeps its exit code" {
@@ -906,6 +924,8 @@ HOOK_SSL_PRIVKEY_BASE64=$key_b64" ]
     run_install_certs
     [ "$status" -eq 16 ]
     [ -f "$PROJECT_DIR/.certs-pending" ]
+    # not a Komodo outage: the result line says so
+    [[ "$output" == *"status=error reason=komodo-write-failed "* ]]
 }
 
 make_long_chain() {

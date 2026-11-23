@@ -862,7 +862,7 @@ def group_komodo_command():
         os.chmod(os.path.join(d, ".env.komodo"), 0)
         run_main(["status"])
         os.chmod(os.path.join(d, ".env.komodo"), 0o600)
-        check("G5.11 an unreadable .env.komodo is not named (current behavior)", "ENV:unset:compose ps" in denv(), denv()[:200])
+        check("G5.11 an unreadable .env.komodo is still named, so compose stops instead of running without the values", "ENV:.env,.env.komodo:compose ps" in denv(), denv()[:200])
     check("G5.12 the variable does not leak after the files are gone", os.environ.get("COMPOSE_ENV_FILES") in (None, ".env,.env.komodo"))
     prev = os.getcwd()
     os.chdir(project("g5_env_gone"))
@@ -1182,7 +1182,7 @@ def make_backup(d, komodo, ts="20260101-000000", extra_env="ENV_BACKUP=1\n"):
 
 def restore_env(name, adopted):
     d = project(name, adopted=adopted, versions_lock=True)
-    docker_cfg(docker_ps="voipbin-db\nvoipbin-redis\n", docker_ps_stack="voipbin-db\nvoipbin-redis\n",
+    docker_cfg(docker_ps="voipbin-db\nvoipbin-redis\nvoipbin-komodo-mongo\n", docker_ps_stack="voipbin-db\nvoipbin-redis\n",
                docker_ps_all="voipbin-db\nvoipbin-redis\nvoipbin-komodo-core\nvoipbin-komodo-mongo\n")
     return d
 
@@ -1248,17 +1248,26 @@ def group_restore():
     # --- redis not running: the hint is a voipbin command
     d = restore_env("g9_hint", True)
     ts = make_backup(d, True)
-    docker_cfg(docker_ps="voipbin-db\n", docker_ps_stack="voipbin-db\n", docker_ps_all="voipbin-db\nvoipbin-komodo-core\nvoipbin-komodo-mongo\n")
+    docker_cfg(docker_ps="voipbin-db\nvoipbin-komodo-mongo\n", docker_ps_stack="voipbin-db\n", docker_ps_all="voipbin-db\nvoipbin-komodo-core\nvoipbin-komodo-mongo\n")
     with Fake() as fake:
         cli, out = restore(d, ts, fake)
         check("G9.8 hints use voipbin start instead of docker compose up", "voipbin start redis && docker exec" in out and "docker compose up" not in out, out)
+    # --- the Komodo database container exists but is stopped: refused before anything changes
+    d = restore_env("g9_mongo_stopped", True)
+    ts = make_backup(d, True)
+    docker_cfg(docker_ps="voipbin-db\nvoipbin-redis\n", docker_ps_stack="voipbin-db\nvoipbin-redis\n",
+               docker_ps_all="voipbin-db\nvoipbin-redis\nvoipbin-komodo-core\nvoipbin-komodo-mongo\n")
+    with Fake() as fake:
+        cli, out = restore(d, ts, fake)
+        check("G9.8b a stopped Komodo database container: refused up front, core is not stopped, MySQL untouched",
+              "is not running" in out and cli.last_rc == 1 and "docker stop" not in dlog() and "exec -i voipbin-db" not in dlog(), (out[-300:], dlog()))
     docker_cfg(docker_ps="voipbin-redis\n")
     d = restore_env("g9_hint2", True)
     docker_cfg(docker_ps="voipbin-redis\n", docker_ps_stack="voipbin-redis\n")
     ts = make_backup(d, True)
     with Fake() as fake:
         cli, out = restore(d, ts, fake)
-        check("G9.9 'database is not running' hint is voipbin start db redis", "  voipbin start db redis" in out and "docker compose" not in out, out)
+        check("G9.9 'database is not running' hint is two voipbin start commands (start takes one service)", "  voipbin start db && voipbin start redis" in out and "docker compose" not in out, out)
     # --- failure table
     # (2) fails: nothing touches MySQL, core is started, files are put back
     for label, fail_re, expect_stop in (("core cannot be stopped", r"^stop ", True),
@@ -1266,7 +1275,7 @@ def group_restore():
                                         ("mongorestore fails", r"mongorestore", False)):
         d = restore_env("g9_f2", True)
         ts = make_backup(d, True)
-        docker_cfg(docker_fail=fail_re, docker_ps="voipbin-db\nvoipbin-redis\n", docker_ps_stack="voipbin-db\nvoipbin-redis\n",
+        docker_cfg(docker_fail=fail_re, docker_ps="voipbin-db\nvoipbin-redis\nvoipbin-komodo-mongo\n", docker_ps_stack="voipbin-db\nvoipbin-redis\n",
                    docker_ps_all="voipbin-db\nvoipbin-redis\nvoipbin-komodo-core\nvoipbin-komodo-mongo\n")
         old_a = open(os.path.join(d, ".env.komodo")).read()
         old_b = open(os.path.join(d, "komodo", "cli-key")).read()
@@ -1281,7 +1290,7 @@ def group_restore():
     # core start fails after a successful restore: reported, MySQL untouched
     d = restore_env("g9_f2b", True)
     ts = make_backup(d, True)
-    docker_cfg(docker_fail=r"^start ", docker_ps="voipbin-db\nvoipbin-redis\n", docker_ps_stack="voipbin-db\nvoipbin-redis\n",
+    docker_cfg(docker_fail=r"^start ", docker_ps="voipbin-db\nvoipbin-redis\nvoipbin-komodo-mongo\n", docker_ps_stack="voipbin-db\nvoipbin-redis\n",
                docker_ps_all="voipbin-db\nvoipbin-redis\nvoipbin-komodo-core\nvoipbin-komodo-mongo\n")
     with Fake() as fake:
         cli, out = restore(d, ts, fake)
@@ -1290,13 +1299,15 @@ def group_restore():
     # (2) ok, (3) fails: partial state like today, no convergence
     d = restore_env("g9_f3", True)
     ts = make_backup(d, True)
-    docker_cfg(docker_fail=r"exec -i voipbin-db", docker_ps="voipbin-db\nvoipbin-redis\n", docker_ps_stack="voipbin-db\nvoipbin-redis\n",
+    docker_cfg(docker_fail=r"exec -i voipbin-db", docker_ps="voipbin-db\nvoipbin-redis\nvoipbin-komodo-mongo\n", docker_ps_stack="voipbin-db\nvoipbin-redis\n",
                docker_ps_all="voipbin-db\nvoipbin-redis\nvoipbin-komodo-core\nvoipbin-komodo-mongo\n")
     with Fake() as fake:
         cli, out = restore(d, ts, fake)
         check("G9.12 MySQL import fails after the Komodo step: today's message, no convergence, Komodo state stays at the backup",
               "MySQL import failed" in out and fake.calls == [] and "check_core" not in fake.events
               and open(os.path.join(d, ".env.komodo")).read() == "FROM_BACKUP=%s\n" % SENTINEL, out[-300:])
+        check("G9.12b ... and the run ends non-zero with the instruction to run the same restore again",
+              cli.last_rc == 1 and "already restored from this backup" in out and "Run the same restore" in out, (cli.last_rc, out[-400:]))
     # (4) fails: warning, komodo setup advice, non-zero exit
     for label, setup in (("core does not answer", lambda f: setattr(f, "core_ok", False)),
                          ("the Stack cannot be updated", lambda f: setattr(f, "stack_error", K.KomodoError("http", 500))),
@@ -1319,7 +1330,7 @@ def group_restore():
         check("G9.14 a corrupt archive is refused before anything changes", cli.last_rc == 1 and "corrupt" in out and "DOCKER:stop" not in dlog() and "exec -i voipbin-db" not in dlog(), out[-300:])
     d = restore_env("g9_pre2", True)
     ts = make_backup(d, True)
-    docker_cfg(docker_ps="voipbin-db\nvoipbin-redis\n", docker_ps_stack="voipbin-db\nvoipbin-redis\n", docker_ps_all="voipbin-db\nvoipbin-redis\nvoipbin-komodo-core\n")
+    docker_cfg(docker_ps="voipbin-db\nvoipbin-redis\nvoipbin-komodo-mongo\n", docker_ps_stack="voipbin-db\nvoipbin-redis\n", docker_ps_all="voipbin-db\nvoipbin-redis\nvoipbin-komodo-core\n")
     with Fake() as fake:
         cli, out = restore(d, ts, fake)
         check("G9.15 a missing Komodo database container is refused up front", cli.last_rc == 1 and "voipbin-komodo-mongo" in out and "DOCKER:stop" not in dlog() and "exec -i voipbin-db" not in dlog(), out[-300:])
@@ -1343,11 +1354,68 @@ def group_restore():
         check("G9.18 restore refusal is the process exit code 1", rc == 1, (rc, out))
     d = restore_env("g9_main_none", False)
     ts = make_backup(d, False)
-    docker_cfg(docker_fail=r"exec -i voipbin-db", docker_ps="voipbin-db\nvoipbin-redis\n", docker_ps_stack="voipbin-db\nvoipbin-redis\n")
+    docker_cfg(docker_fail=r"exec -i voipbin-db", docker_ps="voipbin-db\nvoipbin-redis\nvoipbin-komodo-mongo\n", docker_ps_stack="voipbin-db\nvoipbin-redis\n")
     with NoBridge() as fake:
         rc, out = run_main(["restore", ts, "--force"])
         check("G9.19 none: a failed MySQL import still exits 0 (unchanged)", rc == 0 and "MySQL import failed" in out, (rc, out[-200:]))
     docker_cfg()
+
+
+# ==============================================================================
+# G8b backup refuses a broken Komodo state, G11 clean
+# ==============================================================================
+def group_backup_broken_and_clean():
+    print("G8b backup of a broken Komodo state")
+    docker_cfg(docker_ps="voipbin-db\n")
+    d = project("g8b_broken")
+    write(os.path.join(d, ".env.komodo"), "A=1\n", 0o600)
+    cli = new_cli()
+    with NoBridge() as fake, in_dir(d):
+        rv = cli._do_backup(d)
+        check("G8b.1 broken state: no backup is made (it could not be restored later), no dump runs",
+              rv is None and not os.path.exists(os.path.join(d, "backups")) and "mysqldump" not in dlog(), (rv, dlog()[:200]))
+
+    print("G11 clean")
+    td = os.path.join(TMP, "teardown.log")
+
+    def clean(name, args, adopted, down_rc=0):
+        docker_cfg()
+        d = project(name, adopted=adopted)
+        write(os.path.join(d, ".certs-pending"), "x\n", 0o600)
+        write(os.path.join(d, ".voipbin-hook-token"), "1 2\n", 0o600)
+        open(td, "w").close()
+        fake_setup = os.path.join(TMP, "fake-teardown.sh")
+        write(fake_setup, '#!/bin/bash\necho "teardown $*" >> "%s"\nexit 0\n' % td, 0o755)
+        os.environ[CLI.KOMODO_SETUP_ENV] = fake_setup
+        fk = Fake()
+        fk.codes = {"down": down_rc}
+        with fk, in_dir(d):
+            cli = new_cli()
+            out = capture(cli.cmd_clean, list(args))
+        return d, cli, fk, out
+
+    d, cli, fk, out = clean("g11_none", ["--dns", "--force"], False)
+    check("G11.1 none, plain clean: docker compose down directly, the bridge is not used",
+          "DOCKER:compose down" in dlog() and fk.calls == [] and cli.last_rc == 0, (dlog(), fk.calls))
+    d, cli, fk, out = clean("g11_none_purge", ["--purge", "--force"], False)
+    check("G11.2 none, --purge: no Komodo teardown, the unrelated files are not touched",
+          open(td).read() == "" and not os.path.exists(os.path.join(d, ".env")) and os.path.exists(os.path.join(d, ".certs-pending")), (open(td).read(), out[-200:]))
+    d, cli, fk, out = clean("g11_ad", ["--dns", "--force"], True)
+    check("G11.3 adopted, plain clean: the stack goes down through Komodo, not docker compose",
+          fk.calls == [("down", [])] and "DOCKER:compose down" not in dlog() and cli.last_rc == 0, (fk.calls, dlog()))
+    d, cli, fk, out = clean("g11_ad21", ["--dns", "--force"], True, down_rc=21)
+    check("G11.4 adopted, Komodo unreachable (21): direct docker compose down as the fallback, with a warning",
+          fk.calls == [("down", [])] and "DOCKER:compose down" in dlog() and "removing the containers directly" in out, (dlog(), out[-200:]))
+    d, cli, fk, out = clean("g11_ad1", ["--dns", "--force"], True, down_rc=1)
+    check("G11.5 adopted, any other failure of the down: reported through the exit code, no direct fallback",
+          cli.last_rc == 1 and "DOCKER:compose down" not in dlog(), (cli.last_rc, dlog()))
+    d, cli, fk, out = clean("g11_adpurge", ["--purge", "--force"], True)
+    check("G11.6 adopted, --purge: .env.komodo, certificate state files and the hook token go, Komodo is torn down last",
+          not any(os.path.exists(os.path.join(d, n)) for n in (".env.komodo", ".certs-pending", ".voipbin-hook-token", ".env"))
+          and "teardown --teardown" in open(td).read(), (os.listdir(d), open(td).read()))
+    check("G11.7 adopted, --purge: the confirmation text names Komodo",
+          "Komodo: its containers and data" in out, out[:600])
+    os.environ.pop(CLI.KOMODO_SETUP_ENV, None)
 
 
 # ==============================================================================
@@ -1379,7 +1447,8 @@ def main():
     try:
         for group in (group_install, group_none_lifecycle, group_adopted_lifecycle, group_update_preexec,
                       group_update_resumed, group_verify, group_unpinned, group_komodo_command,
-                      group_env_check, group_status, group_backup, group_restore, group_hygiene):
+                      group_env_check, group_status, group_backup, group_restore,
+                      group_backup_broken_and_clean, group_hygiene):
             run_group(group)
     finally:
         shutil.rmtree(TMP, ignore_errors=True)

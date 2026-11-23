@@ -918,7 +918,7 @@ check_realm() {
     elif [[ "$running_ext" == "$DOCTOR_DOMAIN_EXT" ]]; then
         doctor_result realm pass "registrar-manager DOMAIN_NAME_EXTENSION=$running_ext matches .env"
     else
-        doctor_fail realm "running=$running_ext .env=$DOCTOR_DOMAIN_EXT" "$(compose_hint rm -fsv registrar-manager) && $(compose_hint up -d registrar-manager)"
+        doctor_fail realm "running=$running_ext .env=$DOCTOR_DOMAIN_EXT" "$(realm_recreate_hint)"
     fi
 }
 

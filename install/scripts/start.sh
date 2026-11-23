@@ -196,7 +196,12 @@ setup_mkcert() {
 
         # Get host IP for certificate
         local host_ip
-        host_ip=$(grep HOST_EXTERNAL_IP "$PROJECT_DIR/.env" 2>/dev/null | cut -d'=' -f2 | head -1)
+        if [[ "$(komodo_mode)" != "none" ]]; then
+            # with Komodo the address lives in the Variable copy, not in .env
+            host_ip=$(host_env_read HOST_EXTERNAL_IP)
+        else
+            host_ip=$(grep HOST_EXTERNAL_IP "$PROJECT_DIR/.env" 2>/dev/null | cut -d'=' -f2 | head -1)
+        fi
         [ -z "$host_ip" ] && host_ip="127.0.0.1"
 
         # Create cert directories

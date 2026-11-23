@@ -347,6 +347,8 @@ def _write_atomic(path, data, mode_bits=0o600, owner_from=None):
     try:
         with os.fdopen(fd, "wb") as f:
             f.write(data)
+            f.flush()
+            os.fsync(f.fileno())
         if owner_from is not None:
             os.chmod(tmp, stat.S_IMODE(owner_from.st_mode))
             try:
@@ -883,6 +885,16 @@ def _server_state(client, timeout):
     return "NotOk"
 
 
+def server_registered(project_dir):
+    """True when the server named SERVER_NAME is registered and its state is Ok.
+    Uses the admin login (the CLI key does not exist yet when periphery is set up)."""
+    try:
+        admin = admin_login(project_dir)
+    except (Unavailable, KomodoError):
+        return False
+    return _server_state(admin, TIMEOUT_READ) == "Ok"
+
+
 def ping(project_dir, quiet=False):
     m = mode(project_dir)
     if m == "none":
@@ -1396,6 +1408,8 @@ def _write_atomic_noreplace(path, data, owner_from):
     fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
     with os.fdopen(fd, "wb") as f:
         f.write(data)
+        f.flush()
+        os.fsync(f.fileno())
     os.chmod(path, stat.S_IMODE(owner_from.st_mode))
     try:
         os.chown(path, owner_from.st_uid, owner_from.st_gid, follow_symlinks=False)
@@ -1453,9 +1467,11 @@ def provision(project_dir):
             return EXIT_FAIL
     except Unavailable as e:
         _err("provision: %s" % e)
-        return EXIT_FAIL
+        return EXIT_UNAVAILABLE
     except KomodoError as e:
         _err("provision: Komodo call failed (%s)" % e)
+        if e.kind in ("unreachable", "timeout") or (e.kind == "http" and e.code in (401, 403)):
+            return EXIT_UNAVAILABLE
         return EXIT_FAIL
 
     copy_path = _p(project_dir, ENV_COPY)
@@ -1525,7 +1541,7 @@ def _read_pairs(stream):
 def main(argv=None):
     argv = list(sys.argv[1:] if argv is None else argv)
     if not argv:
-        _err("usage: komodo_lib.py mode|guard|ping|exec|var-set|health|provision|onboard ...")
+        _err("usage: komodo_lib.py mode|guard|ping|exec|var-set|health|provision|onboard|server-ok ...")
         return EXIT_INVALID
     sub, rest = argv[0], argv[1:]
     project_dir = default_project_dir()
@@ -1549,6 +1565,8 @@ def main(argv=None):
             _status(False, [], reason="invalid")
             return EXIT_INVALID
         return var_set(project_dir, pairs)
+    if sub == "server-ok":
+        return EXIT_OK if server_registered(project_dir) else EXIT_FAIL
     if sub == "health":
         return health(project_dir, quick="--quick" in rest)
     if sub == "provision":

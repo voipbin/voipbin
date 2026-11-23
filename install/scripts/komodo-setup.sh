@@ -196,6 +196,12 @@ periphery_connected() {
     [[ "$out" == *'"periphery"'* ]]
 }
 
+# periphery_registered: connected AND listed by Komodo as the server "Host" in
+# state Ok. A bare TCP connection is not enough (a rejected key can still connect).
+periphery_registered() {
+    periphery_connected && python3 "$KOMODO_LIB" server-ok >/dev/null 2>&1
+}
+
 wait_for() {
     local what="$1"
     shift
@@ -483,7 +489,7 @@ step_periphery() {
 
     # Already connected and hardened: nothing to register again.
     if [[ "$PERIPHERY_BINARY_CHANGED" == "no" ]] && periphery_config_hardened \
-        && systemctl is-active --quiet "$PERIPHERY_UNIT_NAME" && periphery_connected; then
+        && systemctl is-active --quiet "$PERIPHERY_UNIT_NAME" && periphery_registered; then
         systemctl enable "$PERIPHERY_UNIT_NAME" >/dev/null 2>&1 || true
         log_info "periphery is connected and hardened, keeping its configuration"
         PERIPHERY_STATE="unchanged"
@@ -508,12 +514,12 @@ step_periphery() {
     write_periphery_config "$pubkey" "$onboarding"
     systemctl enable "$PERIPHERY_UNIT_NAME" >/dev/null
     systemctl restart "$PERIPHERY_UNIT_NAME"
-    wait_for "periphery connection to komodo core" periphery_connected
+    wait_for "periphery registration in komodo core" periphery_registered
 
     # Registered: drop the one-time key and reconnect with the pinned core key only.
     write_periphery_config "$pubkey"
     systemctl restart "$PERIPHERY_UNIT_NAME"
-    wait_for "periphery reconnection to komodo core" periphery_connected
+    wait_for "periphery reconnection to komodo core" periphery_registered
     rm -f -- "$key_file" "$pub_file"
     PERIPHERY_STATE="installed"
     log_info "periphery registered as '$SERVER_NAME'"

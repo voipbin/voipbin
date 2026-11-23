@@ -140,7 +140,7 @@ main() {
     clean_mode=$(komodo_mode)
     if [ "$clean_mode" != "none" ]; then
         # Direct compose calls below must see the same inputs as Komodo does.
-        compose_env_setup --readonly || true
+        compose_env_setup --readonly || log_warn "The Komodo environment files cannot be read; the direct compose calls below may report missing variables."
     fi
     if [ "$clean_mode" = "adopted" ] && [ "$PURGE" = true ]; then
         log_warn "--purge also removes .env.komodo and the Komodo variables."

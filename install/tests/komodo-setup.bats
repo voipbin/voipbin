@@ -186,8 +186,10 @@ preinstall_connected_periphery() {
 @test "fresh install: steps run in order guard, onboard, provision" {
     run_setup
     [ "$status" -eq 0 ]
-    run grep -o '^[a-z]*' "$T/lib.log"
+    # server-ok is the registration probe, polled between onboard and provision
+    run bash -c "grep -o '^[a-z-]*' \"$T/lib.log\" | grep -v '^server-ok\$'"
     [ "$output" = "$(printf 'guard\nonboard\nprovision')" ]
+    grep -q '^server-ok' "$T/lib.log"
 }
 
 @test "fresh install: core and mongo come up through the komodo project with a clean compose environment" {
@@ -528,6 +530,26 @@ preinstall_connected_periphery() {
     [ "$status" -eq 1 ]
     last_line_is "VOIPBIN_KOMODO: status=error step=periphery"
     if grep -q '^provision' "$T/lib.log"; then false; fi
+}
+
+@test "periphery that connects but is not registered as Ok fails and keeps the onboarding key in place" {
+    echo 1 > "$T/server-ok.rc"
+    run_setup
+    [ "$status" -eq 1 ]
+    last_line_is "VOIPBIN_KOMODO: status=error step=periphery"
+    if grep -q '^provision' "$T/lib.log"; then false; fi
+    # the one-time key is dropped only after the registration is confirmed
+    grep -q '^onboarding_key' "$ROOT/etc/komodo/periphery.config.toml"
+}
+
+@test "re-run: a connected periphery that Komodo does not list as Ok is registered again" {
+    run_setup
+    [ "$status" -eq 0 ]
+    : > "$T/lib.log"
+    echo 1 > "$T/server-ok.rc"
+    run_setup
+    [ "$status" -eq 1 ]
+    grep -q '^onboard' "$T/lib.log"
 }
 
 @test "onboard failure stops before provision" {

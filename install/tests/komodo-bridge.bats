@@ -403,6 +403,24 @@ HOST_EXTERNAL_IP=203.0.113.5" ]
     [ "$(compose_hint rm -fsv registrar-manager)" = "voipbin start registrar-manager" ]
 }
 
+@test "compose_exec with Komodo: value-less flags are dropped, an unknown option is refused with 1 and nothing runs" {
+    mark_adopted
+    run compose_exec rm -fsv web-proxy
+    [ "$status" -eq 0 ]
+    [ "$(lib_calls | tail -1)" = "exec rm web-proxy" ]
+    : > "$T/lib.log"
+    run compose_exec stop -t 30 coredns
+    [ "$status" -eq 1 ]
+    [[ "$output" == *"option -t is not supported"* ]]
+    [ ! -s "$T/lib.log" ]
+}
+
+@test "realm_recreate_hint: none keeps the two historic steps, Komodo prints one start" {
+    [ "$(realm_recreate_hint)" = "docker compose rm -fsv registrar-manager && docker compose up -d registrar-manager" ]
+    mark_adopted
+    [ "$(realm_recreate_hint)" = "voipbin start registrar-manager" ]
+}
+
 # -----------------------------------------------------------------------------
 # stop.sh
 # -----------------------------------------------------------------------------

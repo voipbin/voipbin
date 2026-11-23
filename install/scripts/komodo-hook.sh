@@ -76,16 +76,17 @@ trusted_file "$TOKEN_FILE" || deny "no valid token"
 
 token_line=""
 IFS= read -r token_line < "$TOKEN_FILE" || [[ -n "$token_line" ]] || true
-if [[ ! "$token_line" =~ ^([0-9]+)[[:space:]]+([0-9]+)[[:space:]]*$ ]]; then
+if [[ ! "$token_line" =~ ^([0-9]{1,9})[[:space:]]+([0-9]{1,12})[[:space:]]*$ ]]; then
     deny "no valid token"
 fi
 token_pid="${BASH_REMATCH[1]}"
 token_time="${BASH_REMATCH[2]}"
 
-[[ "$token_pid" == "$lock_pid" ]] || deny "token does not match the lock"
+[[ "$((10#$token_pid))" == "$lock_pid" ]] || deny "token does not match the lock"
 
 now=$(date +%s)
-age=$((now - token_time))
+# 10# keeps a leading zero from being read as octal
+age=$((now - 10#$token_time))
 if (( age < 0 || age > TOKEN_MAX_AGE )); then
     deny "token expired"
 fi
