@@ -86,7 +86,13 @@ get_env_var() {
     local value
 
     [[ -n "$env_file" && -f "$env_file" ]] || return 0
-    value=$(grep "^${var_name}=" "$env_file" 2>/dev/null | tail -1 | cut -d'=' -f2- || true)
+    if [[ "${env_file##*/}" == ".env" && -f "${env_file}.komodo" ]]; then
+        # A rendered copy sits next to .env: the two files together are the
+        # compose input, the later file wins.
+        value=$({ cat "$env_file" 2>/dev/null; echo; cat "${env_file}.komodo" 2>/dev/null; } | grep "^${var_name}=" 2>/dev/null | tail -1 | cut -d'=' -f2- || true)
+    else
+        value=$(grep "^${var_name}=" "$env_file" 2>/dev/null | tail -1 | cut -d'=' -f2- || true)
+    fi
     value="${value%$'\r'}"
     value="${value#"${value%%[![:space:]]*}"}"
     value="${value%"${value##*[![:space:]]}"}"
@@ -190,6 +196,325 @@ check_compose_profiles_conflict() {
 }
 
 # =============================================================================
+# Komodo bridge: install mode, compose entry, host .env writes
+# =============================================================================
+# The install mode is decided by files only (no docker, no network):
+#   none     no Komodo files: every compose call runs directly on the host,
+#            exactly as before (the default for a pre-existing install)
+#   adopted  komodo/.adopted exists: state changes go through komodo_lib.py
+#   broken   Komodo files without the marker (or the marker cannot be read):
+#            state changes are refused with exit code 21
+# `komodo_lib.py mode` answers the same question; tests keep the two equal.
+
+KOMODO_WRITE_RC=0
+
+# _komodo_path_state <path> <project-dir>
+# 0 = exists, 1 = absent, 2 = cannot tell (a directory on the way is not
+# searchable). Mirrors the lstat result classes used by komodo_lib.py.
+_komodo_path_state() {
+    local path="$1" pd="$2" parent
+    if [[ -L "$path" || -e "$path" ]]; then
+        return 0
+    fi
+    parent="${path%/*}"
+    if [[ -d "$parent" && ! -x "$parent" ]]; then
+        return 2
+    fi
+    if [[ -d "$pd" && ! -x "$pd" ]]; then
+        return 2
+    fi
+    return 1
+}
+
+# komodo_mode -> none | adopted | broken
+komodo_mode() {
+    local pd="${PROJECT_DIR:-}" rel rc=0
+    [[ -n "$pd" ]] || pd="$(dirname "${SCRIPT_DIR:-.}")"
+    _komodo_path_state "$pd/komodo/.adopted" "$pd" || rc=$?
+    case "$rc" in
+        0) echo "adopted"; return 0 ;;
+        2) echo "broken"; return 0 ;;
+    esac
+    for rel in .env.komodo komodo/.env komodo/cli-key; do
+        rc=0
+        _komodo_path_state "$pd/$rel" "$pd" || rc=$?
+        if [[ "$rc" -ne 1 ]]; then
+            echo "broken"
+            return 0
+        fi
+    done
+    echo "none"
+}
+
+# Path of komodo_lib.py (VOIPBIN_KOMODO_LIB is a test-only override).
+_komodo_lib_path() {
+    printf '%s' "${VOIPBIN_KOMODO_LIB:-${SCRIPT_DIR:-$(dirname "${BASH_SOURCE[0]}")}/komodo_lib.py}"
+}
+
+# _komodo_run <sub-command> [args...]: run komodo_lib.py for this project.
+_komodo_run() {
+    local pd="${PROJECT_DIR:-}"
+    [[ -n "$pd" ]] || pd="$(dirname "${SCRIPT_DIR:-.}")"
+    VOIPBIN_PROJECT_DIR="$pd" python3 "$(_komodo_lib_path)" "$@"
+}
+
+KOMODO_BROKEN_HINT="Komodo state is incomplete. Run: sudo ./voipbin komodo setup"
+
+# compose_env_setup [--readonly]
+# Points docker compose at the rendered Komodo copy when one exists. Without
+# a copy and without a marker nothing is exported (the pre-existing install).
+# Default: an unreadable copy, or a marker without a copy, is an error
+# (return 21 with a message). --readonly (doctor) returns 1 for an
+# unreadable copy and 2 for a marker without a copy and prints nothing.
+compose_env_setup() {
+    local readonly_mode=false
+    [[ "${1:-}" == "--readonly" ]] && readonly_mode=true
+    local pd="${PROJECT_DIR:-}" msg="" rc=0
+    [[ -n "$pd" ]] || pd="$(dirname "${SCRIPT_DIR:-.}")"
+    local copy="$pd/.env.komodo"
+
+    if [[ -e "$copy" || -L "$copy" ]]; then
+        if [[ -r "$copy" ]]; then
+            export COMPOSE_ENV_FILES=".env,.env.komodo"
+            return 0
+        fi
+        rc=1
+        msg=".env.komodo exists but cannot be read by this user. Run as the install owner or with sudo"
+    else
+        local state=0
+        _komodo_path_state "$pd/komodo/.adopted" "$pd" || state=$?
+        if [[ "$state" -ne 0 ]]; then
+            return 0
+        fi
+        rc=2
+        msg="Komodo is set up but .env.komodo is missing. Run: sudo ./voipbin komodo setup"
+    fi
+    if [[ "$readonly_mode" == "true" ]]; then
+        return "$rc"
+    fi
+    log_error "$msg" >&2
+    return 21
+}
+
+# compose_exec <verb> [args...]
+# The only entry for compose calls that change state. none: the arguments go
+# to `docker compose` unchanged. adopted: komodo_lib.py exec with the service
+# names only (option arguments are dropped, the verb fixes the meaning).
+# broken: refused with 21.
+compose_exec() {
+    local verb="${1:-}"
+    [[ $# -gt 0 ]] && shift
+    local m
+    m="$(komodo_mode)"
+    case "$m" in
+        adopted)
+            local arg services=()
+            for arg in "$@"; do
+                [[ "$arg" == -* ]] || services+=("$arg")
+            done
+            _komodo_run exec "$verb" ${services[@]+"${services[@]}"}
+            ;;
+        broken)
+            log_error "$KOMODO_BROKEN_HINT" >&2
+            return 21
+            ;;
+        *)
+            docker compose "$verb" "$@"
+            ;;
+    esac
+}
+
+# compose_ping: reachability check before anything is changed on the host.
+# none: nothing to check. Prints nothing on stdout.
+compose_ping() {
+    local m
+    m="$(komodo_mode)"
+    if [[ "$m" == "none" ]]; then
+        return 0
+    fi
+    _komodo_run ping 1>&2
+}
+
+# host_env_write KEY=VALUE...
+# Writes host-derived keys. none: the historic in-place sed on .env (a key
+# that is absent is left absent, failures are not fatal). adopted: the values
+# go to komodo_lib.py var-set on stdin, never on a command line. broken: 21.
+host_env_write() {
+    local m
+    m="$(komodo_mode)"
+    case "$m" in
+        adopted)
+            local rc=0
+            { printf '%s\n' "$@"; } | _komodo_run var-set 1>&2 || rc=${PIPESTATUS[1]}
+            return "$rc"
+            ;;
+        broken)
+            log_error "$KOMODO_BROKEN_HINT" >&2
+            return 21
+            ;;
+        *)
+            local pd="${PROJECT_DIR:-}" pair key val
+            [[ -n "$pd" ]] || pd="$(dirname "${SCRIPT_DIR:-.}")"
+            for pair in "$@"; do
+                key="${pair%%=*}"
+                val="${pair#*=}"
+                sed -i "s|^${key}=.*|${key}=${val}|" "$pd/.env" || true
+            done
+            return 0
+            ;;
+    esac
+}
+
+# komodo_write_marker <name> <line>...
+# Leaves a small state file next to .env (mode 600, owned by the install
+# directory owner even when written by root). A failure is only a warning.
+komodo_write_marker() {
+    local name="$1"
+    shift
+    local pd="${PROJECT_DIR:-}" tmp owner
+    [[ -n "$pd" ]] || pd="$(dirname "${SCRIPT_DIR:-.}")"
+    if ! tmp=$(umask 077 && mktemp "$pd/.${name#.}.XXXXXX" 2>/dev/null); then
+        log_warn "could not record $name" >&2
+        return 0
+    fi
+    if ! printf '%s\n' "$@" > "$tmp" 2>/dev/null; then
+        rm -f "$tmp"
+        log_warn "could not record $name" >&2
+        return 0
+    fi
+    chmod 600 "$tmp" 2>/dev/null || true
+    owner=$(stat -c '%u:%g' "$pd" 2>/dev/null || true)
+    if [[ -n "$owner" ]]; then
+        chown "$owner" "$tmp" 2>/dev/null || true
+    fi
+    if ! mv -f "$tmp" "$pd/$name" 2>/dev/null; then
+        rm -f "$tmp"
+        log_warn "could not record $name" >&2
+    fi
+    return 0
+}
+
+komodo_clear_marker() {
+    local pd="${PROJECT_DIR:-}"
+    [[ -n "$pd" ]] || pd="$(dirname "${SCRIPT_DIR:-.}")"
+    rm -f "$pd/$1" 2>/dev/null || true
+}
+
+# sync_cert_vars
+# The files in certs/api are the source of truth for the four certificate
+# keys. Writes only the keys whose value differs from the rendered copy.
+# none: nothing to do. A file this user cannot read skips all four keys with
+# a warning and leaves .certs-sync-pending behind.
+sync_cert_vars() {
+    local m
+    m="$(komodo_mode)"
+    if [[ "$m" == "none" ]]; then
+        return 0
+    fi
+    if [[ "$m" != "adopted" ]]; then
+        log_error "$KOMODO_BROKEN_HINT" >&2
+        return 21
+    fi
+    local pd="${PROJECT_DIR:-}"
+    [[ -n "$pd" ]] || pd="$(dirname "${SCRIPT_DIR:-.}")"
+    local cert="$pd/certs/api/cert.pem" key="$pd/certs/api/privkey.pem"
+    if [[ ! -f "$cert" || ! -f "$key" ]]; then
+        return 0
+    fi
+    if [[ ! -r "$cert" || ! -r "$key" ]]; then
+        log_warn "certs/api cannot be read by this user, certificate variables were not synced. Run: sudo ./voipbin start" >&2
+        komodo_write_marker .certs-sync-pending "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+        return 0
+    fi
+    local cert_b64 key_b64 pairs=() rc=0
+    cert_b64=$(base64 -w0 "$cert") || return 1
+    key_b64=$(base64 -w0 "$key") || return 1
+    [[ "$(get_env_var "$pd/.env" API_SSL_CERT_BASE64)" == "$cert_b64" ]] || pairs+=("API_SSL_CERT_BASE64=$cert_b64")
+    [[ "$(get_env_var "$pd/.env" API_SSL_PRIVKEY_BASE64)" == "$key_b64" ]] || pairs+=("API_SSL_PRIVKEY_BASE64=$key_b64")
+    [[ "$(get_env_var "$pd/.env" HOOK_SSL_CERT_BASE64)" == "$cert_b64" ]] || pairs+=("HOOK_SSL_CERT_BASE64=$cert_b64")
+    [[ "$(get_env_var "$pd/.env" HOOK_SSL_PRIVKEY_BASE64)" == "$key_b64" ]] || pairs+=("HOOK_SSL_PRIVKEY_BASE64=$key_b64")
+    if [[ ${#pairs[@]} -eq 0 ]]; then
+        komodo_clear_marker .certs-sync-pending
+        return 0
+    fi
+    host_env_write "${pairs[@]}" || rc=$?
+    if [[ "$rc" -ne 0 ]]; then
+        # Rejected values (2) are not an unfinished sync: no marker.
+        if [[ "$rc" -ne 2 ]]; then
+            komodo_write_marker .certs-sync-pending "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+        fi
+        return "$rc"
+    fi
+    komodo_clear_marker .certs-sync-pending
+    return 0
+}
+
+# komodo_write_rc_exit
+# Scripts that defer a Komodo write failure (KOMODO_WRITE_RC) call this after
+# their last step: a failure then ends the script with that code.
+komodo_write_rc_exit() {
+    if [[ "${KOMODO_WRITE_RC:-0}" -ne 0 ]]; then
+        local rc="$KOMODO_WRITE_RC"
+        if [[ "$rc" -eq 2 ]]; then
+            log_error "A certificate value was rejected. Fix the certificate files, then run: sudo ./voipbin start" >&2
+        else
+            log_error "Komodo could not be updated. When Komodo is available again, run: sudo ./voipbin start" >&2
+        fi
+        exit "$rc"
+    fi
+    return 0
+}
+
+# komodo_warn_pending_markers: start-time notice for unfinished certificate
+# work (see .certs-pending and .certs-sync-pending).
+komodo_warn_pending_markers() {
+    local pd="${PROJECT_DIR:-}"
+    [[ -n "$pd" ]] || pd="$(dirname "${SCRIPT_DIR:-.}")"
+    if [[ -e "$pd/.certs-pending" ]]; then
+        log_warn "A certificate renewal was not applied (.certs-pending). Re-run: sudo ./scripts/install-certs.sh <fullchain.pem> <privkey.pem>"
+    fi
+    if [[ -e "$pd/.certs-sync-pending" ]]; then
+        log_warn "Certificate variables may be out of date (.certs-sync-pending). Run: sudo ./voipbin start"
+    fi
+}
+
+# compose_hint <compose args...>
+# Prints the command a user should run for a state change, for messages.
+# none: the plain docker compose command line (unchanged text). Otherwise
+# the CLI command, because a bare docker compose call would skip Komodo.
+compose_hint() {
+    local m
+    m="$(komodo_mode)"
+    if [[ "$m" == "none" ]]; then
+        echo "docker compose $*"
+        return 0
+    fi
+    local verb="${1:-}" arg services=()
+    [[ $# -gt 0 ]] && shift
+    for arg in "$@"; do
+        [[ "$arg" == -* ]] || services+=("$arg")
+    done
+    case "$verb" in
+        restart) echo "voipbin restart${services[*]:+ ${services[*]}}" ;;
+        stop|down) echo "voipbin stop" ;;
+        *) echo "voipbin start${services[*]:+ ${services[*]}}" ;;
+    esac
+}
+
+# host_env_read <KEY>
+# Reads one host-derived key from the compose input. none: the historic
+# first-match grep on .env. Otherwise the rendered copy is taken into account.
+host_env_read() {
+    local key="$1" m
+    m="$(komodo_mode)"
+    if [[ "$m" != "none" ]]; then
+        get_env_var "${PROJECT_DIR}/.env" "$key"
+    else
+        grep "^${key}=" "$PROJECT_DIR/.env" 2>/dev/null | cut -d'=' -f2 | head -1
+    fi
+}
+
+# =============================================================================
 # Host IP Detection
 # =============================================================================
 detect_host_ip() {
@@ -197,7 +522,7 @@ detect_host_ip() {
 
     # Try to get from .env first
     if [[ -n "$PROJECT_DIR" && -f "$PROJECT_DIR/.env" ]]; then
-        ip=$(grep '^HOST_EXTERNAL_IP=' "$PROJECT_DIR/.env" 2>/dev/null | cut -d'=' -f2 | head -1)
+        ip=$(host_env_read HOST_EXTERNAL_IP)
     fi
 
     # Fallback: Try to get the IP of the default route interface
@@ -255,7 +580,7 @@ detect_current_host_ip() {
 # Get configured host IP from .env
 get_configured_host_ip() {
     if [[ -n "$PROJECT_DIR" && -f "$PROJECT_DIR/.env" ]]; then
-        grep '^HOST_EXTERNAL_IP=' "$PROJECT_DIR/.env" 2>/dev/null | cut -d'=' -f2 | head -1
+        host_env_read HOST_EXTERNAL_IP
     fi
 }
 
@@ -297,8 +622,68 @@ generate_secondary_ips() {
     echo "RTPENGINE_EXTERNAL_IP=${prefix}.$((base + 1))"
 }
 
+# Update the host IP keys through the Komodo bridge (any mode but none).
+# Everything but the final IP goes to stdout-free paths: the last line on
+# stdout is the new Kamailio IP (the caller captures it with $(...)).
+# HOST_EXTERNAL_IP is written last: the next start compares it with the
+# current IP, so an interrupted write is detected and redone.
+_komodo_update_env_ips() {
+    local new_host_ip="$1"
+    local env_file="${PROJECT_DIR}/.env"
+
+    if [[ ! -f "$env_file" ]]; then
+        log_error ".env file not found" >&2
+        return 1
+    fi
+
+    # Nothing is written when Komodo cannot take the change.
+    compose_ping || return $?
+
+    local ip_pinned
+    ip_pinned=$(get_env_var "$env_file" EXTERNAL_IP_PINNED)
+
+    log_info "Updating .env with new IPs:" >&2
+    log_info "  HOST_EXTERNAL_IP: $new_host_ip" >&2
+
+    local new_kamailio_ip new_rtpengine_ip
+    local pairs=()
+    if [[ "${ip_pinned,,}" == "true" ]]; then
+        new_kamailio_ip=$(get_env_var "$env_file" KAMAILIO_EXTERNAL_IP)
+        new_rtpengine_ip=$(get_env_var "$env_file" RTPENGINE_EXTERNAL_IP)
+        log_info "  KAMAILIO_EXTERNAL_IP / RTPENGINE_EXTERNAL_IP: unchanged (EXTERNAL_IP_PINNED=true)" >&2
+    else
+        local secondary_ips
+        secondary_ips=$(generate_secondary_ips "$new_host_ip")
+        new_kamailio_ip=$(echo "$secondary_ips" | grep KAMAILIO | cut -d'=' -f2)
+        new_rtpengine_ip=$(echo "$secondary_ips" | grep RTPENGINE | cut -d'=' -f2)
+        log_info "  KAMAILIO_EXTERNAL_IP: $new_kamailio_ip" >&2
+        log_info "  RTPENGINE_EXTERNAL_IP: $new_rtpengine_ip" >&2
+        pairs+=("KAMAILIO_EXTERNAL_IP=$new_kamailio_ip" "RTPENGINE_EXTERNAL_IP=$new_rtpengine_ip")
+    fi
+
+    local domain_mode
+    domain_mode=$(get_domain_mode "$env_file")
+    if [[ "$domain_mode" == "external" ]]; then
+        log_info "External mode: skipping API_URL/WEBSOCKET_URL rewrite (operator-managed domain)" >&2
+    else
+        local base_domain
+        base_domain=$(get_env_var "$env_file" BASE_DOMAIN)
+        [[ -z "$base_domain" ]] && base_domain="voipbin.test"
+        pairs+=("API_URL=https://api.${base_domain}:8443/" "WEBSOCKET_URL=wss://api.${base_domain}:8443/v1.0/ws")
+    fi
+    pairs+=("HOST_EXTERNAL_IP=$new_host_ip")
+
+    host_env_write "${pairs[@]}" || return $?
+
+    echo "$new_kamailio_ip"
+}
+
 # Update .env with new IPs
 update_env_ips() {
+    if [[ "$(komodo_mode)" != "none" ]]; then
+        _komodo_update_env_ips "$@"
+        return $?
+    fi
     local new_host_ip="$1"
     local env_file="${PROJECT_DIR}/.env"
 
@@ -379,8 +764,67 @@ update_env_ips() {
     echo "$new_kamailio_ip"
 }
 
+# Same as regenerate_ssl_certs for any mode but none: the four certificate
+# keys go through the Komodo bridge. A failed write is not fatal here (the
+# files are already new): it is remembered in KOMODO_WRITE_RC for the caller
+# to end with, and .certs-sync-pending tells start to finish the sync.
+_komodo_regenerate_ssl_certs() {
+    local new_host_ip="$1"
+    local env_file="${PROJECT_DIR}/.env"
+    local cert_dir="${PROJECT_DIR}/certs/api"
+
+    if [[ "$(get_env_var "$env_file" TLS_MODE)" == "byo" ]]; then
+        log_info "TLS_MODE=byo: skipping certificate regeneration (manage certs with install-certs.sh)"
+        return 0
+    fi
+
+    if ! command -v mkcert &> /dev/null; then
+        log_warn "mkcert not installed, skipping certificate regeneration"
+        log_warn "Install mkcert for automatic certificate updates: sudo apt install mkcert && mkcert -install"
+        return 1
+    fi
+
+    mkdir -p "$cert_dir"
+
+    log_info "Regenerating SSL certificate for IP: $new_host_ip"
+
+    mkcert -cert-file "$cert_dir/cert.pem" -key-file "$cert_dir/privkey.pem" \
+        "voipbin.test" "*.voipbin.test" "localhost" "127.0.0.1" "::1" "$new_host_ip" 2>/dev/null
+
+    if [[ $? -ne 0 ]]; then
+        log_error "Failed to generate certificate"
+        return 1
+    fi
+
+    if [[ -f "$env_file" ]]; then
+        local new_cert_b64 new_key_b64 write_rc=0
+        new_cert_b64=$(base64 -w0 "$cert_dir/cert.pem") || return 1
+        new_key_b64=$(base64 -w0 "$cert_dir/privkey.pem") || return 1
+
+        # Hook certs use the same as API certs
+        host_env_write \
+            "API_SSL_CERT_BASE64=$new_cert_b64" \
+            "API_SSL_PRIVKEY_BASE64=$new_key_b64" \
+            "HOOK_SSL_CERT_BASE64=$new_cert_b64" \
+            "HOOK_SSL_PRIVKEY_BASE64=$new_key_b64" || write_rc=$?
+        if [[ "$write_rc" -ne 0 ]]; then
+            komodo_write_marker .certs-sync-pending "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+            KOMODO_WRITE_RC="$write_rc"
+            return 0
+        fi
+
+        log_info "SSL certificate regenerated and .env updated"
+    fi
+
+    return 0
+}
+
 # Regenerate SSL certificates with new IP and update .env
 regenerate_ssl_certs() {
+    if [[ "$(komodo_mode)" != "none" ]]; then
+        _komodo_regenerate_ssl_certs "$@"
+        return $?
+    fi
     local new_host_ip="$1"
     local env_file="${PROJECT_DIR}/.env"
     local cert_dir="${PROJECT_DIR}/certs/api"
@@ -432,8 +876,42 @@ regenerate_ssl_certs() {
     return 0
 }
 
+# Same as regenerate_ip_config for any mode but none: declarations are split
+# from assignments and each step passes its failure on, so an unavailable
+# Komodo stops the run before the new IP is used anywhere.
+_komodo_regenerate_ip_config() {
+    local current_ip configured_ip new_kamailio_ip
+    current_ip=$(detect_current_host_ip)
+    configured_ip=$(get_configured_host_ip)
+
+    if [[ "$current_ip" == "$configured_ip" ]]; then
+        log_info "Host IP unchanged: $current_ip"
+        return 1
+    fi
+
+    log_warn "Host IP changed: $configured_ip -> $current_ip"
+
+    # Update the host keys and get the new Kamailio IP
+    new_kamailio_ip=$(update_env_ips "$current_ip") || return $?
+
+    if [[ "$(get_domain_mode "$PROJECT_DIR/.env")" == "internal" ]]; then
+        generate_coredns_config "$current_ip" "$PROJECT_DIR/config/coredns" "$new_kamailio_ip" || return $?
+        log_info "CoreDNS configuration regenerated"
+    else
+        log_info "External mode: operator DNS may need updating (HOST_EXTERNAL_IP changed)"
+    fi
+
+    regenerate_ssl_certs "$current_ip" || return $?
+
+    return 0
+}
+
 # Full IP regeneration: detect current IP, update .env, regenerate CoreDNS and certs
 regenerate_ip_config() {
+    if [[ "$(komodo_mode)" != "none" ]]; then
+        _komodo_regenerate_ip_config "$@"
+        return $?
+    fi
     local current_ip=$(detect_current_host_ip)
     local configured_ip=$(get_configured_host_ip)
 

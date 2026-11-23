@@ -1,7 +1,12 @@
 #!/bin/bash
 # VoIPBin Install - Komodo setup (core + mongo + host periphery + hook)
 #
-# Usage: sudo ./scripts/komodo-setup.sh
+# Usage: sudo ./scripts/komodo-setup.sh [--teardown]
+#
+# --teardown removes Komodo again (used by clean --purge): the periphery
+# service, its binary and configuration, the hook, the Komodo containers and
+# data volume, and the secret files and marker under komodo/. The rendered
+# copy .env.komodo is left alone (it holds the only copy of the values).
 #
 # Brings up Komodo next to the main stack and registers the voipbin Stack in it.
 # It never calls the main stack's compose project: a failure here leaves the
@@ -552,12 +557,58 @@ step_provision() {
     fi
 }
 
+# Remove everything komodo setup created outside the main stack. Every step
+# tolerates a part that is already gone, so it can be repeated.
+step_teardown() {
+    KOMODO_STEP="teardown"
+    log_step "Removing Komodo"
+
+    local unit bin cfg hook
+    unit=$(sys_path "$PERIPHERY_UNIT")
+    bin=$(sys_path "$PERIPHERY_BIN")
+    cfg=$(sys_path "$PERIPHERY_CONFIG")
+    hook=$(sys_path "$HOOK_DEST")
+
+    systemctl stop "$PERIPHERY_UNIT_NAME" >/dev/null 2>&1 || true
+    systemctl disable "$PERIPHERY_UNIT_NAME" >/dev/null 2>&1 || true
+    rm -f -- "$unit"
+    systemctl daemon-reload >/dev/null 2>&1 || true
+    rm -f -- "$bin" "$cfg"
+    rmdir -- "$(sys_path "$PERIPHERY_CONFIG_DIR")" 2>/dev/null || true
+    rm -f -- "$hook"
+    rmdir -- "$(sys_path "$HOOK_DIR")" 2>/dev/null || true
+    log_info "periphery service, binary, configuration and hook removed"
+
+    if [[ -f "$KOMODO_DIR/docker-compose.yml" && -f "$KOMODO_DIR/.env" ]]; then
+        komodo_compose down -v >/dev/null \
+            || log_warn "compose down failed for the komodo project"
+    else
+        log_warn "komodo/.env is missing, the komodo containers were not stopped through compose"
+    fi
+    docker volume rm "$MONGO_VOLUME" >/dev/null 2>&1 || true
+
+    rm -f -- "$KOMODO_DIR/.env" "$KOMODO_DIR/admin-password" "$KOMODO_DIR/cli-key" \
+        "$KOMODO_DIR/.adopted" "$KOMODO_DIR"/.env.?????? "$KOMODO_DIR"/.admin-password.?????? \
+        "$KOMODO_DIR"/.onboard-key.?????? "$KOMODO_DIR"/.core-pubkey.??????
+    log_info "komodo containers, data and secret files removed"
+    if [[ -e "$PROJECT_DIR/.env.komodo" ]]; then
+        log_info ".env.komodo was kept: it holds the only copy of the values. Run komodo setup to set up again, or remove it with clean --purge"
+    fi
+}
+
 # =============================================================================
 # Main
 # =============================================================================
 
 main() {
     trap komodo_exit_trap EXIT
+
+    if [[ "${1:-}" == "--teardown" ]]; then
+        step_root
+        step_teardown
+        emit_result ok "teardown=done"
+        return 0
+    fi
     ADMIN_PASSWORD_FILE=""
     PERIPHERY_STATE="unchanged"
     HOOK_STATE="unchanged"

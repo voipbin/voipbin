@@ -214,7 +214,11 @@ setup_mkcert() {
                voipbin.test "*.voipbin.test" localhost 127.0.0.1 ::1 "$host_ip" 2>/dev/null
 
         # Update .env with new base64-encoded certs (if .env exists)
-        if [ -f "$PROJECT_DIR/.env" ]; then
+        if [ "$(komodo_mode)" != "none" ]; then
+            # The certificate variables live in Komodo: sync_cert_vars writes
+            # them from the files once the host checks are done.
+            :
+        elif [ -f "$PROJECT_DIR/.env" ]; then
             local api_cert_b64=$(cat "$PROJECT_DIR/certs/api/cert.pem" | base64 -w0)
             local api_key_b64=$(cat "$PROJECT_DIR/certs/api/privkey.pem" | base64 -w0)
 
@@ -229,12 +233,35 @@ setup_mkcert() {
         log_info "Certificates regenerated with mkcert (browser-trusted)"
 
         # Restart services that use the certificates if they're running
-        if docker ps --format '{{.Names}}' 2>/dev/null | grep -q "voipbin-api-mgr"; then
+        if [ "$(komodo_mode)" != "none" ]; then
+            # Done by restart_cert_consumers after validate_env: the new
+            # certificate values must be in Komodo before the restart.
+            MKCERT_RESTART_PENDING=true
+        elif docker ps --format '{{.Names}}' 2>/dev/null | grep -q "voipbin-api-mgr"; then
             log_info "Restarting API services to use new certificates..."
             docker compose restart api-manager hook-manager 2>/dev/null || true
         fi
     fi
 
+    return 0
+}
+
+# After mkcert wrote new certificates and Komodo has the new values: restart
+# the services that use them (only with Komodo; the plain path restarts inside
+# setup_mkcert). Only a Komodo that cannot be reached stops the start (21);
+# any other failure, such as services that are not running, is ignored.
+restart_cert_consumers() {
+    [ "${MKCERT_RESTART_PENDING:-false}" = true ] || return 0
+    MKCERT_RESTART_PENDING=false
+    if docker ps --format '{{.Names}}' 2>/dev/null | grep -q "voipbin-api-mgr"; then
+        log_info "Restarting API services to use new certificates..."
+        local restart_err restart_rc=0
+        restart_err=$(compose_exec restart api-manager hook-manager 2>&1 >/dev/null) || restart_rc=$?
+        if [ "$restart_rc" -eq 21 ]; then
+            [ -n "$restart_err" ] && echo "$restart_err" >&2
+            return 21
+        fi
+    fi
     return 0
 }
 
@@ -297,6 +324,17 @@ validate_env() {
     set -a
     source "$PROJECT_DIR/.env"
     set +a
+
+    # With Komodo the container keys are no longer in .env: read them from the
+    # compose input (.env plus the rendered copy) instead.
+    if [ "$(komodo_mode)" != "none" ]; then
+        local komodo_key
+        for komodo_key in HOST_EXTERNAL_IP API_SSL_CERT_BASE64 API_SSL_PRIVKEY_BASE64 \
+            GOOGLE_APPLICATION_CREDENTIALS OPENAI_API_KEY BASE_DOMAIN \
+            DOMAIN_NAME_EXTENSION WEB_REVERSE_PROXY VOIPBIN_SANDBOX_DEV_SEED; do
+            printf -v "$komodo_key" '%s' "$(get_env_var "$PROJECT_DIR/.env" "$komodo_key")"
+        done
+    fi
 
     # Check HOST_EXTERNAL_IP
     if [ -z "$HOST_EXTERNAL_IP" ] || [ "$HOST_EXTERNAL_IP" = "127.0.0.1" ]; then
@@ -631,6 +669,16 @@ setup_test_customer() {
     fi
 }
 
+# Host IP shown in the summary: the first HOST_EXTERNAL_IP match in .env, or
+# with Komodo the value from the compose input.
+summary_host_ip() {
+    if [ "$(komodo_mode)" != "none" ]; then
+        get_env_var "$PROJECT_DIR/.env" HOST_EXTERNAL_IP
+    else
+        grep HOST_EXTERNAL_IP "$PROJECT_DIR/.env" 2>/dev/null | cut -d'=' -f2 | head -1
+    fi
+}
+
 main() {
     # Result-line guarantee: registered here, not at top level (§2.2 pattern).
     trap start_exit_trap EXIT
@@ -681,6 +729,8 @@ main() {
 
     cd "$PROJECT_DIR"
 
+    compose_env_setup || { emit_result error "reason=\"komodo state incomplete\" next=\"sudo ./voipbin komodo setup\""; exit 21; }
+
     # Step 1: Check dependencies
     check_dependencies
 
@@ -698,8 +748,30 @@ main() {
         log_info "Configuration found"
     fi
 
+    # With Komodo: tell about unfinished certificate work, then make sure
+    # Komodo can take changes before anything is written on the host.
+    if [ "$(komodo_mode)" != "none" ]; then
+        komodo_warn_pending_markers
+        local ping_rc=0
+        compose_ping || ping_rc=$?
+        if [ "$ping_rc" -ne 0 ]; then
+            emit_result error "reason=\"komodo unavailable\" next=\"voipbin doctor\""
+            exit "$ping_rc"
+        fi
+    fi
+
     # Step 3: Setup mkcert for browser-trusted certificates
     setup_mkcert
+
+    # With Komodo the certificate variables follow the files in certs/api.
+    if [ "$(komodo_mode)" != "none" ]; then
+        local sync_rc=0
+        sync_cert_vars || sync_rc=$?
+        if [ "$sync_rc" -ne 0 ]; then
+            emit_result error "reason=\"certificate variables not synced (exit $sync_rc)\" next=\"sudo ./voipbin start\""
+            exit "$sync_rc"
+        fi
+    fi
 
     # Step 4: Validate environment
     if ! validate_env; then
@@ -710,6 +782,15 @@ main() {
         exit 1
     fi
 
+    if [ "$(komodo_mode)" != "none" ]; then
+        local restart_rc=0
+        restart_cert_consumers || restart_rc=$?
+        if [ "$restart_rc" -ne 0 ]; then
+            emit_result error "reason=\"komodo unavailable\" next=\"voipbin doctor\""
+            exit "$restart_rc"
+        fi
+    fi
+
     # Step 4.5: Check if host IP has changed and regenerate configs if needed
     log_step "Checking host IP configuration..."
     if check_ip_changed; then
@@ -718,6 +799,11 @@ main() {
         log_warn "Host IP changed: $configured_ip -> $current_ip"
         log_info "Regenerating IP configuration..."
         regenerate_ip_config
+        # With Komodo a certificate variable that could not be written must not
+        # end in a start that deploys the new IP with the old certificate.
+        if [ "$(komodo_mode)" != "none" ]; then
+            komodo_write_rc_exit
+        fi
     else
         log_info "Host IP unchanged: $(get_configured_host_ip)"
     fi
@@ -728,7 +814,7 @@ main() {
     # This ensures docker compose reads from .env only
     unset API_SSL_CERT_BASE64 API_SSL_PRIVKEY_BASE64 HOOK_SSL_CERT_BASE64 HOOK_SSL_PRIVKEY_BASE64
     unset HOST_EXTERNAL_IP KAMAILIO_INTERNAL_ADDR
-    docker compose up -d db redis rabbitmq
+    compose_exec up -d db redis rabbitmq
 
     # Wait for db to be healthy
     wait_for_database || exit 1
@@ -774,8 +860,8 @@ main() {
     # Step 7: Generate CoreDNS config and start all services
     if [ "$domain_mode" = "internal" ]; then
         log_step "Generating CoreDNS configuration..."
-        local host_ip=$(grep '^HOST_EXTERNAL_IP=' "$PROJECT_DIR/.env" 2>/dev/null | cut -d'=' -f2 | head -1)
-        local kamailio_ip=$(grep '^KAMAILIO_EXTERNAL_IP=' "$PROJECT_DIR/.env" 2>/dev/null | cut -d'=' -f2 | head -1)
+        local host_ip=$(host_env_read HOST_EXTERNAL_IP)
+        local kamailio_ip=$(host_env_read KAMAILIO_EXTERNAL_IP)
         [ -z "$host_ip" ] && host_ip="127.0.0.1"
         [ -z "$kamailio_ip" ] && kamailio_ip="$host_ip"  # Fallback to host_ip if not set
         generate_coredns_config "$host_ip" "$PROJECT_DIR/config/coredns" "$kamailio_ip"
@@ -786,7 +872,7 @@ main() {
     fi
 
     log_step "Starting all services..."
-    docker compose up -d
+    compose_exec up -d
 
     # Step 8: Check DNS configuration
     if [ "$domain_mode" = "internal" ]; then
@@ -813,7 +899,7 @@ main() {
 
         # Restart kamailio and rtpengine
         log_info "Restarting kamailio and rtpengine..."
-        docker compose restart kamailio rtpengine
+        compose_exec restart kamailio rtpengine
     fi
 
     # Step 10: Wait for services to stabilize
@@ -937,7 +1023,7 @@ main() {
         if [ -n "$CUSTOMER_ID" ] && [ "$CUSTOMER_ID" != "null" ]; then
             echo ""
             echo "  SIP Domain:    ${CUSTOMER_ID}.${ext_domain}"
-            echo "  SIP Server:    $(grep HOST_EXTERNAL_IP "$PROJECT_DIR/.env" 2>/dev/null | cut -d'=' -f2 | head -1):5060"
+            echo "  SIP Server:    $(summary_host_ip):5060"
         fi
         echo ""
         echo "  To verify: voipbin> registrar extension list --customer_id <id>"

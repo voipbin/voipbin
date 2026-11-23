@@ -243,7 +243,7 @@ fetch_dbscheme
 
 # --- 3. Ensure DB is up and resolve the compose network ---
 if ! docker inspect "$DB_CONTAINER" >/dev/null 2>&1; then
-    err "$DB_CONTAINER container not found. Start the db first: docker compose up -d db"
+    err "$DB_CONTAINER container not found. Start the db first: $(compose_hint up -d db)"
     exit 1
 fi
 

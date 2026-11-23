@@ -772,6 +772,12 @@ EOF
 touch docker-compose.yml versions.lock
 exit 0''')
     write_script_stub(project_dir, "setup-host.sh", f'echo setup-host >> "{calls}"\nexit 0')
+    # install step 3 runs komodo-setup.sh; these tests inject a fake through the
+    # test-only override so no Komodo work happens
+    fake_setup = os.path.join(tmp_dir, "fake-komodo-setup.sh")
+    with open(fake_setup, "w") as f:
+        f.write(f'#!/bin/bash\necho komodo-setup >> "{calls}"\nexit ${{FAKE_KOMODO_SETUP_RC:-0}}\n')
+    os.environ["VOIPBIN_KOMODO_SETUP"] = fake_setup
     write_script_stub(project_dir, "start.sh", f'echo start >> "{calls}"\nexit {start_rc}')
     write_script_stub(project_dir, "create-admin.sh", f'''echo "create-admin $*" >> "{calls}"
 [[ ${{#VOIPBIN_ADMIN_PASSWORD}} -ge 20 ]] && echo "password-env-ok" >> "{calls}"
@@ -783,9 +789,9 @@ echo "VOIPBIN_ADMIN: status=ok customer_id=c1 agent_id=a1"''')
 
 
 def test_install_provider_keys_step(cli_module, tmp_dir, stub_bin, log_path):
-    """After the verification (step 5) and before the admin account (step 6) the
+    """After the verification (step 6) and before the admin account (step 7) the
     install stores the provider keys of .env in the services' stored configs. A failure stops
-    the install at step 5 with the resume command and creates no admin account."""
+    the install at step 6 with the resume command and creates no admin account."""
     cls = cli_module.VoIPBinCLI
     orig = (cls._install_wait_and_verify, cls._provider_preflight_step, cls._provider_import_step,
             cli_module.INSTALL_REACHABILITY_URLS)
@@ -814,11 +820,11 @@ def test_install_provider_keys_step(cli_module, tmp_dir, stub_bin, log_path):
                 seq = [l.strip() for l in f.read().splitlines()]
             if label == "ok":
                 assert rc == 0, (rc, out)
-                assert seq[:6] == ["doctor", "init --yes --mode internal", "setup-host", "start",
-                                   "keys-preflight install", "keys-import install"] and seq[6].startswith("create-admin"), seq
+                assert seq[:7] == ["doctor", "init --yes --mode internal", "komodo-setup", "setup-host", "start",
+                                   "keys-preflight install", "keys-import install"] and seq[7].startswith("create-admin"), seq
             else:
                 line = last_line(out)
-                assert rc == 1 and line.startswith("VOIPBIN_INSTALL: status=error step=5") and "provider keys" in line, (rc, line)
+                assert rc == 1 and line.startswith("VOIPBIN_INSTALL: status=error step=6") and "provider keys" in line, (rc, line)
                 assert "sudo ./voipbin install --resume" in line, line
                 assert not any(x.startswith("create-admin") for x in seq), seq
                 assert not os.path.exists(os.path.join(project_dir, ".voipbin-installed"))
@@ -915,7 +921,7 @@ def test_install_noninteractive_happy_path_and_failure(cli_module, tmp_dir, stub
                                   "url=http://admin.voipbin.test:3003"), last_line(out)
         with open(calls) as f:
             seq = [l.split()[0] for l in f.read().splitlines()]
-        assert seq == ["doctor", "init", "setup-host", "start", "create-admin", "password-env-ok"], seq
+        assert seq == ["doctor", "init", "komodo-setup", "setup-host", "start", "create-admin", "password-env-ok"], seq
         with open(calls) as f:
             assert "init --yes --mode internal" in f.read()
         st = os.stat(pw_file)
@@ -942,7 +948,7 @@ def test_install_noninteractive_happy_path_and_failure(cli_module, tmp_dir, stub
         rc, out = run_main(cli_module, ["install", "--yes", "--admin-email", "admin@example.com",
                                         "--admin-password-file", pw_file2], stdin_text="")
         line = last_line(out)
-        assert rc == 2 and line.startswith("VOIPBIN_INSTALL: status=error step=4"), (rc, line)
+        assert rc == 2 and line.startswith("VOIPBIN_INSTALL: status=error step=5"), (rc, line)
         # the next command keeps the --yes mode so it can be run as printed
         assert ('next="fix the error above, then sudo ./voipbin install --resume --yes '
                 '--admin-email admin@example.com --admin-password-file <new path>"') in line, line
@@ -965,15 +971,22 @@ def test_install_noninteractive_happy_path_and_failure(cli_module, tmp_dir, stub
         assert rc == 0, (rc, out)
         with open(os.path.join(tmp_dir, "install_calls.log")) as f:
             seq = [l.split()[0] for l in f.read().splitlines()]
-        assert "init" not in seq and seq[:3] == ["doctor", "setup-host", "start"], seq
+        assert "init" not in seq and seq[:4] == ["doctor", "komodo-setup", "setup-host", "start"], seq
         assert "Admin password" in out and "printed once" in out, "no-file run must show the password once with a warning"
 
         # a marker left behind without .env (removed install) is dropped, so a
         # later --resume is not refused as "already completed"
+        # (the new-install guard runs first and treats a marker as an existing
+        # install, so the drop happens only on a resumed Komodo install, which
+        # has Komodo files and passes the guard)
         project_dir = fresh_project(tmp_dir, "p_stale")
         write_install_stubs(project_dir, tmp_dir, start_rc=2)
         with open(os.path.join(project_dir, ".voipbin-installed"), "w") as f:
             f.write("{}")
+        rc, out = run_main(cli_module, ["install", "--yes", "--admin-email", "admin@example.com"], stdin_text="")
+        assert rc == 2 and "status=error step=0" in last_line(out) and os.path.exists(os.path.join(project_dir, ".voipbin-installed")), (rc, out)
+        with open(os.path.join(project_dir, ".env.komodo"), "w") as f:
+            f.write("X=1\n")
         rc, out = run_main(cli_module, ["install", "--yes", "--admin-email", "admin@example.com"], stdin_text="")
         assert rc == 2 and not os.path.exists(os.path.join(project_dir, ".voipbin-installed")), (rc, out)
 

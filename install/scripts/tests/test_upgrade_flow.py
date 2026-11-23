@@ -1160,13 +1160,13 @@ check("K18b list parser skips log lines and tolerates a '[' log line before the 
       m.provider_parse_list("[warn] noise\n[\n {\"key\": \"a\", \"source\": \"db\", \"has_secret\": true}\n]\n") == ({"a": "db"}, {"a": True})
       and m.provider_parse_list("nothing") is None)
 
-# install step 5: the key step runs after verify and before the admin step, a failure aborts at step 5
+# install step 6: the key step runs after verify and before the admin step, a failure aborts at step 6
 src = open(CLI_PATH).read()
-i_verify = src.index("[5/6] verify")
+i_verify = src.index("[6/7] verify")
 i_keys = src.index('self._provider_import_step(project_dir, "install")')
-i_admin = src.index("# [6/6] admin account")
-check("K13 install: key step sits between verify (5/6) and the admin account (6/6) and aborts at step 5",
-      i_verify < i_keys < i_admin and 'InstallAbort(1, 5, "provider keys could not be stored"' in src[i_keys:i_admin])
+i_admin = src.index("# [7/7] admin account")
+check("K13 install: key step sits between verify (6/7) and the admin account (7/7) and aborts at step 6",
+      i_verify < i_keys < i_admin and 'InstallAbort(1, 6, "provider keys could not be stored"' in src[i_keys:i_admin])
 
 
 # =====================================================================

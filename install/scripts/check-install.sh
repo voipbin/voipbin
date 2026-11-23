@@ -295,7 +295,7 @@ check_realm() {
     if [[ "$running_ext" == "$CHECK_DOMAIN_EXT" ]]; then
         check_result realm pass "registrar-manager DOMAIN_NAME_EXTENSION=$running_ext matches .env"
     else
-        check_result realm fail "running=$running_ext .env=$CHECK_DOMAIN_EXT — recreate: docker compose rm -fsv registrar-manager && docker compose up -d registrar-manager"
+        check_result realm fail "running=$running_ext .env=$CHECK_DOMAIN_EXT — recreate: $(compose_hint rm -fsv registrar-manager) && $(compose_hint up -d registrar-manager)"
     fi
 }
 
@@ -387,6 +387,12 @@ main() {
     if [[ ! -f "$ENV_FILE" ]]; then
         log_error "no .env at $ENV_FILE — run ./scripts/init.sh first"
         echo "VOIPBIN_CHECK: status=fail passed=0 failed=1 mode=unknown reason=\"no .env — run ./scripts/init.sh first\""
+        exit 1
+    fi
+
+    # Compose reads .env plus the rendered Komodo copy when there is one.
+    if ! compose_env_setup; then
+        echo "VOIPBIN_CHECK: status=fail passed=0 failed=1 mode=unknown reason=\"Komodo environment files unusable\""
         exit 1
     fi
 

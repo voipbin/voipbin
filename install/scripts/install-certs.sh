@@ -15,6 +15,11 @@
 #   --check-only   Run validation only; install nothing, touch nothing.
 #   --domain <d>   Validate against <d> instead of BASE_DOMAIN from .env
 #                  (used by init.sh's pre-flight before .env exists).
+#
+# With Komodo (any mode but none) the four values are written through the
+# Komodo bridge. When Komodo cannot take the change the run ends with exit
+# code 21 before anything is installed, leaves .certs-pending, and the result
+# line carries reason=komodo-unavailable and retry="<command to run again>".
 
 set -e
 
@@ -28,6 +33,16 @@ CERTS_DIR="${CERTS_DIR:-$PROJECT_DIR/certs}"
 # Source common functions
 source "$SCRIPT_DIR/common.sh"
 
+# With Komodo (any mode but none) a failed pre-change check is retried a few
+# times, because certbot runs this script unattended and does not retry a
+# failed hook: 4 more attempts, 15 seconds apart. An authentication failure is
+# not retried. VOIPBIN_KOMODO_RETRY_INTERVAL only shortens the wait in tests.
+KOMODO_PRECHECK_RETRIES=4
+KOMODO_PRECHECK_INTERVAL_DEFAULT=15
+KOMODO_PRECHECK_INTERVAL="${VOIPBIN_KOMODO_RETRY_INTERVAL:-$KOMODO_PRECHECK_INTERVAL_DEFAULT}"
+# Largest value Komodo accepts for one variable.
+KOMODO_VALUE_MAX=10000
+
 # The six first-level names the certificate is installed for (design §2.6):
 # a non-wildcard cert missing any of these is a hard fail — kamailio would
 # otherwise fail TLS silently at runtime.
@@ -37,7 +52,8 @@ REQUIRED_NAMES=(api sip sip-service conference trunk registrar)
 # Result line + exit helpers (design §2.2 pattern, shared with init.sh)
 # Every exit path — including set -e aborts — must end with a
 # VOIPBIN_CERTS: status=ok|error line on stdout.
-# Exit codes: 0 success; 1 validation/user error; 2 environment error.
+# Exit codes: 0 success; 1 validation/user error; 2 environment error (with
+# Komodo also a value that Komodo cannot hold); 21 Komodo unavailable.
 # =============================================================================
 
 # emit_result <status> [detail...]
@@ -320,6 +336,74 @@ install_layout() {
     fi
 }
 
+# With Komodo: refuse values Komodo cannot hold before anything is touched.
+check_komodo_value_sizes() {
+    local cert_b64 key_b64
+    cert_b64=$(base64 -w0 < "$CERT_FILE")
+    key_b64=$(base64 -w0 < "$KEY_FILE")
+    if [[ ${#cert_b64} -gt $KOMODO_VALUE_MAX ]]; then
+        die 2 "the certificate is too long for Komodo (API_SSL_CERT_BASE64 over $KOMODO_VALUE_MAX characters): shorten the chain, for example without the root certificate"
+    fi
+    if [[ ${#key_b64} -gt $KOMODO_VALUE_MAX ]]; then
+        die 2 "the private key is too long for Komodo (API_SSL_PRIVKEY_BASE64 over $KOMODO_VALUE_MAX characters)"
+    fi
+}
+
+# absolute_path <file>: the file's absolute path (the file need not be a link).
+absolute_path() {
+    local f="$1" d
+    d="$(cd "$(dirname "$f")" 2>/dev/null && pwd)" || { printf '%s' "$f"; return 0; }
+    printf '%s/%s' "$d" "$(basename "$f")"
+}
+
+# The command that finishes an install that could not reach Komodo.
+retry_command() {
+    printf 'sudo ./scripts/install-certs.sh %s %s' "$(absolute_path "$CERT_FILE")" "$(absolute_path "$KEY_FILE")"
+}
+
+# Leave .certs-pending (two paths and a time, no values) so start and doctor
+# can tell that a renewed certificate was not applied.
+mark_certs_pending() {
+    komodo_write_marker .certs-pending "$(absolute_path "$CERT_FILE")" "$(absolute_path "$KEY_FILE")" "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+}
+
+# komodo_precheck_failed <exit-code>: marker, result line, exit.
+komodo_precheck_failed() {
+    local rc="$1"
+    mark_certs_pending
+    emit_result error "reason=komodo-unavailable retry=\"$(retry_command)\""
+    exit "$rc"
+}
+
+# Change-free check that Komodo can take the change (before install_layout).
+# Retries unless the state is incomplete or the key is rejected.
+komodo_precheck() {
+    local attempt=0 rc err
+    local interval="$KOMODO_PRECHECK_INTERVAL"
+    [[ "$interval" =~ ^[0-9]+([.][0-9]+)?$ ]] || interval="$KOMODO_PRECHECK_INTERVAL_DEFAULT"
+    while true; do
+        rc=0
+        err=$(compose_ping 2>&1) || rc=$?
+        [[ $rc -eq 0 ]] && return 0
+        [[ -n "$err" ]] && echo "$err" >&2
+        # broken state (no "not available" line) and rejected keys do not heal by waiting
+        if [[ "$err" != *"not available ("* ]]; then
+            komodo_precheck_failed "$rc"
+        fi
+        local parts="${err#*not available (}"
+        parts="${parts%%)*}"
+        if [[ ", $parts," == *", auth,"* ]]; then
+            komodo_precheck_failed "$rc"
+        fi
+        attempt=$((attempt + 1))
+        if [[ $attempt -gt $KOMODO_PRECHECK_RETRIES ]]; then
+            komodo_precheck_failed "$rc"
+        fi
+        log_warn "Komodo is not available yet, retrying in ${interval}s ($attempt/$KOMODO_PRECHECK_RETRIES)"
+        sleep "$interval"
+    done
+}
+
 # Rewrite the four base64 values in .env atomically (temp file + move) while
 # preserving the file's owner/group/mode across the inode replacement.
 update_env_certs() {
@@ -332,6 +416,16 @@ update_env_certs() {
     local cert_b64 key_b64
     cert_b64=$(base64 -w0 < "$CERT_FILE")
     key_b64=$(base64 -w0 < "$KEY_FILE")
+
+    if [[ "$(komodo_mode)" != "none" ]]; then
+        host_env_write \
+            "API_SSL_CERT_BASE64=$cert_b64" \
+            "API_SSL_PRIVKEY_BASE64=$key_b64" \
+            "HOOK_SSL_CERT_BASE64=$cert_b64" \
+            "HOOK_SSL_PRIVKEY_BASE64=$key_b64" || return $?
+        log_info "  API_SSL_*/HOOK_SSL_* values updated in Komodo"
+        return 0
+    fi
 
     # Capture identity before replacing the inode
     local env_mode env_owner
@@ -373,14 +467,14 @@ recreate_services() {
 
     if grep -qx "api-manager" <<< "$running_services"; then
         log_info "  Recreating api-manager and hook-manager (env-baked certs)..."
-        (cd "$PROJECT_DIR" && docker compose rm -sf api-manager hook-manager && docker compose up -d api-manager hook-manager)
+        (cd "$PROJECT_DIR" && compose_exec rm -sf api-manager hook-manager && compose_exec up -d api-manager hook-manager) || return $?
     else
         log_info "  api-manager not running — skipping recreate (certs apply on next start)"
     fi
 
     if grep -qx "kamailio" <<< "$running_services"; then
         log_info "  Restarting kamailio (file-mounted certs)..."
-        (cd "$PROJECT_DIR" && docker compose restart kamailio)
+        (cd "$PROJECT_DIR" && compose_exec restart kamailio) || return $?
     else
         log_info "  kamailio not running — skipping restart (certs apply on next start)"
     fi
@@ -393,7 +487,7 @@ recreate_services() {
     # the old certificate on 443 until something restarts it by hand.
     if grep -qx "web-proxy" <<< "$running_services"; then
         log_info "  Restarting web-proxy (file-mounted certs)..."
-        (cd "$PROJECT_DIR" && docker compose restart web-proxy)
+        (cd "$PROJECT_DIR" && compose_exec restart web-proxy) || return $?
     else
         log_info "  web-proxy not running — skipping restart (certs apply on next start)"
     fi
@@ -417,15 +511,37 @@ main() {
     resolve_web_reverse_proxy
     validate_cert
 
+    if [[ "$(komodo_mode)" != "none" ]]; then
+        check_komodo_value_sizes
+    fi
+
     if [[ "$CERTS_CHECK_ONLY" == "true" ]]; then
         log_info "Check-only mode: nothing installed"
         emit_result ok "domain=$TARGET_DOMAIN expires=$CERT_EXPIRES_DATE action=check-only"
         return 0
     fi
 
-    install_layout
-    update_env_certs
-    recreate_services
+    if [[ "$(komodo_mode)" != "none" ]]; then
+        # Nothing has been changed yet: a Komodo that cannot take the change
+        # ends the run here and leaves .certs-pending behind.
+        compose_env_setup || komodo_precheck_failed 21
+        komodo_precheck
+        install_layout
+        local step_rc=0
+        update_env_certs || step_rc=$?
+        if [[ $step_rc -ne 0 ]]; then
+            komodo_precheck_failed "$step_rc"
+        fi
+        recreate_services || step_rc=$?
+        if [[ $step_rc -ne 0 ]]; then
+            komodo_precheck_failed "$step_rc"
+        fi
+        komodo_clear_marker .certs-pending
+    else
+        install_layout
+        update_env_certs
+        recreate_services
+    fi
 
     echo ""
     log_info "Certificate installation complete."

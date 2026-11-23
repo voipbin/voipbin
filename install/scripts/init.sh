@@ -309,7 +309,7 @@ check_force_reinit_preconditions() {
         done
         echo ""
         echo "Tear down the internal-mode host state first:"
-        echo "  docker compose down"
+        echo "  $(compose_hint down)"
         echo "  sudo ./scripts/setup-dns.sh --uninstall"
         echo ""
         die 1 "internal-mode host state must be torn down before --force-reinit to external"
@@ -332,8 +332,8 @@ print_force_reinit_followup() {
     echo "  1. Delete the old extensions and recreate them via the API"
     echo "     (for the test customer: ./scripts/setup_test_customer.sh)"
     echo "  2. Recreate the services that cache domain configuration:"
-    echo "     docker compose rm -fsv registrar-manager api-manager hook-manager customer-manager square-admin square-meet square-talk"
-    echo "     docker compose up -d registrar-manager api-manager hook-manager customer-manager square-admin square-meet square-talk"
+    echo "     $(compose_hint rm -fsv registrar-manager api-manager hook-manager customer-manager square-admin square-meet square-talk)"
+    echo "     $(compose_hint up -d registrar-manager api-manager hook-manager customer-manager square-admin square-meet square-talk)"
     echo ""
 }
 
@@ -362,6 +362,16 @@ check_web_reverse_proxy_restated() {
 # unless --force-reinit was given.
 check_existing_env_compat() {
     [[ -f "$ENV_FILE" ]] || return 0
+
+    # With Komodo (any mode but none) the container values live in Komodo and
+    # .env no longer holds them: a new .env would be generated with new
+    # secrets next to the old ones. Re-initializing is refused outright.
+    if [[ "$(komodo_mode)" != "none" ]]; then
+        log_error "This install is managed by Komodo; re-initializing would replace secrets Komodo holds."
+        log_error "To apply configuration changes run: sudo ./voipbin start"
+        log_error "To start over run: sudo ./voipbin clean --volumes --purge"
+        die 2 "re-initialization of an install managed by Komodo is refused (--yes and --force-reinit included)"
+    fi
 
     local existing_mode existing_domain existing_web_reverse_proxy
     existing_mode=$(get_domain_mode "$ENV_FILE")
@@ -1229,7 +1239,7 @@ EOF
             log_warn "    diff docker-compose.yml.recovered docker-compose.yml.dist"
             log_warn "  Proceeding to copy docker-compose.yml.dist as a placeholder so the"
             log_warn "  install isn't left completely non-functional; verify it before running"
-            log_warn "  'docker compose up -d'."
+            log_warn "  '$(compose_hint up -d)'."
             echo ""
         fi
         log_step "Creating docker-compose.yml..."

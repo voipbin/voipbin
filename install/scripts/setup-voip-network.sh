@@ -79,13 +79,13 @@ get_interface_ip() {
 load_external_ips() {
     if [[ -f "$PROJECT_DIR/.env" ]]; then
         if [[ -z "$EXTERNAL_IP" ]]; then
-            EXTERNAL_IP=$(grep '^KAMAILIO_EXTERNAL_IP=' "$PROJECT_DIR/.env" 2>/dev/null | cut -d'=' -f2 | head -1)
+            EXTERNAL_IP=$(host_env_read KAMAILIO_EXTERNAL_IP)
         fi
         if [[ -z "$RTPENGINE_EXTERNAL_IP" ]]; then
-            RTPENGINE_EXTERNAL_IP=$(grep '^RTPENGINE_EXTERNAL_IP=' "$PROJECT_DIR/.env" 2>/dev/null | cut -d'=' -f2 | head -1)
+            RTPENGINE_EXTERNAL_IP=$(host_env_read RTPENGINE_EXTERNAL_IP)
         fi
         if [[ -z "$EXTERNAL_IP_PINNED" ]]; then
-            EXTERNAL_IP_PINNED=$(grep '^EXTERNAL_IP_PINNED=' "$PROJECT_DIR/.env" 2>/dev/null | cut -d'=' -f2 | head -1)
+            EXTERNAL_IP_PINNED=$(host_env_read EXTERNAL_IP_PINNED)
         fi
     fi
 }
@@ -167,7 +167,7 @@ handle_ip_change() {
         # mode only — this script runs in both modes under
         # setup-host.sh, and external mode deploys no coredns, §2.4)
         if [[ "$(get_domain_mode "$PROJECT_DIR/.env")" == "internal" ]]; then
-            local kamailio_ip=$(grep '^KAMAILIO_EXTERNAL_IP=' "$PROJECT_DIR/.env" 2>/dev/null | cut -d'=' -f2 | head -1)
+            local kamailio_ip=$(host_env_read KAMAILIO_EXTERNAL_IP)
             generate_coredns_config "$current_ip" "$PROJECT_DIR/config/coredns" "$kamailio_ip"
             log_info "CoreDNS configuration regenerated"
 
@@ -220,7 +220,7 @@ load_external_ips
 # Check if Docker network exists
 if ! docker network inspect "$NETWORK_NAME" &>/dev/null; then
     log_error "Docker network '$NETWORK_NAME' does not exist."
-    log_info "Run 'docker compose up -d' first to create the network."
+    log_info "Run '$(compose_hint up -d)' first to create the network."
     exit 1
 fi
 
@@ -383,13 +383,18 @@ fi
 
 echo ""
 log_info "Restart services to use new interfaces:"
-log_info "  docker compose restart kamailio rtpengine"
+log_info "  $(compose_hint restart kamailio rtpengine)"
 
 # Restart api-manager if IP changed to pick up new certificate
 if [[ "$IP_CHANGED" == "true" ]]; then
     if docker ps --format '{{.Names}}' | grep -q "voipbin-api-mgr"; then
         echo ""
         log_info "Restarting api-manager to apply new certificate..."
-        cd "$PROJECT_DIR" && docker compose rm -sf api-manager && docker compose up -d api-manager
+        cd "$PROJECT_DIR" && compose_exec rm -sf api-manager && compose_exec up -d api-manager
     fi
+fi
+# With Komodo a certificate variable that could not be written ends the run
+# now, after every host step has run.
+if [[ "$(komodo_mode)" != "none" ]]; then
+    komodo_write_rc_exit
 fi

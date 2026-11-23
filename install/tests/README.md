@@ -57,6 +57,20 @@ tests/
 └── setup-voip-network.bats       # Tests for scripts/setup-voip-network.sh
 ```
 
+## Komodo tests
+
+The Komodo control plane has its own tests; none of them needs a real Komodo, docker or network (they use fake servers and fake `docker`/`systemctl`):
+
+```
+komodo-setup.bats, komodo-hook.bats     # scripts/komodo-setup.sh, scripts/komodo-hook.sh
+komodo-bridge.bats                      # compose_exec, ping, mode detection in scripts/common.sh
+komodo-writes.bats                      # IP and certificate writes (common.sh, start.sh, install-certs.sh)
+komodo-doctor.bats                      # the Komodo checks of scripts/doctor.sh
+../scripts/tests/test_komodo_lib.py     # scripts/komodo_lib.py (python3, plain asserts)
+../scripts/tests/test_cli_komodo.py     # the Komodo paths of voipbin-cli.py (python3, plain asserts)
+../scripts/tests/test_komodo_gates.py   # static gate: no direct state-changing compose call outside the allow list
+```
+
 ## What's Tested (120 tests total)
 
 ### common.sh (20 tests)

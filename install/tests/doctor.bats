@@ -504,7 +504,7 @@ setup_healthy_external() {
 # All-pass runs + final-line grammar (design §8 items 1, 7b)
 # =============================================================================
 
-@test "healthy internal all-pass: every check passes, exit 0, warned=0 mode=internal" {
+@test "healthy internal all-pass: every check passes, exit 0, only komodo-adoption warns, mode=internal" {
     setup_healthy_internal
 
     run_doctor
@@ -519,12 +519,14 @@ setup_healthy_external() {
     # TLS_MODE=selfsigned: SAN/issuer clauses are skipped, noted in the detail
     [[ "$output" == *'selfsigned'* ]]
     [[ "$output" == *'DOCTOR dns-external: skip'* ]]
+    # A pre-existing install (no Komodo files) gets the one adoption note
+    [[ "$output" == *'DOCTOR komodo-adoption: warn'* ]]
     local last_line
     last_line=$(echo "$output" | tail -1)
-    [[ "$last_line" =~ ^VOIPBIN_DOCTOR:\ status=pass\ passed=[0-9]+\ failed=0\ warned=0\ mode=internal$ ]]
+    [[ "$last_line" =~ ^VOIPBIN_DOCTOR:\ status=pass\ passed=[0-9]+\ failed=0\ warned=1\ mode=internal$ ]]
 }
 
-@test "healthy external all-pass: mode-appropriate checks, exit 0, mode=external" {
+@test "healthy external all-pass: mode-appropriate checks, exit 0, only komodo-adoption warns, mode=external" {
     setup_healthy_external
 
     run_doctor
@@ -533,9 +535,10 @@ setup_healthy_external() {
     [[ "$output" == *'DOCTOR dns-external: pass'* ]]
     [[ "$output" == *'DOCTOR dns-internal: skip'* ]]
     [[ "$output" == *'DOCTOR certs: pass'* ]]
+    [[ "$output" == *'DOCTOR komodo-adoption: warn'* ]]
     local last_line
     last_line=$(echo "$output" | tail -1)
-    [[ "$last_line" =~ ^VOIPBIN_DOCTOR:\ status=pass\ passed=[0-9]+\ failed=0\ warned=0\ mode=external$ ]]
+    [[ "$last_line" =~ ^VOIPBIN_DOCTOR:\ status=pass\ passed=[0-9]+\ failed=0\ warned=1\ mode=external$ ]]
 }
 
 # =============================================================================
@@ -745,7 +748,8 @@ udp   UNCONN 0      0      0.0.0.0:53         0.0.0.0:*  users:(("dnsmasq",pid=5
     local last_line
     last_line=$(echo "$output" | tail -1)
     [[ "$last_line" == *'status=pass'* ]]
-    [[ "$last_line" == *'warned=1'* ]]
+    # disk-space plus the komodo-adoption note of a pre-existing install
+    [[ "$last_line" == *'warned=2'* ]]
 }
 
 @test "disk space below the minimum fails with the prune prescription" {

@@ -22,6 +22,7 @@ import select
 import shlex
 import shutil
 import signal
+import stat
 import subprocess
 import sys
 import threading
@@ -34,6 +35,13 @@ import yaml
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime
 from pathlib import Path
+
+# komodo_lib sits next to this file; scripts and tests load this module from
+# other working directories.
+_SCRIPTS_DIR = os.path.dirname(os.path.abspath(__file__))
+if _SCRIPTS_DIR not in sys.path:
+    sys.path.append(_SCRIPTS_DIR)
+import komodo_lib  # noqa: E402
 
 
 def check_root():
@@ -2202,7 +2210,7 @@ def provider_row_state(group_vars, env_set, stored, down):
 # =============================================================================
 
 INSTALL_MARKER = ".voipbin-installed"
-INSTALL_STEPS = 6
+INSTALL_STEPS = 7
 INSTALL_INIT_VALUE_FLAGS = ("--mode", "--domain", "--tls", "--cert", "--key",
                             "--kamailio-ip", "--rtpengine-ip")
 INSTALL_INIT_BOOL_FLAGS = ("--web-reverse-proxy",)
@@ -2226,7 +2234,102 @@ INSTALL_OWNED_PATHS = (
     os.path.join("config", "dummy-gcp-credentials.json"), "docker-compose.yml",
     "versions.lock", "docker-compose.override.yml", ".voipbin-versions",
     ".test_data_initialized", INSTALL_MARKER, "tmp",
+    ".env.komodo", "komodo",
 )
+
+
+# Komodo control plane. Existing installs have no Komodo files: every branch
+# below is taken only when komodo_lib.mode() is not "none".
+COMPOSE_ENV_FILES_VALUE = ".env,.env.komodo"
+KOMODO_SETUP_ENV = "VOIPBIN_KOMODO_SETUP"  # test only: replaces scripts/komodo-setup.sh
+KOMODO_SETUP_SCRIPT = os.path.join("scripts", "komodo-setup.sh")
+KOMODO_HOOK_SOURCE = os.path.join("scripts", "komodo-hook.sh")
+RC_KOMODO_UNAVAILABLE = 21
+RC_ENV_CHECK_FINDINGS = 30
+KOMODO_MONGO_CONTAINER = "voipbin-komodo-mongo"
+KOMODO_CORE_CONTAINER = "voipbin-komodo-core"
+KOMODO_MONGO_ARCHIVE = "komodo-mongo.archive.gz"
+KOMODO_RESTORE_TMP = "/tmp/komodo-restore.archive.gz"
+KOMODO_DOCKER_TIMEOUT = 600
+KOMODO_CORE_WAIT = 60  # seconds to wait for core after a restore
+
+# `voipbin env check`: names only, never values.
+# Keys the template documents that a fresh install legitimately lacks
+# (compose supplies a default, the key is dead, or the feature is optional).
+ENV_CHECK_EXEMPT = (
+    # compose-internal-default
+    "DB_HOST", "DB_PORT", "REDIS_HOST", "REDIS_PORT", "RABBITMQ_HOST", "RABBITMQ_PORT",
+    "KAMAILIO_DB_HOST", "KAMAILIO_REDIS_HOST", "RTPENGINE_PORT_MIN", "RTPENGINE_PORT_MAX",
+    "RTPENGINE_LISTEN_HTTP", "SCHEDULE_BACKUP_HOST_DIR",
+    # dead
+    "RTPENGINE_INTERFACE",
+    # optional-feature-default
+    "LOCAL_LLM_MODELS", "LOCAL_LLM_ENDPOINTS",
+    # development seed switch, off by default
+    "VOIPBIN_SANDBOX_DEV_SEED",
+)
+# Names compose references that are internal values, not user settings.
+ENV_CHECK_COMPOSE_ONLY = (
+    "ASTERISK_CALL_ID", "ASTERISK_CONF_ID", "ASTERISK_REGISTRAR_ID",
+    "POD_IP", "RTPENGINE_LISTEN_NG", "STORAGE_JWT_KEY",
+)
+# start.sh validate_env rejects these when absent or empty.
+ENV_CHECK_EMPTY_ERROR = ("API_SSL_CERT_BASE64", "API_SSL_PRIVKEY_BASE64")
+ENV_TEMPLATE_KEY_RE = re.compile(r"^([A-Z_][A-Z0-9_]*)=")
+
+
+def _env_check(project_dir):
+    """(exit code, lines) of the .env key check. The last line is the
+    machine-readable VOIPBIN_ENV summary. Exit codes: 0 nothing to fix (INFO
+    only), 30 warnings or errors, 2 an input file cannot be read. Values are
+    never part of the lines."""
+    env_path = os.path.join(project_dir, ".env")
+    komodo_path = os.path.join(project_dir, ".env.komodo")
+    template_path = os.path.join(project_dir, ".env.template")
+    template_keys = []
+    try:
+        with open(env_path, "rb") as f:
+            f.read(1)
+        if os.path.exists(komodo_path):
+            with open(komodo_path, "rb") as f:
+                f.read(1)
+        with open(template_path, encoding="utf-8", errors="replace") as f:
+            for line in f:
+                m = ENV_TEMPLATE_KEY_RE.match(line)
+                if m and m.group(1) not in template_keys:
+                    template_keys.append(m.group(1))
+    except OSError as e:
+        name = os.path.basename(e.filename) if getattr(e, "filename", None) else ".env"
+        return 2, [f"ERROR UNREADABLE {name}", "VOIPBIN_ENV: status=error warn=0 error=1 info=0"]
+
+    # .env first, then the Komodo rendering (the later file wins, like compose)
+    raw = komodo_lib.read_env_raw(env_path)
+    raw.update(komodo_lib.read_env_raw(komodo_path))
+    present = set(raw)
+    template = set(template_keys)
+    findings = []  # (rank, LEVEL, KIND, name)
+    if len(present) * 2 < len(template_keys):
+        findings.append((0, "ERROR", "OVERWRITTEN", f"keys={len(present)}/{len(template_keys)}"))
+    for key in ENV_CHECK_EMPTY_ERROR:
+        if key in template and not komodo_lib._unquote(raw.get(key, "")):
+            findings.append((0, "ERROR", "EMPTY", key))
+    for key in template_keys:
+        if key in present or key in ENV_CHECK_EMPTY_ERROR:
+            continue
+        if key in ENV_CHECK_EXEMPT:
+            findings.append((2, "INFO", "MISSING", key))
+        else:
+            findings.append((1, "WARN", "MISSING", key))
+    for key in sorted(present - template - set(ENV_CHECK_COMPOSE_ONLY)):
+        findings.append((2, "INFO", "UNKNOWN", key))
+    findings.sort(key=lambda f: (f[0], f[2], f[3]))
+    lines = [f"{lvl} {kind} {name}" for _rank, lvl, kind, name in findings]
+    errors = sum(1 for f in findings if f[1] == "ERROR")
+    warns = sum(1 for f in findings if f[1] == "WARN")
+    infos = sum(1 for f in findings if f[1] == "INFO")
+    status = "error" if errors else ("warn" if warns else "ok")
+    lines.append(f"VOIPBIN_ENV: status={status} warn={warns} error={errors} info={infos}")
+    return (RC_ENV_CHECK_FINDINGS if (errors or warns) else 0), lines
 
 
 class InstallAbort(Exception):
@@ -2466,8 +2569,27 @@ class Config:
 # Command Execution Helpers
 # =============================================================================
 
+def compose_env_apply(directory=None):
+    """Point compose at the Komodo rendering when it is present and readable
+    (COMPOSE_ENV_FILES=.env,.env.komodo). Every child process inherits the
+    environment, so run_cmd and the direct subprocess calls all pass through
+    here. Without .env.komodo nothing is set, as before. Returns True when the
+    two files are in effect."""
+    try:
+        path = os.path.join(directory or os.getcwd(), ".env.komodo")
+        usable = os.path.isfile(path) and os.access(path, os.R_OK)
+    except OSError:
+        usable = False
+    if usable:
+        os.environ["COMPOSE_ENV_FILES"] = COMPOSE_ENV_FILES_VALUE
+    elif os.environ.get("COMPOSE_ENV_FILES") == COMPOSE_ENV_FILES_VALUE:
+        del os.environ["COMPOSE_ENV_FILES"]
+    return usable
+
+
 def run_cmd(cmd, capture=True, check=False):
     """Run a shell command and return output"""
+    compose_env_apply()
     try:
         result = subprocess.run(
             cmd,
@@ -2697,6 +2819,16 @@ def read_env_file_var(project_dir, name, default=""):
                     value = line.split("=", 1)[1].strip()
     except OSError:
         pass
+    # Komodo rendering next to .env: the later file wins, like compose.
+    komodo_path = os.path.join(project_dir, ".env.komodo")
+    if os.path.exists(komodo_path):
+        try:
+            with open(komodo_path) as f:
+                for line in f:
+                    if line.startswith(f"{name}="):
+                        value = line.split("=", 1)[1].strip()
+        except OSError:
+            pass
     return value
 
 
@@ -3122,6 +3254,8 @@ class VoIPBinCLI:
         # the non-interactive dispatch in _main() (0 ok, 1 user/validation
         # error, 2 environment error; init/start pass their script's code).
         self.last_rc = 0
+        # Exit code of the last `env check` (0 ok, 30 findings, 2 unreadable).
+        self.last_env_rc = 0
         # True only in the terminal REPL started with the TUI (see tui_wanted);
         # help and tab completion add the slash commands then.
         self.tui_on = False
@@ -3137,6 +3271,8 @@ class VoIPBinCLI:
             "status": self.cmd_status,
             "ps": self.cmd_status,
             "doctor": self.cmd_doctor,
+            "env": self.cmd_env,
+            "komodo": self.cmd_komodo,
             "start": self.cmd_start,
             "stop": self.cmd_stop,
             "restart": self.cmd_restart,
@@ -3192,6 +3328,8 @@ class VoIPBinCLI:
             "status": ("Show service status", "status"),
             "ps": ("Alias for status", "ps"),
             "doctor": ("Diagnose install and runtime state (read-only)", "doctor\n  Runs scripts/doctor.sh at any stage (pre-install, pre-start, running).\n  Prints one 'DOCTOR <name>: pass|fail|warn|skip' line per check and a\n  'FIX <name>: <command>' prescription for every failure.\n  Exit code 0 only when no check failed."),
+            "env": ("Check .env keys against the template (read-only)", "env check\n  Compares .env (and .env.komodo when present) with .env.template.\n  Prints 'ERROR|WARN|INFO <MISSING|UNKNOWN|EMPTY|OVERWRITTEN> <name>' lines (names only, never\n  values) and a final 'VOIPBIN_ENV: status=... warn=N error=N info=N' line.\n  Exit codes: 0 nothing to fix, 30 warnings or errors, 2 a file cannot be read."),
+            "komodo": ("Komodo control plane", "komodo setup | health\n  komodo setup    Install or repair Komodo (core, database, periphery, deploy hook); safe to repeat\n  komodo health   One KOMODO_HEALTH line (adopted, core, db, auth, periphery, server, stack, envfile)"),
             "start": ("Start services", "start [service] [--no-pin]\n  start              Start all services (installs with versions.lock are already pinned)\n  start --no-pin     Start without creating an image override\n  start api-manager  Start specific service"),
             "stop": ("Stop services", "stop [service] [--all]\n  stop            Stop app services (keeps db/redis/mq/dns running)\n  stop kamailio   Stop specific service\n  stop --all      Stop all services including infrastructure"),
             "restart": ("Restart services (Asterisk owner+proxy sidecars always paired)", "restart [service]"),
@@ -3331,8 +3469,76 @@ class VoIPBinCLI:
         :3003-3005 are bound to 127.0.0.1 only (see SQUARE_BIND_ADDR)."""
         return (read_env_file_var(self._project_dir(), "WEB_REVERSE_PROXY") or "false") == "true"
 
+    # -------------------------------------------------------------------------
+    # Komodo helpers. mode "none" (no Komodo files) keeps every command on its
+    # direct compose path; only adopted installs go through komodo_lib.
+    # -------------------------------------------------------------------------
+
+    def _compose_env(self):
+        """Apply COMPOSE_ENV_FILES for this install directory (see compose_env_apply)."""
+        return compose_env_apply(self._project_dir())
+
+    def _komodo_mode(self, project_dir=None):
+        return komodo_lib.mode(project_dir or self._project_dir())
+
+    def _komodo_active(self):
+        """True when compose actions go through Komodo (adopted install)."""
+        self._compose_env()
+        return self._komodo_mode() != "none"
+
+    def _komodo_exec(self, verb, services=()):
+        """Run one compose verb through Komodo; returns its exit code."""
+        rc = komodo_lib.exec_verb(self._project_dir(), verb, list(services))
+        if rc and (rc == RC_KOMODO_UNAVAILABLE or not self.last_rc):
+            self.last_rc = rc
+        return rc
+
+    def _compose_restart(self, services):
+        """`docker compose restart` of the given services (list); Komodo
+        RestartStack when adopted. Returns the text to print."""
+        if self._komodo_active():
+            self._komodo_exec("restart", services)
+            return ""
+        return run_cmd(f"docker compose restart {' '.join(services)} 2>&1")
+
+    def _status_komodo_section(self):
+        print(f"\n{bold('Control plane (Komodo)')}")
+        print("-" * 60)
+        state = self._komodo_mode()
+        if state == "none":
+            print(yellow("Komodo: not adopted (existing installs run compose directly)"))
+            return
+        if state == "broken":
+            print(f"  {red('○')} Komodo state is incomplete")
+            print(f"    Run: sudo ./voipbin komodo setup")
+            return
+        f = komodo_lib.health_fields(self._project_dir(), quick=True)
+        periphery_ok = f["periphery_unit"] == "active" and f["server"] == "Ok"
+        if f["periphery_unit"] != "active":
+            periphery_why = f"unit {f['periphery_unit']}"
+        else:
+            periphery_why = f"server {f['server']}"
+        items = [
+            ("core", f["core"] == "ok", "down"),
+            ("database", f["db"] == "ok", f["db"]),
+            ("periphery", periphery_ok, periphery_why),
+            ("stack", f["stack"] == "present", f["stack"]),
+        ]
+        if f["auth"] == "rejected":
+            items.insert(2, ("auth", False, "rejected"))
+        parts = []
+        for label, ok, why in items:
+            parts.append(f"{green('●')} {label}" if ok else f"{red('○')} {label} ({why})")
+        print("  Komodo  " + " ".join(parts))
+        if f["envfile"] != "ok":
+            print(f"  {yellow('!')} .env.komodo: {f['envfile']}")
+        if not all(ok for _l, ok, _w in items) or f["envfile"] != "ok":
+            print(f"  Run 'voipbin doctor' for details.")
+
     def cmd_status(self, args):
         """Show service status"""
+        self._compose_env()
+        self._status_komodo_section()
         output = run_cmd("docker compose ps --format '{{.Name}}\t{{.Status}}' 2>/dev/null")
         if not output:
             print(yellow("No services running. Run 'start' to start services."))
@@ -3649,9 +3855,19 @@ class VoIPBinCLI:
         service = args[0] if args else ""
 
         self.last_rc = 0
+        km = self._komodo_active()
         if service:
             # Start specific service
             print(f"Starting {service}...")
+            if km:
+                rc = komodo_lib.exec_verb(self._project_dir(), "up", [service])
+                if rc == 0:
+                    print(green("✓ Done"))
+                else:
+                    print(red(f"✗ voipbin start {service} failed (exit {rc})"))
+                    self.last_rc = rc
+                self._check_ticker_replica_guard()
+                return
             proc = subprocess.run(["docker", "compose", "up", "-d", service],
                                   stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
             if proc.stdout:
@@ -3694,10 +3910,18 @@ class VoIPBinCLI:
             else:
                 # Fallback to docker compose
                 print("Starting all services...")
-                result = run_cmd("docker compose up -d 2>&1")
-                if result:
-                    print(result)
-                print(green("✓ Done"))
+                if km:
+                    rc = komodo_lib.exec_verb(self._project_dir(), "up", [])
+                    if rc == 0:
+                        print(green("✓ Done"))
+                    else:
+                        print(red(f"✗ voipbin start failed (exit {rc})"))
+                        self.last_rc = rc
+                else:
+                    result = run_cmd("docker compose up -d 2>&1")
+                    if result:
+                        print(result)
+                    print(green("✓ Done"))
             self._check_ticker_replica_guard()
 
     def cmd_stop(self, args):
@@ -3708,6 +3932,9 @@ class VoIPBinCLI:
         stop_all = "--all" in args
         args = [a for a in args if a != "--all"]
         service = args[0] if args else ""
+        # Direct compose never sets last_rc (exit code stays 0 as before);
+        # only a failed Komodo call does.
+        self.last_rc = 0
 
         if service:
             # Stop specific service
@@ -3715,17 +3942,23 @@ class VoIPBinCLI:
                 print(yellow("Warning: Stopping CoreDNS may cause DNS resolution to fail."))
                 print(yellow("         Run 'dns setup' after restarting to restore DNS."))
             print(f"Stopping {service}...")
-            result = run_cmd(f"docker compose stop {service} 2>&1")
+            result = self._compose_stop([service])
             if result:
                 print(result)
-            print(green("✓ Done"))
+            if self.last_rc:
+                print(red(f"✗ voipbin stop {service} failed (exit {self.last_rc})"))
+            else:
+                print(green("✓ Done"))
         elif stop_all:
             # Stop all containers including infrastructure
             print("Stopping all services (including infrastructure)...")
-            result = run_cmd("docker compose stop 2>&1")
+            result = self._compose_stop([])
             if result:
                 print(result)
-            print(green("✓ All services stopped"))
+            if self.last_rc:
+                print(red(f"✗ voipbin stop --all failed (exit {self.last_rc})"))
+            else:
+                print(green("✓ All services stopped"))
         else:
             # Stop only app containers, keep infrastructure running
             print("Stopping app services (keeping infrastructure)...")
@@ -3738,15 +3971,28 @@ class VoIPBinCLI:
                         services_to_stop.append(svc)
 
                 if services_to_stop:
-                    result = run_cmd(f"docker compose stop {' '.join(services_to_stop)} 2>&1")
+                    result = self._compose_stop(services_to_stop)
                     if result:
                         print(result)
+                    if self.last_rc:
+                        print(red(f"✗ voipbin stop failed (exit {self.last_rc})"))
+                        return
                     print(green(f"✓ Stopped {len(services_to_stop)} app services"))
                     print(gray(f"  Infrastructure still running: {', '.join(sorted(INFRA_SERVICES))}"))
                 else:
                     print("No app services to stop")
             else:
                 print("No services running")
+
+    def _compose_stop(self, services):
+        """`docker compose stop` of the given services (empty = all); Komodo
+        StopStack when adopted. Returns the text to print."""
+        if self._komodo_active():
+            self._komodo_exec("stop", services)
+            return ""
+        if services:
+            return run_cmd(f"docker compose stop {' '.join(services)} 2>&1")
+        return run_cmd("docker compose stop 2>&1")
 
     # network_mode: "service:<owner>" sidecars share the owner's kernel
     # network namespace so their loopback-bound peer resolves over localhost
@@ -3787,9 +4033,11 @@ class VoIPBinCLI:
         first, which understands compose service names regardless of any
         `container_name:` override.
         """
-        result = run_cmd(f"docker compose restart {owner} 2>&1")
+        result = self._compose_restart([owner])
         if result:
             print(result)
+        if self.last_rc == RC_KOMODO_UNAVAILABLE:
+            return
 
         container_id = (run_cmd(f"docker compose ps -q {owner} 2>/dev/null") or "").strip()
         # Defensive: if a service were ever scaled to multiple replicas,
@@ -3808,7 +4056,7 @@ class VoIPBinCLI:
                 )
             )
             time.sleep(5)
-            result = run_cmd(f"docker compose restart {proxy} 2>&1")
+            result = self._compose_restart([proxy])
             if result:
                 print(result)
             return
@@ -3857,7 +4105,7 @@ class VoIPBinCLI:
                 )
             )
 
-        result = run_cmd(f"docker compose restart {proxy} 2>&1")
+        result = self._compose_restart([proxy])
         if result:
             print(result)
 
@@ -3865,6 +4113,7 @@ class VoIPBinCLI:
         """Restart services (SIDECAR_PAIRS owner containers auto-pull in
         their network-namespace-sharing sidecar, see VOIP-1237)"""
         service = args[0] if args else ""
+        self.last_rc = 0  # only a failed Komodo call sets it
 
         if service:
             # If the requested service is a SIDECAR_PAIRS owner, force its
@@ -3881,11 +4130,14 @@ class VoIPBinCLI:
                 self._restart_sidecar_pair(service, paired_proxy)
             else:
                 print(f"Restarting {service}...")
-                result = run_cmd(f"docker compose restart {service} 2>&1")
+                result = self._compose_restart([service])
                 if result:
                     print(result)
 
-            print(green("✓ Done"))
+            if self.last_rc:
+                print(red(f"✗ voipbin restart {service} failed (exit {self.last_rc})"))
+            else:
+                print(green("✓ Done"))
         else:
             # Full-stack restart: `docker compose restart` (no args) does not
             # guarantee any owner-before-sidecar ordering, so a sidecar can
@@ -3901,18 +4153,23 @@ class VoIPBinCLI:
                 paired_services.add(proxy)
                 print(f"  -> {owner}, then {proxy} once healthy (VOIP-1237)")
                 self._restart_sidecar_pair(owner, proxy)
+                if self.last_rc == RC_KOMODO_UNAVAILABLE:
+                    break
 
             all_services = run_cmd("docker compose ps --services 2>/dev/null") or ""
             remaining = [
                 svc.strip() for svc in all_services.split("\n")
                 if svc.strip() and svc.strip() not in paired_services
             ]
-            if remaining:
-                result = run_cmd(f"docker compose restart {' '.join(remaining)} 2>&1")
+            if remaining and self.last_rc != RC_KOMODO_UNAVAILABLE:
+                result = self._compose_restart(remaining)
                 if result:
                     print(result)
 
-            print(green("✓ Done"))
+            if self.last_rc:
+                print(red(f"✗ voipbin restart failed (exit {self.last_rc})"))
+            else:
+                print(green("✓ Done"))
 
     def cmd_logs(self, args):
         """View service logs"""
@@ -5570,7 +5827,10 @@ Type 'registrar <subcommand> help' for more details.
                 print(f"  {red('✗')} {domain} → (no resolution)")
 
         if not coredns_running:
-            print(f"\n{yellow('Hint')}: Start CoreDNS with 'docker compose up -d coredns'")
+            if self._komodo_mode(self._project_dir()) != "none":
+                print(f"\n{yellow('Hint')}: Start CoreDNS with 'voipbin start coredns'")
+            else:
+                print(f"\n{yellow('Hint')}: Start CoreDNS with 'docker compose up -d coredns'")
         elif not config_exists:
             print(f"\n{yellow('Hint')}: Run 'dns setup' to configure DNS forwarding")
         print()
@@ -5951,7 +6211,10 @@ Type 'registrar <subcommand> help' for more details.
             else:
                 print(f"  {yellow('!')} voip-internal: network exists but bridge not found")
         else:
-            print(f"  {gray('○')} voip-internal: not created (run 'docker compose up -d' first)")
+            if self._komodo_mode(self._project_dir()) != "none":
+                print(f"  {gray('○')} voip-internal: not created (run 'voipbin start' first)")
+            else:
+                print(f"  {gray('○')} voip-internal: not created (run 'docker compose up -d' first)")
 
         default_network = run_cmd(f"docker network inspect {shlex.quote(project + '_default')} --format '{{{{.Id}}}}' 2>/dev/null | head -c 12")
         if default_network:
@@ -6358,10 +6621,46 @@ Type 'registrar <subcommand> help' for more details.
         lines = [l for l in proc.stdout.splitlines() if l.strip()]
         return proc.returncode, (lines[-1] if lines else "")
 
-    def cmd_install(self, args):
-        """Guided install: preflight, init, host setup, start, verify, admin."""
+    def _komodo_setup_script(self, project_dir):
+        return os.environ.get(KOMODO_SETUP_ENV) or os.path.join(project_dir, KOMODO_SETUP_SCRIPT)
+
+    def cmd_komodo(self, args):
+        """Komodo control plane: setup (install or repair) and health."""
         self.last_rc = 0
         project_dir = self._project_dir()
+        sub = args[0] if args else ""
+        if sub == "setup":
+            script = self._komodo_setup_script(project_dir)
+            if not os.path.exists(script):
+                print(red(f"Komodo setup script not found: {script}"))
+                self.last_rc = 2
+                return
+            self.last_rc = subprocess.call(["bash", script], cwd=project_dir, env=self._install_child_env())
+            self._compose_env()
+        elif sub == "health":
+            komodo_lib.health(project_dir, quick="--quick" in args)
+        else:
+            print("Usage: komodo setup | komodo health")
+            if args:
+                self.last_rc = 1
+
+    def cmd_env(self, args):
+        """Check .env against .env.template (read-only)."""
+        self.last_env_rc = 0
+        if args[:1] != ["check"]:
+            print("Usage: env check")
+            self.last_env_rc = 2
+            return
+        rc, lines = _env_check(self._project_dir())
+        for line in lines:
+            print(line)
+        self.last_env_rc = rc
+
+    def cmd_install(self, args):
+        """Guided install: preflight, init, Komodo, host setup, start, verify, admin."""
+        self.last_rc = 0
+        project_dir = self._project_dir()
+        self._compose_env()
         marker = os.path.join(project_dir, INSTALL_MARKER)
         env_path = os.path.join(project_dir, ".env")
         pw_fd = None
@@ -6407,11 +6706,31 @@ Type 'registrar <subcommand> help' for more details.
                     print("  Its passwords and encryption keys live in the missing .env, so a new")
                     print("  configuration would not match the data. Choose one:")
                     print("    - restore the .env from a backup: cp backups/<timestamp>/.env .env")
+                    if self._komodo_mode(project_dir) != "none":
+                        print("      (and .env.komodo: cp backups/<timestamp>/config/.env.komodo .env.komodo)")
                     print("    - or delete the old data first: sudo ./voipbin clean --volumes --force")
                     raise InstallAbort(1, 0, f"database volume {volume} exists without .env",
                                        "restore .env from backups/<timestamp>/ or sudo ./voipbin clean --volumes --force")
                 if opts["resume"]:
                     raise InstallAbort(1, 0, "nothing to resume (no .env)", "sudo ./voipbin install")
+            elif (self._komodo_mode(project_dir) != "none"
+                  and not os.path.exists(os.path.join(project_dir, komodo_lib.ENV_COPY))):
+                # Komodo holds part of the secrets in .env.komodo: its absence
+                # next to a database volume is the same warning as a missing .env.
+                exists, volume = self._install_db_volume_exists(project_dir)
+                if exists:
+                    print(f"  A database volume ({volume}) exists but there is no .env.komodo.")
+                    print("  Part of its passwords and encryption keys live in the missing file, so a")
+                    print("  new rendering would not match the data. Choose one:")
+                    print("    - restore it from a backup: cp backups/<timestamp>/config/.env.komodo .env.komodo")
+                    print("    - or delete the old data first: sudo ./voipbin clean --volumes --force")
+                    raise InstallAbort(1, 0, f"database volume {volume} exists without .env.komodo",
+                                       "restore .env.komodo from backups/<timestamp>/config/ or sudo ./voipbin clean --volumes --force")
+            # Existing installs are not adopted by Komodo (nothing is changed here)
+            if komodo_lib.guard(project_dir) != 0:
+                raise InstallAbort(2, 0, "an existing install cannot be moved to Komodo",
+                                   "sudo ./voipbin status (existing installs keep running compose directly)",
+                                   why="Komodo is set up for new installs only")
 
             # Argument checks that need no host change
             if not opts["yes"] and not interactive:
@@ -6450,14 +6769,14 @@ Type 'registrar <subcommand> help' for more details.
             caroot = None if external else install_user_caroot()
             caroot_env = {"CAROOT": caroot} if caroot else None
 
-            # [1/6] preflight
+            # [1/7] preflight
             step = 1
             self._install_step(1, "Checking this host")
             for w in self._install_preflight(project_dir, opts["resume"]):
                 print(f"  {yellow('!')} {w}")
             print(f"  {green('ok')}")
 
-            # [2/6] configuration
+            # [2/7] configuration
             step = 2
             self._install_step(2, "Generating configuration")
             if opts["resume"]:
@@ -6482,39 +6801,51 @@ Type 'registrar <subcommand> help' for more details.
                 print(f"  {green('ok')}")
             touched = True
 
-            # [3/6] host
+            # [3/7] Komodo (control plane; the main stack is not touched before it is up)
             step = 3
-            self._install_step(3, "Preparing the host (DNS, network, certificates)")
+            self._install_step(3, "Setting up Komodo (the control plane for the services)")
+            rc = subprocess.call(["bash", self._komodo_setup_script(project_dir)],
+                                 cwd=project_dir, env=self._install_child_env())
+            if rc != 0:
+                raise InstallAbort(2 if rc == 2 else 1, 3, f"komodo setup failed (exit {rc})",
+                                   resume_cmd,
+                                   why="see the VOIPBIN_KOMODO line above; the main stack was not changed")
+            self._compose_env()
+            print(f"  {green('ok')}")
+
+            # [4/7] host
+            step = 4
+            self._install_step(4, "Preparing the host (DNS, network, certificates)")
             self._install_host_notice()
             if not self._install_ask(interactive, "Apply these host changes?"):
-                raise InstallAbort(1, 3, "host changes not approved", resume_cmd)
+                raise InstallAbort(1, 4, "host changes not approved", resume_cmd)
             rc = subprocess.call(["bash", os.path.join(project_dir, "scripts", "setup-host.sh")],
                                  cwd=project_dir, env=self._install_child_env())
             if rc != 0:
-                raise InstallAbort(clamp_script_rc(rc), 3, f"setup-host.sh failed (exit {rc})",
+                raise InstallAbort(clamp_script_rc(rc), 4, f"setup-host.sh failed (exit {rc})",
                                    "fix the error above, then " + resume_cmd,
                                    why="see the VOIPBIN_SETUP_HOST line above")
             print(f"  {green('ok')}")
 
-            # [4/6] start
-            step = 4
+            # [5/7] start
+            step = 5
             services = subprocess.run(["docker", "compose", "config", "--services"], cwd=project_dir,
                                       capture_output=True, text=True).stdout.split()
-            self._install_step(4, f"Starting services ({len(services)} services, this can take several minutes)")
+            self._install_step(5, f"Starting services ({len(services)} services, this can take several minutes)")
             try:
                 rc = subprocess.call(["bash", os.path.join(project_dir, "scripts", "start.sh")],
                                      cwd=project_dir, env=self._install_child_env(caroot_env))
             finally:
                 fix_caroot_ownership(caroot, owner)
             if rc != 0:
-                raise InstallAbort(clamp_script_rc(rc), 4, f"start.sh failed (exit {rc})",
+                raise InstallAbort(clamp_script_rc(rc), 5, f"start.sh failed (exit {rc})",
                                    "fix the error above, then " + resume_cmd,
                                    why="see the VOIPBIN_START line above")
             print(f"  {green('ok')}")
 
-            # [5/6] verify
-            step = 5
-            self._install_step(5, "Verifying the install (waits for health checks, up to 3 minutes)")
+            # [6/7] verify
+            step = 6
+            self._install_step(6, "Verifying the install (waits for health checks, up to 3 minutes)")
             ok, summary, optional, failures = self._install_wait_and_verify(project_dir)
             for name in optional:
                 print(f"  {yellow('!')} {name}: optional feature not configured "
@@ -6522,24 +6853,24 @@ Type 'registrar <subcommand> help' for more details.
             if not ok:
                 for name, why in failures:
                     print(f"  {red('x')} {name}: {why}")
-                raise InstallAbort(1, 5, f"{len(failures)} service problem(s): " + ", ".join(n for n, _ in failures),
+                raise InstallAbort(1, 6, f"{len(failures)} service problem(s): " + ", ".join(n for n, _ in failures),
                                    "sudo ./voipbin doctor, fix, then " + resume_cmd,
                                    why="a service is not running or not healthy")
             print(f"  {green('ok')} ({summary})")
             if not (self._provider_preflight_step(project_dir, "install")
                     and self._provider_import_step(project_dir, "install")):
-                raise InstallAbort(1, 5, "provider keys could not be stored", resume_cmd,
+                raise InstallAbort(1, 6, "provider keys could not be stored", resume_cmd,
                                    why="see the provider key lines above; the services read these keys from the database only")
 
-            # [6/6] admin account
-            step = 6
-            self._install_step(6, "Creating the admin account")
+            # [7/7] admin account
+            step = 7
+            self._install_step(7, "Creating the admin account")
             email = opts["admin_email"]
             while not email:
                 try:
                     email = input("  email: ").strip()
                 except EOFError:
-                    raise InstallAbort(1, 6, "no admin email given", resume_cmd)
+                    raise InstallAbort(1, 7, "no admin email given", resume_cmd)
                 if email and not INSTALL_EMAIL_RE.match(email):
                     print(f"  {red('x')} not a valid email address")
                     email = ""
@@ -6552,11 +6883,11 @@ Type 'registrar <subcommand> help' for more details.
                 if interactive and self._install_ask(True, f"An account for {email} already exists. Set a new password for it?", default_yes=False):
                     rc, line = self._install_create_admin(project_dir, email, opts["admin_name"], password, True)
                 else:
-                    raise InstallAbort(1, 6, f"an account for {email} already exists",
+                    raise InstallAbort(1, 7, f"an account for {email} already exists",
                                        resume_cmd + " --reset-admin-password")
             if rc != 0:
                 m = re.search(r'reason="([^"]*)"', line)
-                raise InstallAbort(1, 6, "admin account setup failed: " + (m.group(1) if m else (line or f"exit {rc}")),
+                raise InstallAbort(1, 7, "admin account setup failed: " + (m.group(1) if m else (line or f"exit {rc}")),
                                    resume_cmd + " (add --reset-admin-password if the account exists)",
                                    why="see the [admin] lines above")
             pw_done = True
@@ -6645,6 +6976,16 @@ Type 'registrar <subcommand> help' for more details.
             self.last_doctor_rc = 2
             return
 
+        # Key check as a separate section: informational, never part of the
+        # doctor exit code or the VOIPBIN_DOCTOR line. Skipped before init
+        # (doctor.sh reports the missing .env itself).
+        if os.path.exists(os.path.join(script_dir, ".env")):
+            print(bold("Environment keys (informational; voipbin env check)"))
+            for line in _env_check(script_dir)[1]:
+                print(f"  {line}")
+            print()
+
+        self._compose_env()
         # subprocess.call returns a real exit code (the cmd_init precedent's
         # shell-out returns a raw wait status and must not be propagated).
         # Run via bash so a lost exec bit cannot raise PermissionError.
@@ -6656,6 +6997,7 @@ Type 'registrar <subcommand> help' for more details.
     def cmd_clean(self, args):
         """Remove containers, data or generated files"""
         self.last_rc = 0
+        self._compose_env()
         if not [a for a in args if a != "--force"]:
             print("Usage: clean [--containers] [--volumes] [--images] [--network] [--dns] [--purge] [--all] [--force]")
             print("")
@@ -7017,6 +7359,7 @@ Type 'registrar <subcommand> help' for more details.
     def cmd_update(self, args):
         """Update the install - pull images and/or update scripts from GitHub"""
         project_dir = self.config.get("project_dir", ".")
+        self._compose_env()
         check_only = "--check" in args
         skip_backup = "--skip-backup" in args
         resume_from = None
@@ -7148,6 +7491,7 @@ Type 'registrar <subcommand> help' for more details.
         `docker compose config`, i.e. exactly what the container receives
         (.env, quotes and $ already resolved). They stay in memory; compose's
         stderr is dropped because it can quote pieces of a value."""
+        compose_env_apply(project_dir)
         try:
             r = subprocess.run(["docker", "compose", "config", "--format", "json"], cwd=project_dir,
                                stdin=subprocess.DEVNULL, capture_output=True, text=True,
@@ -7172,6 +7516,8 @@ Type 'registrar <subcommand> help' for more details.
         throwaway container (no start of the service, no dependencies). The
         value, if any, goes to stdin only. Returns (rc, stdout, stderr)."""
         name = f"voipbin-{tag}-{svc}"
+        # class T (direct run, not a Komodo action): names the env files itself
+        compose_env_apply(project_dir)
         devnull = dict(stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, stdin=subprocess.DEVNULL, cwd=project_dir)
 
         def drop():
@@ -7472,16 +7818,19 @@ Type 'registrar <subcommand> help' for more details.
         ctl_of = {(sv, k): c for sv, c, _m, _n, _e, k, _g in PROVIDER_CONFIG_KEYS}
 
         def replace_cmds(items):
+            # with Komodo the services read their variables from two files, so
+            # the one-off container needs both (installs without Komodo: unchanged)
+            pfx = "COMPOSE_ENV_FILES=.env,.env.komodo " if self._komodo_mode(self._project_dir()) != "none" else ""
             print("  Replace it with the new value in NEW_VALUE (keep the value out of your shell history):")
             for svc, key, why in items:
                 if svc == NUMBER_SVC:
-                    run = f"docker compose run --rm -T --no-deps --entrypoint /app/bin/{NUMBER_CTL} {svc} provider"
+                    run = f"{pfx}docker compose run --rm -T --no-deps --entrypoint /app/bin/{NUMBER_CTL} {svc} provider"
                     if "different" in why or "not usable" in why:
                         print(f"    {run} update --name {key} --actor-id {PROVIDER_ACTOR_ID} --config connection_id=<CONNECTION_ID>")
                         print("    (check first that the token belongs to the Telnyx account of that connection id)")
                     print(f"    printf '%s' \"$NEW_VALUE\" | {run} secret set --name {key} --actor-id {PROVIDER_ACTOR_ID}")
                     continue
-                print(f"    printf '%s' \"$NEW_VALUE\" | docker compose run --rm -T --no-deps --entrypoint "
+                print(f"    printf '%s' \"$NEW_VALUE\" | {pfx}docker compose run --rm -T --no-deps --entrypoint "
                       f"/app/bin/{ctl_of.get((svc, key), '<control>')} {svc} config set --key {key} --actor-id {PROVIDER_ACTOR_ID}")
 
         if res["attention"]:
@@ -7513,7 +7862,8 @@ Type 'registrar <subcommand> help' for more details.
             print("  'number-control provider secret set --name telnyx' (value on stdin) or the admin API; a change in .env")
             print("  alone has no effect. message-manager stores TELNYX_API_KEY separately, so rotate it there too.")
         if any(x[0] == NUMBER_SVC and x[1] == "twilio" for x in res["skipped"]):
-            run = f"docker compose run --rm -T --no-deps --entrypoint /app/bin/{NUMBER_CTL} {NUMBER_SVC} provider"
+            tpfx = "COMPOSE_ENV_FILES=.env,.env.komodo " if self._komodo_mode(self._project_dir()) != "none" else ""
+            run = f"{tpfx}docker compose run --rm -T --no-deps --entrypoint /app/bin/{NUMBER_CTL} {NUMBER_SVC} provider"
             print("  To use Twilio for phone numbers, enter its account and trunk, then the account auth token (value on stdin):")
             print(f"    {run} update --name twilio --actor-id {PROVIDER_ACTOR_ID} --config sid=<ACCOUNT_SID> --config trunk_sid=<TRUNK_SID>")
             print(f"    printf '%s' \"$AUTH_TOKEN\" | {run} secret set --name twilio --actor-id {PROVIDER_ACTOR_ID}")
@@ -7674,6 +8024,18 @@ Type 'registrar <subcommand> help' for more details.
 
         restore_hint = f"voipbin restore {backup_ts} --force" if backup_ts else "voipbin restore <ts> --force"
 
+        # ---- Step 4.5 (Komodo installs only): converge with the NEW code: the
+        # installed deploy hook must match this checkout, and Komodo must answer ----
+        if self._komodo_mode(project_dir) != "none":
+            print(f"\n{blue('==>')} Step 4.5: converging Komodo with the updated scripts...")
+            self._update_stage = "komodo-converge"
+            rc = self._komodo_converge(project_dir)
+            if rc:
+                print(f"\n{red('Upgrade aborted:')} Komodo could not be converged. Nothing was migrated or recreated.")
+                print("  Check it with: voipbin doctor; repair with: sudo ./voipbin komodo setup")
+                self._release_op_lock(_lock_path)
+                return rc
+
         # ---- Provider keys preflight: nothing below changes an image until the
         # master keys the services need to store them are in place ----
         self._update_stage = "keys-preflight"
@@ -7714,11 +8076,18 @@ Type 'registrar <subcommand> help' for more details.
         # ---- Step 3: docker compose pull (fetch the NEW pinned digests) ----
         print(f"\n{blue('==>')} Step 3/6: pulling new pinned images (docker compose pull)...")
         self._update_stage = "pull"
-        rc = subprocess.call("docker compose pull", shell=True, cwd=project_dir)
-        if rc != 0:
-            print(f"\n{red('Upgrade aborted:')} docker compose pull failed (exit {rc}).")
-            print("  Old containers are still running the old digests; safe to re-run 'update all'.")
-            return RC_PULL_FAILED
+        if self._komodo_mode(project_dir) != "none":
+            rc = komodo_lib.exec_verb(project_dir, "pull", [])
+            if rc != 0:
+                print(f"\n{red('Upgrade aborted:')} the image pull through Komodo failed (exit {rc}).")
+                print("  Old containers are still running the old digests; safe to re-run 'update all'.")
+                return RC_KOMODO_UNAVAILABLE if rc == RC_KOMODO_UNAVAILABLE else RC_PULL_FAILED
+        else:
+            rc = subprocess.call("docker compose pull", shell=True, cwd=project_dir)
+            if rc != 0:
+                print(f"\n{red('Upgrade aborted:')} docker compose pull failed (exit {rc}).")
+                print("  Old containers are still running the old digests; safe to re-run 'update all'.")
+                return RC_PULL_FAILED
 
         # ---- Step 4: migrations (surfaced live, abort on failure) ----
         migrate_script = os.path.join(project_dir, "scripts", "migrate.sh")
@@ -7759,14 +8128,17 @@ Type 'registrar <subcommand> help' for more details.
         # ---- Step 5: recreate changed containers ----
         print(f"\n{blue('==>')} Step 5/6: recreating services (docker compose up -d)...")
         self._update_stage = "up"
-        rc = subprocess.call("docker compose up -d", shell=True, cwd=project_dir)
+        if self._komodo_mode(project_dir) != "none":
+            rc = komodo_lib.exec_verb(project_dir, "up", [])
+        else:
+            rc = subprocess.call("docker compose up -d", shell=True, cwd=project_dir)
         if rc != 0:
             print(f"\n{red('Upgrade aborted:')} docker compose up -d failed (exit {rc}).")
             print(f"  If services are broken: stop, then '{restore_hint}', then")
             print("  'git checkout <previous commit> -- docker-compose.yml.dist versions.lock.dist scripts/'")
             print("  (pathspec-scoped - a bare checkout would revert this repo's entire tree)")
             print(f"  and 'COMPOSE_FILE={os.path.join(project_dir, 'docker-compose.yml')} bash scripts/sync-compose-images.sh'.")
-            return RC_UP_FAILED
+            return RC_KOMODO_UNAVAILABLE if rc == RC_KOMODO_UNAVAILABLE else RC_UP_FAILED
 
         # ---- Step 6: verify ----
         print(f"\n{blue('==>')} Step 6/6: verifying stack health...")
@@ -7783,6 +8155,15 @@ Type 'registrar <subcommand> help' for more details.
             # A False return with no recorded code (e.g. a replaced
             # _verify_stack) must still fail: derive 17.
             verify_rc = self._verify_rc or RC_VERIFY_CONTAINERS
+            komodo_bad = list(getattr(self, "_verify_komodo_bad", []))
+            if komodo_bad:
+                print(f"\n{red('Upgrade verification FAILED:')} Komodo is not healthy ({', '.join(n for n, _w in komodo_bad)}).")
+                print("  The services themselves were not rolled back by this check. Diagnose with:")
+                print("    voipbin doctor")
+                print("  and repair Komodo with:")
+                print("    sudo ./voipbin komodo setup")
+                if not (self._verify_bad - len(komodo_bad)) and self._verify_ping == "ok":
+                    return verify_rc
             print(f"\n{red('Upgrade verification FAILED.')}")
             print("  Recovery options:")
             print("    - Data rollback:  stop services, then run:")
@@ -7804,6 +8185,18 @@ Type 'registrar <subcommand> help' for more details.
         """Steps 1-2 of the pinned upgrade + the re-exec. Runs with the op lock
         held; the CALLER releases the lock if this raises. Returning (instead
         of exec'ing) means the upgrade aborted - the caller just returns."""
+        # ---- Step 1.5 (Komodo installs only): availability check before anything
+        # is changed, so an unreachable Komodo stops the upgrade before the backup ----
+        if self._komodo_mode(project_dir) != "none":
+            print(f"\n{blue('==>')} Step 1.5: checking Komodo before any change...")
+            self._update_stage = "komodo-preflight"
+            rc = self._komodo_preflight(project_dir)
+            if rc:
+                print(f"\n{red('Upgrade aborted:')} Komodo is not ready. Nothing was changed.")
+                print("  Check it with: voipbin doctor")
+                self._release_op_lock(lock)
+                return rc
+
         # ---- Step 1: backup (BEFORE git pull - captures the OLD pin state) ----
         if skip_backup:
             print(f"\n{yellow('==>')} Step 1/6: backup SKIPPED (--skip-backup)")
@@ -7851,6 +8244,69 @@ Type 'registrar <subcommand> help' for more details.
         tui_pin_close()  # the re-executed CLI runs without the TUI
         os.execv(sys.executable, argv)
 
+    def _komodo_preflight(self, project_dir):
+        """Step 1.5: Komodo answers, and the certificate Variables match the
+        files on disk (sync_cert_vars from common.sh). Returns an exit code."""
+        rc = komodo_lib.ping(project_dir)
+        if rc:
+            return rc
+        scripts = os.path.join(project_dir, "scripts")
+        rc = subprocess.call(
+            ["bash", "-c", 'SCRIPT_DIR="$1"; PROJECT_DIR="$2"; source "$SCRIPT_DIR/common.sh" && sync_cert_vars',
+             "voipbin-sync", scripts, project_dir], cwd=project_dir)
+        if rc:
+            print(f"  {red('✗')} the certificate values could not be synced to Komodo (exit {rc})")
+            return rc
+        return 0
+
+    def _komodo_install_hook(self, project_dir):
+        """Copy the checkout's deploy hook to the installed location when it
+        differs (same result as komodo-setup.sh). Returns an error text or None."""
+        src = os.path.join(project_dir, KOMODO_HOOK_SOURCE)
+        dest = komodo_lib.HOOK_COMMAND
+        try:
+            with open(src, "rb") as f:
+                want = f.read()
+        except OSError:
+            return f"{KOMODO_HOOK_SOURCE} cannot be read"
+        try:
+            st = os.lstat(dest)
+            if stat.S_ISREG(st.st_mode) and stat.S_IMODE(st.st_mode) == 0o755:
+                with open(dest, "rb") as f:
+                    if f.read() == want:
+                        return None
+        except OSError:
+            pass
+        directory = os.path.dirname(dest)
+        tmp = os.path.join(directory, ".komodo-hook.tmp%d" % os.getpid())
+        try:
+            os.makedirs(directory, exist_ok=True)
+            os.chmod(directory, 0o755)
+            fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o755)
+            with os.fdopen(fd, "wb") as f:
+                f.write(want)
+            os.chmod(tmp, 0o755)
+            if os.geteuid() == 0:
+                os.chown(directory, 0, 0)
+                os.chown(tmp, 0, 0)
+            os.replace(tmp, dest)
+        except OSError as e:
+            try:
+                os.unlink(tmp)
+            except OSError:
+                pass
+            return f"the deploy hook could not be installed ({e.strerror or 'error'})"
+        return None
+
+    def _komodo_converge(self, project_dir):
+        """Step 4.5: hook format, then Komodo reachable. Returns an exit code
+        (21 on any failure: the next step would need Komodo)."""
+        err = self._komodo_install_hook(project_dir)
+        if err:
+            print(f"  {red('✗')} {err}")
+            return RC_KOMODO_UNAVAILABLE
+        return komodo_lib.ping(project_dir)
+
     def _verify_stack(self, project_dir, timeout=120):
         """Poll compose health until no container is starting/unhealthy, then
         ping api-manager from a helper container on the compose network. The
@@ -7894,7 +8350,22 @@ Type 'registrar <subcommand> help' for more details.
             time.sleep(5)
         print()
 
-        self._verify_bad = len(bad)
+        # Komodo is part of the stack on adopted installs: its core, database
+        # and periphery count as containers (names tell them apart).
+        self._verify_komodo_bad = []
+        if self._komodo_mode(project_dir) != "none":
+            f = komodo_lib.health_fields(project_dir)
+            if f["core"] != "ok":
+                self._verify_komodo_bad.append(("komodo-core", "down"))
+            elif f["db"] != "ok":
+                self._verify_komodo_bad.append(("komodo-db", f["db"]))
+            if f["periphery_unit"] != "active":
+                self._verify_komodo_bad.append(("komodo-periphery", f"unit {f['periphery_unit']}"))
+            elif f["server"] == "NotOk":
+                self._verify_komodo_bad.append(("komodo-periphery", "server NotOk"))
+
+        komodo_bad = self._verify_komodo_bad
+        self._verify_bad = len(bad) + len(komodo_bad)
         if bad:
             print(f"  {red('✗')} Timed out after {timeout}s. Problem containers:")
             for name, why in bad:
@@ -7903,6 +8374,8 @@ Type 'registrar <subcommand> help' for more details.
             print("  (The API ping below is still attempted so its result is visible.)")
         else:
             print(f"  {green('✓')} All containers healthy (or no healthcheck defined)")
+        for name, why in komodo_bad:
+            print(f"  {red('✗')} {name}: {why}")
 
         # API ping from a helper container on the compose network
         # (the bin-api-manager image may lack curl).
@@ -7934,9 +8407,9 @@ Type 'registrar <subcommand> help' for more details.
             self._verify_ping = "fail"
         # 17 containers only, 18 ping only, 19 both (a container problem must
         # not mask an API outage).
-        if bad and not ping_ok:
+        if (bad or komodo_bad) and not ping_ok:
             self._verify_rc = RC_VERIFY_BOTH
-        elif bad:
+        elif bad or komodo_bad:
             self._verify_rc = RC_VERIFY_CONTAINERS
         elif not ping_ok:
             self._verify_rc = RC_VERIFY_PING
@@ -8019,6 +8492,7 @@ Type 'registrar <subcommand> help' for more details.
     def cmd_backup(self, args):
         """Create a full data backup (MySQL + recordings + config)"""
         project_dir = self.config.get("project_dir", ".")
+        self._compose_env()
         lock = self._acquire_op_lock(project_dir, "backup")
         if not lock:
             return
@@ -8088,6 +8562,26 @@ Type 'registrar <subcommand> help' for more details.
             return fail(f"mysqldump failed (exit {rc}). Is voipbin-db running?")
         print(f"  {green('✓')} mysql.sql.gz ({os.path.getsize(dump_path)} bytes)")
 
+        # 1b. Komodo database (adopted installs only): the Variables behind the
+        # container settings and the deploy history live there.
+        if self._komodo_mode(project_dir) == "adopted":
+            print(f"\n{blue('==>')} Dumping the Komodo database...")
+            mongo = self.config.get("komodo_mongo_container", KOMODO_MONGO_CONTAINER)
+            mongo_path = os.path.join(backup_dir, KOMODO_MONGO_ARCHIVE)
+            # the password is read from the container's own env and passed on
+            # stdin: it never appears in any process argument list
+            inner = ("printf 'password: %s\\n' \"$MONGO_INITDB_ROOT_PASSWORD\" | "
+                     "mongodump --config=/dev/stdin --db komodo --archive --gzip "
+                     "-u \"$MONGO_INITDB_ROOT_USERNAME\" --authenticationDatabase admin")
+            mongo_cmd = ("set -o pipefail; "
+                         f"docker exec {shlex.quote(mongo)} sh -c {shlex.quote(inner)} "
+                         f"> {shlex.quote(mongo_path)}")
+            rc = subprocess.call(["bash", "-c", mongo_cmd])
+            if rc != 0 or not os.path.exists(mongo_path) or os.path.getsize(mongo_path) == 0:
+                return fail(f"Komodo database dump failed (exit {rc}). Is {mongo} running? "
+                            "Recover Komodo (voipbin doctor), then retry the backup.")
+            print(f"  {green('✓')} {KOMODO_MONGO_ARCHIVE} ({os.path.getsize(mongo_path)} bytes)")
+
         # 2. Recording volumes
         abs_backup_dir = os.path.abspath(backup_dir)
         for volume, archive in self.RECORDING_VOLUMES:
@@ -8120,6 +8614,14 @@ Type 'registrar <subcommand> help' for more details.
             certs_path = os.path.join(project_dir, "certs")
             if os.path.isdir(certs_path):
                 shutil.copytree(certs_path, os.path.join(config_dir, "certs"), dirs_exist_ok=True)
+            if self._komodo_mode(project_dir) == "adopted":
+                for rel in (komodo_lib.ENV_COPY, os.path.join("komodo", "cli-key")):
+                    src = os.path.join(project_dir, rel)
+                    if not os.path.isfile(src):
+                        raise FileNotFoundError(f"{rel} is missing")
+                    dst = os.path.join(config_dir, rel)
+                    os.makedirs(os.path.dirname(dst), exist_ok=True)
+                    shutil.copy2(src, dst)
             print(f"  {green('✓')} config copied")
         except Exception as e:
             return fail(f"Config copy failed: {e}")
@@ -8193,6 +8695,8 @@ Type 'registrar <subcommand> help' for more details.
     def cmd_restore(self, args):
         """Restore data from a backup (DESTRUCTIVE)"""
         project_dir = self.config.get("project_dir", ".")
+        self._compose_env()
+        self.last_rc = 0  # only the Komodo paths set it
         backups_base = os.path.join(project_dir, self.DATA_BACKUP_DIR)
 
         available = []
@@ -8237,6 +8741,34 @@ Type 'registrar <subcommand> help' for more details.
             print(f"  If you are sure: restore {ts} --force")
             return
 
+        # Komodo state must match: a backup carries it exactly when the install
+        # runs under Komodo. Nothing is changed when they differ.
+        km = self._komodo_mode(project_dir)
+        backup_has_komodo = os.path.exists(os.path.join(backup_dir, KOMODO_MONGO_ARCHIVE))
+        if km == "broken":
+            print(f"\n{red('Refusing to restore:')} {komodo_lib.BROKEN_HINT}")
+            self.last_rc = 1
+            return
+        if (km == "adopted") != backup_has_komodo:
+            if km == "adopted":
+                print(f"\n{red('Refusing to restore:')} this install runs under Komodo, but backups/{ts}/ has no Komodo data.")
+                print("  Restore a backup that was taken after Komodo was set up.")
+            else:
+                print(f"\n{red('Refusing to restore:')} backups/{ts}/ holds Komodo data, but this install does not run under Komodo.")
+                print("  Restore it on an install that was set up with Komodo.")
+            print("  Nothing was changed.")
+            self.last_rc = 1
+            return
+        if km == "adopted":
+            missing = [rel for rel in (os.path.join("config", komodo_lib.ENV_COPY), os.path.join("config", "komodo", "cli-key"))
+                       if not os.path.isfile(os.path.join(backup_dir, rel))]
+            if missing:
+                print(f"\n{red('Refusing to restore:')} backups/{ts}/ is incomplete ({', '.join(missing)} missing).")
+                print("  Nothing was changed.")
+                self.last_rc = 1
+                return
+        up_db = "docker compose up -d db redis" if km == "none" else "voipbin start db redis"
+
         # Guard: all services must be stopped except db and redis.
         # Scope: the compose PROJECT the target db container belongs to
         # (via the com.docker.compose.project label). This is checked against
@@ -8249,7 +8781,7 @@ Type 'registrar <subcommand> help' for more details.
         running_names = [n.strip() for n in ps_out.split("\n") if n.strip()]
         if db_container not in running_names:
             print(f"\n{red('Database is not running.')} Restore needs db (and redis) up:")
-            print("  docker compose up -d db redis")
+            print(f"  {up_db}")
             return
         project = run_cmd(
             f"docker inspect {shlex.quote(db_container)} "
@@ -8274,7 +8806,7 @@ Type 'registrar <subcommand> help' for more details.
             print(f"  in the target stack ({project or 'unlabeled'}):")
             for s in extra:
                 print(f"    - {s}")
-            print("\n  Stop them first:  voipbin stop --all && docker compose up -d db redis")
+            print(f"\n  Stop them first:  voipbin stop --all && {up_db}")
             return
 
         # Backup integrity gate: a partial backup (interrupted mid-write)
@@ -8289,9 +8821,22 @@ Type 'registrar <subcommand> help' for more details.
         if rc != 0:
             print(f"{red('✗')} mysql.sql.gz missing or corrupt in backups/{ts}/ - aborting.")
             return
+        if km == "adopted":
+            problem = self._restore_komodo_precheck(backup_dir)
+            if problem:
+                print(f"{red('✗')} {problem} - aborting. Nothing was changed.")
+                self.last_rc = 1
+                return
 
         print(f"\n{bold('Restoring from')} backups/{ts}/")
         print("=" * 50)
+
+        # 0. Komodo state first (adopted installs): when it fails, MySQL is not
+        # touched, so no database password gets out of step with Komodo.
+        if km == "adopted":
+            if not self._restore_komodo_state(project_dir, backup_dir):
+                self.last_rc = 1
+                return
 
         # 1. MySQL import
         dump_path = os.path.join(backup_dir, "mysql.sql.gz")
@@ -8348,7 +8893,10 @@ Type 'registrar <subcommand> help' for more details.
                 print(f"  {green('✓')} Redis flushed")
         else:
             print(f"\n{yellow('!')} Redis is not running - flush it before starting services:")
-            print("    docker compose up -d redis && docker exec voipbin-redis redis-cli FLUSHALL")
+            if km == "none":
+                print("    docker compose up -d redis && docker exec voipbin-redis redis-cli FLUSHALL")
+            else:
+                print("    voipbin start redis && docker exec voipbin-redis redis-cli FLUSHALL")
 
         # 4. Config: restore .env (keeping a .env.pre-restore copy of the current one)
         backed_env = os.path.join(backup_dir, "config", ".env")
@@ -8377,9 +8925,180 @@ Type 'registrar <subcommand> help' for more details.
             print(f"  Note: certs/ and versions.lock copies are available in backups/{ts}/config/")
             print("  (not applied automatically - they normally track the git repo state).")
 
+        if km == "adopted":
+            rc = self._restore_komodo_converge(project_dir)
+            if rc:
+                print(f"\n{yellow('!')} The data is restored, but Komodo could not be brought in line with this host (exit {rc}).")
+                print("  Run: sudo ./voipbin komodo setup, then voipbin start")
+                self.last_rc = rc
+                return
+
         print(f"\n{bold(green('Restore complete.'))} Next steps:")
-        print("  1. voipbin start          (or: docker compose up -d)")
+        if km == "none":
+            print("  1. voipbin start          (or: docker compose up -d)")
+        else:
+            print("  1. voipbin start")
         print("  2. voipbin status         (verify all services are healthy)")
+
+    def _restore_komodo_precheck(self, backup_dir):
+        """Checks before anything is changed. Returns a problem text or None."""
+        archive = os.path.join(backup_dir, KOMODO_MONGO_ARCHIVE)
+        if subprocess.call(["gzip", "-t", archive]) != 0:
+            return f"{KOMODO_MONGO_ARCHIVE} is corrupt"
+        names = run_cmd("docker ps -a --format '{{.Names}}' 2>/dev/null") or ""
+        existing = {n.strip() for n in names.split("\n") if n.strip()}
+        for label, key, default in (("database", "komodo_mongo_container", KOMODO_MONGO_CONTAINER),
+                                    ("core", "komodo_core_container", KOMODO_CORE_CONTAINER)):
+            name = self.config.get(key, default)
+            if name not in existing:
+                return f"the Komodo {label} container ({name}) does not exist; run: sudo ./voipbin komodo setup"
+        return None
+
+    def _restore_komodo_state(self, project_dir, backup_dir):
+        """Replace .env.komodo and komodo/cli-key and roll the Komodo database
+        back to the backup, with core stopped meanwhile. core is started again
+        on every exit. On failure the preserved files are put back. Returns
+        True on success."""
+        mongo = self.config.get("komodo_mongo_container", KOMODO_MONGO_CONTAINER)
+        core = self.config.get("komodo_core_container", KOMODO_CORE_CONTAINER)
+        archive = os.path.join(backup_dir, KOMODO_MONGO_ARCHIVE)
+        files = [(os.path.join(backup_dir, "config", komodo_lib.ENV_COPY), os.path.join(project_dir, komodo_lib.ENV_COPY)),
+                 (os.path.join(backup_dir, "config", "komodo", "cli-key"), os.path.join(project_dir, "komodo", "cli-key"))]
+        print(f"\n{blue('==>')} Restoring the Komodo state...")
+        stamp = time.strftime("%Y%m%d-%H%M%S")
+        kept = []  # (destination, preserved copy or None)
+
+        def docker(*argv):
+            try:
+                r = subprocess.run(["docker", *argv], capture_output=True, text=True,
+                                   timeout=KOMODO_DOCKER_TIMEOUT, errors="replace")
+            except (OSError, subprocess.TimeoutExpired) as e:
+                return 127, "", type(e).__name__
+            return r.returncode, r.stdout or "", r.stderr or ""
+
+        def put_back():
+            for dst, pre in kept:
+                try:
+                    if pre:
+                        os.replace(pre, dst)
+                    elif os.path.exists(dst):
+                        os.remove(dst)
+                except OSError:
+                    print(f"  {yellow('!')} could not put {os.path.basename(dst)} back; the old copy is {os.path.basename(pre or dst)}.pre-restore")
+
+        try:
+            for src, dst in files:
+                pre = None
+                if os.path.exists(dst):
+                    pre = f"{dst}.pre-restore"
+                    if os.path.exists(pre):
+                        pre = f"{dst}.pre-restore.{stamp}"
+                    shutil.copy2(dst, pre)
+                kept.append((dst, pre))
+            for src, dst in files:
+                with open(src, "rb") as f:
+                    data = f.read()
+                komodo_lib._write_atomic(dst, data, 0o600)
+                _match_parent_owner(dst)
+        except OSError as e:
+            put_back()
+            print(f"  {red('✗')} could not replace the Komodo files ({e.strerror or 'error'}). The previous files are back in place.")
+            return False
+
+        ok = False
+        started = False
+        why = ""
+        try:
+            rc, _o, err = docker("stop", core)
+            if rc != 0:
+                why = f"could not stop {core}"
+            else:
+                rc, _o, err = docker("cp", archive, f"{mongo}:{KOMODO_RESTORE_TMP}")
+                if rc != 0:
+                    why = "could not copy the archive into the database container"
+                else:
+                    # a temporary config file (umask 077) carries the password,
+                    # so it never appears in a process argument list
+                    script = ('umask 077; cfg=$(mktemp); trap \'rm -f "$cfg" ' + KOMODO_RESTORE_TMP + '\' EXIT; '
+                              'printf \'password: %s\\n\' "$MONGO_INITDB_ROOT_PASSWORD" > "$cfg"; '
+                              f'mongorestore --config="$cfg" --archive={KOMODO_RESTORE_TMP} --gzip '
+                              '--nsInclude \'komodo.*\' --drop '
+                              '-u "$MONGO_INITDB_ROOT_USERNAME" --authenticationDatabase admin')
+                    rc, _o, err = docker("exec", mongo, "sh", "-c", script)
+                    if rc != 0:
+                        why = "mongorestore failed"
+                    else:
+                        ok = True
+        finally:
+            docker("exec", mongo, "rm", "-f", KOMODO_RESTORE_TMP)
+            rc_start, _o, _e = docker("start", core)
+            started = rc_start == 0
+        if not ok:
+            put_back()
+            print(f"  {red('✗')} {why}. The previous Komodo files are back in place; MySQL was not touched.")
+            tail = [l for l in (err or "").strip().splitlines() if l.strip()][-3:]
+            for line in tail:
+                print(f"    {line}")
+            if not started:
+                print(f"  {red('✗')} {core} could not be started again: run  docker start {core}")
+            return False
+        if not started:
+            print(f"  {red('✗')} the Komodo data is restored, but {core} could not be started: run  docker start {core}")
+            print("    then run the restore again (MySQL was not touched).")
+            return False
+        print(f"  {green('✓')} Komodo database and files restored (previous copies: *.pre-restore)")
+        return True
+
+    def _restore_komodo_converge(self, project_dir):
+        """After the data is back: wait for core, bring the Stack's paths and
+        project name in line with this host, and render .env.komodo again
+        (PullStack). Returns 0 or an exit code."""
+        print(f"\n{blue('==>')} Bringing Komodo in line with this host...")
+        deadline = time.monotonic() + KOMODO_CORE_WAIT
+        while not komodo_lib.check_core():
+            if time.monotonic() >= deadline:
+                print(f"  {red('✗')} Komodo core did not answer in {KOMODO_CORE_WAIT}s")
+                return RC_KOMODO_UNAVAILABLE
+            time.sleep(2)
+        try:
+            client = komodo_lib.key_client(project_dir)
+            komodo_lib.ensure_stack(client, project_dir)
+        except komodo_lib.Unavailable as e:
+            print(f"  {red('✗')} {e}")
+            return RC_KOMODO_UNAVAILABLE
+        except (komodo_lib.KomodoError, ValueError) as e:
+            print(f"  {red('✗')} the Stack could not be updated ({e})")
+            return 1
+        if komodo_lib._server_state(client, komodo_lib.TIMEOUT_READ) != "Ok":
+            print(f"  {red('✗')} the periphery server is not Ok (check: journalctl -u periphery)")
+            return RC_KOMODO_UNAVAILABLE
+        rc = komodo_lib.exec_verb(project_dir, "pull", [])
+        if rc:
+            print(f"  {red('✗')} rendering the environment file (PullStack) failed (exit {rc})")
+            return rc
+        print(f"  {green('✓')} Komodo is in line with this host")
+        return 0
+
+    def _compose_pull(self, project_dir):
+        """`docker compose pull` (unpinned update paths); PullStack when adopted.
+        Returns the text callers print."""
+        if self._komodo_mode(project_dir) != "none":
+            rc = komodo_lib.exec_verb(project_dir, "pull", [])
+            if rc:
+                print(f"  {red('✗')} image pull through Komodo failed (exit {rc})")
+                self.last_update_rc = rc
+            return ""
+        return run_cmd("docker compose pull 2>&1")
+
+    def _compose_up(self, project_dir):
+        """`docker compose up -d` (unpinned update paths); DeployStack when adopted."""
+        if self._komodo_mode(project_dir) != "none":
+            rc = komodo_lib.exec_verb(project_dir, "up", [])
+            if rc:
+                print(f"  {red('✗')} recreating services through Komodo failed (exit {rc})")
+                self.last_update_rc = rc
+            return ""
+        return run_cmd("docker compose up -d 2>&1")
 
     def _update_images(self, project_dir, check_only=False):
         """Pull Docker images with version pinning to commit-SHA tags"""
@@ -8413,7 +9132,7 @@ Type 'registrar <subcommand> help' for more details.
                 print(f"  Real upgrades on a pinned repo go through '{bold('voipbin update all')}'.")
                 return
             print(f"\n{blue('==>')} docker compose pull (pinned digests)...")
-            result = run_cmd("docker compose pull 2>&1")
+            result = self._compose_pull(project_dir)
             if result:
                 for line in result.strip().split("\n")[-12:]:
                     print(f"  {line}")
@@ -8473,7 +9192,7 @@ Type 'registrar <subcommand> help' for more details.
 
         if not resolved:
             print(yellow("No images resolved. Falling back to docker compose pull."))
-            result = run_cmd("docker compose pull 2>&1")
+            result = self._compose_pull(project_dir)
             if result:
                 for line in result.strip().split('\n')[-10:]:
                     print(f"  {line}")
@@ -8512,7 +9231,7 @@ Type 'registrar <subcommand> help' for more details.
 
         def pull_images():
             """Pull pinned images"""
-            result = run_cmd("docker compose pull 2>&1")
+            result = self._compose_pull(project_dir)
             return result
 
         def run_migrations():
@@ -8574,7 +9293,7 @@ Type 'registrar <subcommand> help' for more details.
         running_services = run_cmd("docker compose ps -q 2>/dev/null")
         if running_services:
             print(f"\n{blue('==>')} Restarting services with new images...")
-            run_cmd("docker compose up -d 2>&1")
+            self._compose_up(project_dir)
             print(green("✓ Services restarted"))
             self._provider_keys_unpinned(project_dir)
 
@@ -8953,7 +9672,7 @@ Type 'registrar <subcommand> help' for more details.
             print("      detached HEAD - the form above only restores those files' content, in place,")
             print("      on your current branch)")
             print(f"        COMPOSE_FILE={os.path.join(project_dir, 'docker-compose.yml')} bash scripts/sync-compose-images.sh")
-            print("        docker compose up -d")
+            print("        docker compose up -d" if self._komodo_mode(project_dir) == "none" else "        voipbin start")
             return
 
         # Check if this is a script rollback
@@ -9162,9 +9881,9 @@ Type 'registrar <subcommand> help' for more details.
         confirm = input("Restart services now? [Y/n]: ").strip().lower()
         if confirm != 'n':
             print(f"\n{blue('==>')} Pulling images...")
-            run_cmd("docker compose pull 2>&1")
+            self._compose_pull(project_dir)
             print(f"{blue('==>')} Restarting services...")
-            run_cmd("docker compose up -d 2>&1")
+            self._compose_up(project_dir)
             print(green("✓ Services restarted"))
 
         print(f"\n{bold('Rollback complete!')}")
@@ -9368,6 +10087,13 @@ class Completer:
             subcmds = ["info", "create"]
             return [s + " " for s in subcmds if s.startswith(text)]
 
+        if cmd == "komodo":
+            subcmds = ["setup", "health"]
+            return [s + " " for s in subcmds if s.startswith(text)]
+
+        if cmd == "env":
+            return ["check "] if "check".startswith(text) else []
+
         if cmd == "network":
             subcmds = ["status", "setup", "teardown"]
             return [s + " " for s in subcmds if s.startswith(text)]
@@ -9475,6 +10201,8 @@ def render_help():
 {blue('Operate:')}
   status, ps        Show service status and optional provider keys
   doctor            Diagnose install and runtime state (read-only)
+  env check         Compare .env with .env.template (names only, read-only)
+  komodo setup|health  Komodo control plane: install or repair, one-line health
   start [service]   Start services
   stop [--all]      Stop app services (--all for everything)
   restart [service] Restart services
@@ -9601,8 +10329,10 @@ def _main():
                 rc = cli.last_doctor_rc
             elif cmd == "update":
                 rc = cli.last_update_rc
-            elif cmd in ("init", "start", "clean", "install"):
+            elif cmd in ("init", "start", "clean", "install", "stop", "restart", "komodo", "restore"):
                 rc = cli.last_rc
+            elif cmd == "env":
+                rc = cli.last_env_rc
             if rc:
                 sys.exit(rc if 0 < rc < 256 else 2)
         else:
