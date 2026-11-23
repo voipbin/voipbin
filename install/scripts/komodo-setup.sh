@@ -254,6 +254,13 @@ step_preflight() {
         die 2 "systemd is required to run the periphery service"
     fi
     docker compose version >/dev/null 2>&1 || die 2 "docker compose is not available"
+    # COMPOSE_ENV_FILES (the two environment files) needs Compose 2.24 or newer
+    local cv
+    cv=$(docker compose version --short 2>/dev/null || true)
+    cv="${cv#v}"
+    if [[ "$cv" =~ ^[0-9]+\.[0-9]+ ]] && [[ "$(printf '2.24\n%s\n' "$cv" | sort -V | head -n1)" != "2.24" ]]; then
+        die 2 "docker compose $cv is too old: version 2.24 or newer is required"
+    fi
     command -v ss >/dev/null 2>&1 || die 2 "ss (iproute2) is required for the port check"
 
     if port_in_use && ! core_container_publishes_port; then

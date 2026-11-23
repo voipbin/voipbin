@@ -534,6 +534,24 @@ preinstall_connected_periphery() {
     if grep -q '^provision' "$T/lib.log"; then false; fi
 }
 
+@test "preflight: a docker compose older than 2.24 is refused with exit 2, a newer one passes" {
+    mock_command_script docker '
+echo "docker $*" >> "$T/docker.log"
+if [[ "$1 $2" == "compose version" ]]; then
+    if [[ "$3" == "--short" ]]; then cat "$T/compose.version"; fi
+    exit 0
+fi
+exit 0'
+    echo "2.23.3" > "$T/compose.version"
+    run_setup
+    [ "$status" -eq 2 ]
+    [[ "$output" == *"too old"* ]]
+    echo "v2.40.3" > "$T/compose.version"
+    : > "$T/lib.log"
+    run_setup
+    [[ "$output" != *"too old"* ]]
+}
+
 @test "periphery that connects but is not registered as Ok fails and keeps the onboarding key in place" {
     echo 1 > "$T/server-ok.rc"
     run_setup
@@ -584,6 +602,7 @@ preinstall_connected_periphery() {
     code=$(grep -v '^[[:space:]]*#' "$SCRIPTS_DIR/komodo-setup.sh" | grep 'docker compose' \
         | grep -v 'docker compose -p "\$COMPOSE_PROJECT"' \
         | grep -v 'docker compose version >/dev/null' \
+        | grep -v 'docker compose version --short' \
         | grep -vc 'die ' || true)
     [ "$code" -eq 0 ]
     grep -q 'docker compose -p "\$COMPOSE_PROJECT"' "$SCRIPTS_DIR/komodo-setup.sh"
