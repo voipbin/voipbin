@@ -71,7 +71,7 @@ komodo-doctor.bats                      # the Komodo checks of scripts/doctor.sh
 ../scripts/tests/test_komodo_gates.py   # static gate: no direct state-changing compose call outside the allow list
 ```
 
-## What's Tested (the original suites, 120 tests; the Komodo suites are listed above)
+## What's Tested (the original suites; the counts in the headings below date from when each was written, and the Komodo suites are listed above)
 
 ### common.sh (20 tests)
 - `detect_host_ip()` - IP detection with fallback chain (.env → ip route → hostname → fallback)

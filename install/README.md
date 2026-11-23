@@ -473,7 +473,7 @@ optional `profile_id`. The secret is encrypted with `NUMBER_SECRET_ENCRYPTION_KE
 | 18 | Verification: containers are healthy but the api-manager `/ping` failed |
 | 19 | Verification: problem containers and a failed api-manager `/ping` |
 | 20 | Provider keys could not be stored: the master key is missing for a service that has a key in `.env` (`stage=keys-preflight`, before any image changed), or storing failed (`stage=keys`, before `up -d`; running containers untouched). `update keys` also exits 20 when a service runs an old image without stored configs (its keys are skipped), or a key needs your attention |
-| 21 | Komodo is not available (installs set up with Komodo only): the check before the backup (`stage=komodo-preflight`; no backup was taken and no image pulled yet), the pull, `up` or the later convergence could not reach it. The message names the part that failed; see the Komodo section |
+| 21 | Komodo is not available (installs set up with Komodo only): the check before the backup (`stage=komodo-preflight`; no backup was taken and no image pulled yet), the pull, `up` or the later convergence could not reach it. The message names the part that failed; see the Komodo section. A certificate value that cannot be synced in that first check ends the run with its own code (2 rejected value, 1 other failure) |
 | 64 | Unknown `update` subcommand |
 | 130 | Interrupted by the user |
 
@@ -628,8 +628,8 @@ A new install made with `sudo ./voipbin install` deploys through [Komodo](https:
 
 - The container variables of the main stack (47 of them, including the keys, passwords and certificates that `init.sh` generates) are stored as Komodo Variables, and the stack reads them from `.env.komodo`. `.env` keeps only the host-side values (for example the ones the host scripts read) and the empty ones.
 - Writes that used to edit `.env` in place (IP changes, certificate renewal with `install-certs.sh`, `setup-dns.sh --regenerate`) now update the Komodo Variable first and then the copy `.env.komodo`. A Variable is limited to 10,000 characters; a longer certificate chain is refused before anything is written.
-- `sudo ./voipbin doctor` and `sudo ./voipbin status` report Komodo (core, database, authentication, agent, stack) as critical, like the database, Redis and RabbitMQ. `sudo ./voipbin komodo health` prints a one-line summary of the core, database, authentication, agent and stack state.
-- `sudo ./voipbin env check` compares `.env` with `.env.template` and lists the keys that are missing (it only reports; it never prints a value and changes nothing).
+- `sudo ./voipbin doctor` fails when Komodo (core, database, authentication, agent, stack) is not healthy, like it does for the database, Redis and RabbitMQ; `sudo ./voipbin status` shows the same parts as a status list, and the check after `update all` counts a failed Komodo as a failed verification. `sudo ./voipbin komodo health` prints a one-line summary of the core, database, authentication, agent and stack state.
+- `sudo ./voipbin env check` compares `.env` (and `.env.komodo`) with `.env.template` and lists the names of keys that are missing, unknown, empty or overridden, then a `VOIPBIN_ENV:` summary line. It only reports: it never prints a value and changes nothing. Exit code 0 means nothing to fix, 30 warnings or errors, 2 a file cannot be read.
 - `sudo ./voipbin backup` also saves the Komodo database (`komodo-mongo.archive.gz`), `.env.komodo` and the API key file; `sudo ./voipbin restore` puts them back before it restores the rest. A backup taken with Komodo can only be restored on an install that runs under Komodo, and the other way round.
 
 **Security notes**

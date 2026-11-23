@@ -6316,7 +6316,7 @@ Type 'registrar <subcommand> help' for more details.
     # Guided install (`sudo ./voipbin install`)
     #
     # Orchestrates the existing scripts (doctor.sh, init.sh, setup-host.sh,
-    # start.sh, create-admin.sh) in six steps and ends every path with one
+    # start.sh, create-admin.sh, plus the Komodo setup) in seven steps and ends every path with one
     # machine-parseable line:
     #   VOIPBIN_INSTALL: status=ok state=installed|already-installed ...
     #   VOIPBIN_INSTALL: status=error step=<n> reason="..." next="..."
@@ -7232,16 +7232,19 @@ Type 'registrar <subcommand> help' for more details.
         script = self._komodo_setup_script(project_dir)
         if not os.path.exists(script):
             print(yellow("! komodo-setup.sh not found, Komodo was not removed"))
+            self.last_rc = 1
             return
         cmd = ["bash", script, "--teardown"]
         if os.geteuid() != 0:
             if subprocess.run(["sudo", "-n", "true"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL).returncode != 0:
                 print(yellow("! Requires sudo. Run: sudo ./scripts/komodo-setup.sh --teardown"))
+                self.last_rc = 1
                 return
             cmd = ["sudo"] + cmd
         rc = subprocess.call(cmd, cwd=project_dir, env=self._install_child_env())
         if rc != 0:
             print(yellow("! Komodo teardown failed. Run: sudo ./scripts/komodo-setup.sh --teardown"))
+            self.last_rc = 1
 
     def _show_running_images(self, project_dir, json_output=False):
         """Show currently running container images when no override file exists"""
@@ -8223,7 +8226,7 @@ Type 'registrar <subcommand> help' for more details.
             print("      detached HEAD - the form above only restores those files' content, in place,")
             print("      on your current branch)")
             print(f"        COMPOSE_FILE={os.path.join(project_dir, 'docker-compose.yml')} bash scripts/sync-compose-images.sh")
-            print("        docker compose up -d")
+            print("        docker compose up -d" if self._komodo_mode(project_dir) == "none" else "        voipbin start")
             print(f"  {yellow('Do NOT use')} 'voipbin rollback' here: it replays docker-compose.override.yml")
             print("  snapshots that only exist on UNPINNED repos and would silently unpin this repo.")
             return verify_rc

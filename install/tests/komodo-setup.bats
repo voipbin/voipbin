@@ -316,6 +316,8 @@ preinstall_connected_periphery() {
     [ "$status" -eq 0 ]
     grep -qx 'RestartSec=5' "$ROOT/etc/systemd/system/periphery.service"
     grep -q 'systemctl daemon-reload' "$T/systemctl.log"
+    # the connected periphery is restarted so that the new unit text applies
+    grep -q 'systemctl restart periphery' "$T/systemctl.log"
 }
 
 @test "re-run on a port held by the komodo core container passes the port check" {

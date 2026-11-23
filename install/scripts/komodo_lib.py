@@ -891,12 +891,21 @@ def server_registered(project_dir):
     exists (the first run of periphery setup)."""
     try:
         client = key_client(project_dir)
-    except Unavailable:
+        servers = client.read("ListServers", {}, TIMEOUT_READ)
+    except (Unavailable, KomodoError) as e:
+        # no key, or a key core rejects (for example after the database was
+        # recreated): the admin login is the way in. Any other failure stays a no.
+        if isinstance(e, KomodoError) and not (e.kind == "http" and e.code in (401, 403)):
+            return False
         try:
-            client = admin_login(project_dir)
+            admin = admin_login(project_dir)
         except (Unavailable, KomodoError):
             return False
-    return _server_state(client, TIMEOUT_READ) == "Ok"
+        return _server_state(admin, TIMEOUT_READ) == "Ok"
+    for s in servers or []:
+        if s.get("name") == SERVER_NAME:
+            return (s.get("info") or {}).get("state") == "Ok"
+    return False
 
 
 def ping(project_dir, quiet=False):

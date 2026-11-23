@@ -1168,6 +1168,15 @@ run_teardown() {
     grep -q '^volume rm komodo_mongo-data$' "$T/docker.log"
 }
 
+@test "komodo-setup.sh --teardown: without komodo/.env the two containers are still removed directly" {
+    prepare_purge_stubs
+    rm -f "$PROJECT_DIR/komodo/.env"
+    run_teardown
+    [ "$status" -eq 0 ]
+    grep -q '^rm -f voipbin-komodo-core voipbin-komodo-mongo$' "$T/docker.log"
+    [ "$(docker_calls | grep -c ' down')" -eq 0 ]
+}
+
 @test "komodo-setup.sh --teardown: repeating it on a torn down host is safe" {
     prepare_purge_stubs
     run_teardown

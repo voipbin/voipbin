@@ -306,7 +306,7 @@ step_secrets() {
         die 2 "docker volume $MONGO_VOLUME exists but komodo/.env does not. The stored mongo password cannot be recovered: remove the volume (docker volume rm $MONGO_VOLUME) and re-run, or restore komodo/.env from a backup"
     fi
     if [[ "$have_file" == "yes" && "$have_volume" == "no" ]]; then
-        die 2 "komodo/.env exists but docker volume $MONGO_VOLUME does not. Remove komodo/.env and re-run so both are created together"
+        die 2 "komodo/.env exists but docker volume $MONGO_VOLUME does not. Remove komodo/.env, komodo/cli-key and komodo/.adopted (when present) and re-run so everything is created together"
     fi
 
     if [[ "$have_file" == "yes" ]]; then
@@ -491,6 +491,11 @@ step_periphery() {
     if [[ "$PERIPHERY_BINARY_CHANGED" == "no" ]] && periphery_config_hardened \
         && systemctl is-active --quiet "$PERIPHERY_UNIT_NAME" && periphery_registered; then
         systemctl enable "$PERIPHERY_UNIT_NAME" >/dev/null 2>&1 || true
+        if [[ "$PERIPHERY_UNIT_CHANGED" == "yes" ]]; then
+            # the new unit text (for example its restart delay) only takes effect after a restart
+            systemctl restart "$PERIPHERY_UNIT_NAME"
+            wait_for "periphery reconnection to komodo core" periphery_registered
+        fi
         log_info "periphery is connected and hardened, keeping its configuration"
         PERIPHERY_STATE="unchanged"
         return 0
@@ -589,7 +594,8 @@ step_teardown() {
         komodo_compose down -v >/dev/null \
             || log_warn "compose down failed for the komodo project"
     else
-        log_warn "komodo/.env is missing, the komodo containers were not stopped through compose"
+        log_warn "komodo/.env is missing, removing the komodo containers directly"
+        docker rm -f "$CORE_CONTAINER" voipbin-komodo-mongo >/dev/null 2>&1 || true
     fi
     docker volume rm "$MONGO_VOLUME" >/dev/null 2>&1 || true
 

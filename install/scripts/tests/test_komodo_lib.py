@@ -1512,6 +1512,18 @@ check("G17b with a valid CLI key and no admin-password file the server check sti
 SRV.server_state = "NotOk"
 check("G17b ... and a NotOk server is still False (no fallback to the admin login)", K.server_registered(q) is False)
 SRV.server_state = "Ok"
+# a CLI key that core rejects (e.g. the database was recreated): the admin login is the way in
+q2 = adopted_project()
+wr(q2, "komodo/cli-key", "K-rejected:S-rejected\n", 0o600)
+wr(q2, "komodo/admin-password", FakeKomodo.ADMIN[1] + "\n", 0o600)
+os.environ["VOIPBIN_PROJECT_DIR"] = q2
+check("G17b a rejected CLI key (401) falls back to the admin login", K.server_registered(q2) is True)
+os.unlink(os.path.join(q2, "komodo/admin-password"))
+check("G17b a rejected CLI key and no admin password -> False", K.server_registered(q2) is False)
+wr(q2, "komodo/admin-password", FakeKomodo.ADMIN[1] + "\n", 0o600)
+SRV.inject[("ListServers", SRV.counts.get("ListServers", 0) + 1)] = "http500"
+wr(q2, "komodo/cli-key", open(os.path.join(q, "komodo/cli-key")).read(), 0o600)
+check("G17b a valid key whose call fails with 500 does not fall back (stays False)", K.server_registered(q2) is False)
 
 # ==============================================================================
 print("== G18 CLI entry points (subprocess)")
