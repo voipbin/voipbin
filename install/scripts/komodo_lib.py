@@ -447,7 +447,7 @@ class Client(object):
 
 def login_options(timeout):
     """Unauthenticated liveness call."""
-    return _post("/auth", "GetLoginOptions", {}, None, timeout)
+    return _post("/auth/login", "GetLoginOptions", {}, None, timeout)
 
 
 def login(username, password):

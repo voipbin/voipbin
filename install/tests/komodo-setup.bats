@@ -112,7 +112,7 @@ for a in "$@"; do
     [[ "$prev" == "-o" ]] && out="$a"
     prev="$a"
 done
-if [[ "$*" == *"/auth"* ]]; then [[ -f "$T/core_down" ]] && exit 22; exit 0; fi
+if [[ "$*" == *"/auth/login"* ]]; then [[ -f "$T/core_down" ]] && exit 22; exit 0; fi
 if [[ "$*" == *"-fsSIL"* ]]; then [[ -f "$T/release_unreachable" ]] && exit 22; exit 0; fi
 if [[ "$*" == *"periphery-x86_64"* && -n "$out" ]]; then
     [[ -f "$T/asset_bad" ]] && echo "tampered" > "$out" || cp "$T/asset" "$out"
@@ -181,6 +181,13 @@ preinstall_connected_periphery() {
     grep -qx "KOMODO_INIT_ADMIN_PASSWORD=$pw" "$INSTALL/komodo/.env"
     # no leftover temp files
     [ -z "$(find "$INSTALL/komodo" "$ROOT/etc" "$ROOT/usr" -name '.*.??????' -type f 2>/dev/null)" ]
+}
+
+@test "fresh install: the core liveness probe uses the unauthenticated /auth/login path" {
+    run_setup
+    [ "$status" -eq 0 ]
+    grep -q -- 'GetLoginOptions.*/auth/login' "$T/curl.log"
+    if grep -qE 'GetLoginOptions.*:9120/auth( |$)' "$T/curl.log"; then false; fi
 }
 
 @test "fresh install: steps run in order guard, onboard, provision" {

@@ -157,6 +157,8 @@ class FakeKomodo(object):
         if inj == "http400":
             return 400, {"error": "injected"}
         if path == "/auth":
+            return 405, {}  # Komodo v2.3.4: the unauthenticated call lives under /auth/login
+        if path == "/auth/login" and typ == "GetLoginOptions":
             return 200, {"local": True}
         if path == "/auth/login":
             if (params.get("username"), params.get("password")) == self.ADMIN:

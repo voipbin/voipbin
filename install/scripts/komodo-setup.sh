@@ -217,7 +217,7 @@ wait_for() {
 
 core_responds() {
     curl -fsS -m 3 -o /dev/null -X POST -H 'content-type: application/json' \
-        -d '{"type":"GetLoginOptions","params":{}}' "$CORE_URL/auth" 2>/dev/null
+        -d '{"type":"GetLoginOptions","params":{}}' "$CORE_URL/auth/login" 2>/dev/null
 }
 
 # =============================================================================
