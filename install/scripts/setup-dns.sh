@@ -210,7 +210,7 @@ test_dns() {
     local kamailio_ip=""
 
     if [[ -f "$PROJECT_DIR/.env" ]]; then
-        kamailio_ip=$(grep '^KAMAILIO_EXTERNAL_IP=' "$PROJECT_DIR/.env" 2>/dev/null | cut -d'=' -f2 | head -1)
+        kamailio_ip=$(host_env_read KAMAILIO_EXTERNAL_IP)
     fi
 
     # Use defaults if not found
@@ -261,7 +261,7 @@ test_dns() {
     else
         echo ""
         log_warn "Some DNS tests failed. Make sure CoreDNS is running:"
-        echo "  docker compose up -d coredns"
+        echo "  $(compose_hint up -d coredns)"
     fi
 }
 
@@ -338,7 +338,7 @@ regenerate_corefile() {
     # Read external IPs from .env file (may have just been updated)
     local kamailio_ip=""
     if [[ -f "$PROJECT_DIR/.env" ]]; then
-        kamailio_ip=$(grep '^KAMAILIO_EXTERNAL_IP=' "$PROJECT_DIR/.env" 2>/dev/null | cut -d'=' -f2 | head -1)
+        kamailio_ip=$(host_env_read KAMAILIO_EXTERNAL_IP)
     fi
 
     # Use defaults if not found
@@ -360,14 +360,14 @@ regenerate_corefile() {
         # Restart api-manager to pick up new certificate
         if docker ps --format '{{.Names}}' | grep -q "voipbin-api-mgr"; then
             log_info "Restarting api-manager to apply new certificate..."
-            cd "$PROJECT_DIR" && docker compose rm -sf api-manager && docker compose up -d api-manager
+            cd "$PROJECT_DIR" && compose_exec rm -sf api-manager && compose_exec up -d api-manager
         fi
     fi
 
     # Restart CoreDNS if running
     if check_coredns; then
         log_info "Restarting CoreDNS..."
-        cd "$PROJECT_DIR" && docker compose restart coredns
+        cd "$PROJECT_DIR" && compose_exec restart coredns
         sleep 2
     fi
 }
@@ -421,6 +421,11 @@ main() {
                 local host_ip=$(detect_current_host_ip)
                 regenerate_corefile "$host_ip" "true"
                 test_dns "$host_ip"
+                # With Komodo a certificate variable that could not be written
+                # ends the run now, after every host step has run.
+                if [[ "$(komodo_mode)" != "none" ]]; then
+                    komodo_write_rc_exit
+                fi
                 exit 0
                 ;;
         esac
@@ -448,7 +453,7 @@ main() {
         log_warn "CoreDNS container (voipbin-dns) is not running"
         if [[ "$non_interactive" == "true" ]]; then
             log_info "Starting CoreDNS..."
-            cd "$PROJECT_DIR" && docker compose up -d coredns
+            cd "$PROJECT_DIR" && compose_exec up -d coredns
             sleep 2
         else
             echo ""
@@ -456,7 +461,7 @@ main() {
             echo
             if [[ ! $REPLY =~ ^[Nn]$ ]]; then
                 log_info "Starting CoreDNS..."
-                cd "$PROJECT_DIR" && docker compose up -d coredns
+                cd "$PROJECT_DIR" && compose_exec up -d coredns
                 sleep 2
             fi
         fi

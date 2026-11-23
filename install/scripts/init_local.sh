@@ -5,6 +5,11 @@
 
 set -e
 
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+PROJECT_DIR="${PROJECT_DIR:-$(dirname "$SCRIPT_DIR")}"
+# shellcheck source=common.sh
+source "$SCRIPT_DIR/common.sh"
+
 # Colors for output
 RED='\033[0;31m'
 GREEN='\033[0;32m'
@@ -36,10 +41,13 @@ if ! command -v jq &> /dev/null; then
     exit 1
 fi
 
+# Compose reads .env plus the rendered Komodo copy when there is one.
+compose_env_setup || exit $?
+
 # Check if services are running
 echo -e "${YELLOW}Checking if services are running...${NC}"
 if ! docker compose ps --format "{{.Name}}" | grep -q voipbin-db; then
-    echo -e "${RED}Error: Services are not running. Please run 'docker compose up -d' first${NC}"
+    echo -e "${RED}Error: Services are not running. Please run '$(compose_hint up -d)' first${NC}"
     exit 1
 fi
 

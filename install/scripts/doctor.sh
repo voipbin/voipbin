@@ -378,7 +378,7 @@ check_dns_internal() {
     if [[ "$resolv_bad" == "true" || ( "$coredns_down" != "true" && "$dig_bad" == "true" ) ]]; then
         doctor_fail dns-internal "$(doctor_join '; ' "${problems[@]}")" "sudo ./scripts/setup-host.sh"
     else
-        doctor_fail dns-internal "$(doctor_join '; ' "${problems[@]}")" "docker compose up -d coredns"
+        doctor_fail dns-internal "$(doctor_join '; ' "${problems[@]}")" "$(compose_hint up -d coredns)"
     fi
 }
 
@@ -525,6 +525,13 @@ check_certs_env_sync() {
     [[ "$(get_env_var "$ENV_FILE" HOOK_SSL_PRIVKEY_BASE64)" == "$key_b64" ]] || out_of_sync+=(HOOK_SSL_PRIVKEY_BASE64)
     if [[ ${#out_of_sync[@]} -eq 0 ]]; then
         doctor_result certs-env-sync pass "the four SSL base64 vars match certs/api"
+    elif [[ "$(komodo_mode)" != "none" ]]; then
+        # The variables live in Komodo: start syncs them from certs/api.
+        if [[ "$DOCTOR_MODE" == "external" ]]; then
+            doctor_fail certs-env-sync "out of sync with certs/api: ${out_of_sync[*]}" "./scripts/install-certs.sh <fullchain.pem> <privkey.pem>, then sudo ./voipbin start"
+        else
+            doctor_fail certs-env-sync "out of sync with certs/api: ${out_of_sync[*]}" "sudo ./voipbin start (writes the four SSL variables from certs/api)"
+        fi
     elif [[ "$DOCTOR_MODE" == "external" ]]; then
         doctor_fail certs-env-sync "out of sync with certs/api: ${out_of_sync[*]}" "./scripts/install-certs.sh <fullchain.pem> <privkey.pem> (rewrites the four SSL vars)"
     else
@@ -594,6 +601,115 @@ check_compose_network() {
     fi
 }
 
+# Certificate work that was left unfinished (files only, nothing is read from
+# Komodo): .certs-pending from install-certs.sh, .certs-sync-pending from the
+# start and regenerate paths.
+check_komodo_markers() {
+    local pending="$PROJECT_DIR/.certs-pending" cert_path key_path
+    if [[ -e "$pending" ]]; then
+        cert_path=$(sed -n 1p "$pending" 2>/dev/null)
+        key_path=$(sed -n 2p "$pending" 2>/dev/null)
+        doctor_fail certs-pending "a renewed certificate was not applied (.certs-pending)" "sudo ./scripts/install-certs.sh ${cert_path:-<fullchain.pem>} ${key_path:-<privkey.pem>}"
+    else
+        doctor_result certs-pending pass "no certificate install is waiting"
+    fi
+    if [[ -e "$PROJECT_DIR/.certs-sync-pending" ]]; then
+        doctor_fail certs-sync-pending "the certificate variables may be out of date (.certs-sync-pending)" "sudo ./voipbin start"
+    else
+        doctor_result certs-sync-pending pass "no certificate sync is waiting"
+    fi
+}
+
+# Komodo control plane. One probe (komodo_lib.py health) feeds every item; a
+# core that is down makes the db, auth and stack items skip instead of
+# repeating the same cause. Not checked here: the contents of the Komodo
+# variables (an empty variable needs the authenticated API, which the single
+# health line does not carry; env check covers it).
+check_komodo() {
+    install_gate komodo || return
+    local m line kv
+    m=$(komodo_mode)
+    if [[ "$m" == "none" ]]; then
+        doctor_result komodo-adoption warn "existing installs keep running docker compose directly on the host"
+        return
+    fi
+    if [[ "$m" == "broken" ]]; then
+        doctor_fail komodo-state "Komodo files are present but the adoption marker is missing or unreadable" "sudo ./voipbin komodo setup"
+        check_komodo_markers
+        return
+    fi
+    line=$(_komodo_run health 2>/dev/null | grep '^KOMODO_HEALTH:' | tail -1)
+    if [[ -z "$line" ]]; then
+        doctor_result komodo-core skip "the Komodo health probe returned nothing"
+        check_komodo_markers
+        return
+    fi
+    local -A h=()
+    for kv in ${line#KOMODO_HEALTH: }; do h["${kv%%=*}"]="${kv#*=}"; done
+    if [[ "${h[adopted]:-}" != "yes" ]]; then
+        doctor_fail komodo-state "the adoption marker disappeared while checking" "sudo ./voipbin komodo setup"
+        check_komodo_markers
+        return
+    fi
+
+    local core="${h[core]:-down}" db="${h[db]:-unknown}" auth="${h[auth]:-unknown}"
+    local unit="${h[periphery_unit]:-missing}" server="${h[server]:-unknown}" stack="${h[stack]:-unknown}" envfile="${h[envfile]:-missing}"
+
+    if [[ "$core" == "ok" ]]; then
+        doctor_result komodo-core pass "Komodo core answers"
+    else
+        doctor_fail komodo-core "Komodo core does not answer" "sudo ./voipbin komodo setup (starts core and mongo again)"
+    fi
+
+    if [[ "$core" != "ok" ]]; then
+        doctor_result komodo-db skip "komodo-core is down"
+        doctor_result komodo-auth skip "komodo-core is down"
+    else
+        case "$db" in
+            ok) doctor_result komodo-db pass "Komodo database answers" ;;
+            timeout) doctor_fail komodo-db "the Komodo database did not answer in time" "docker ps -a --filter name=voipbin-komodo-mongo, then sudo ./voipbin komodo setup" ;;
+            *) doctor_result komodo-db skip "database state unknown" ;;
+        esac
+        case "$auth" in
+            ok) doctor_result komodo-auth pass "the Komodo API key is accepted" ;;
+            rejected) doctor_fail komodo-auth "the Komodo API key is rejected or cannot be read" "run as the install owner or with sudo, or run: sudo ./voipbin komodo setup (creates a new key)" ;;
+            *) doctor_result komodo-auth skip "authentication state unknown" ;;
+        esac
+    fi
+
+    if [[ "$unit" != "active" ]]; then
+        doctor_fail komodo-periphery "periphery service is $unit" "sudo systemctl start periphery; journalctl -u periphery"
+    elif [[ "$server" == "NotOk" ]]; then
+        doctor_fail komodo-periphery "periphery runs but Komodo reports the server as not ok" "sudo systemctl restart periphery; journalctl -u periphery"
+    else
+        local restart_usec
+        restart_usec=$(systemctl show periphery -p RestartUSec --value 2>/dev/null)
+        if [[ "$restart_usec" =~ ^[0-9.]+(us|ms)$ || "$restart_usec" == "0" ]]; then
+            doctor_warn komodo-periphery "periphery restarts after $restart_usec (a crash loop can leave it stopped)" "sudo ./voipbin komodo setup"
+        else
+            doctor_result komodo-periphery pass "periphery is active${server:+, server $server}"
+        fi
+    fi
+
+    if [[ "$core" != "ok" || "$db" != "ok" || "$auth" != "ok" ]]; then
+        doctor_result komodo-stack skip "Komodo cannot be queried (see komodo-core, komodo-db, komodo-auth)"
+    else
+        case "$stack" in
+            present) doctor_result komodo-stack pass "stack voipbin is registered" ;;
+            missing) doctor_fail komodo-stack "stack voipbin is missing or does not read .env.komodo" "sudo ./voipbin komodo setup" ;;
+            *) doctor_result komodo-stack skip "stack state unknown" ;;
+        esac
+    fi
+
+    if [[ "$envfile" == "ok" ]]; then
+        doctor_result komodo-envfile pass ".env.komodo is readable, owned by the install owner, mode 600"
+    else
+        doctor_fail komodo-envfile ".env.komodo is $envfile" "sudo ./voipbin komodo setup (or give .env.komodo to the install owner with mode 600)"
+    fi
+
+    check_komodo_markers
+}
+
 # =============================================================================
 # Category 3 - runtime pathology (needs a running stack; otherwise skip)
 # =============================================================================
@@ -602,7 +718,7 @@ check_compose_network() {
 # keeps the running-only default deliberately).
 check_containers() {
     runtime_gate containers || return
-    local rows fix="docker compose logs --tail 50 <service> then docker compose restart <service>"
+    local rows fix="docker compose logs --tail 50 <service> then $(compose_hint restart '<service>')"
     rows=$(cd "$PROJECT_DIR" && COMPOSE_PROFILES="$DOCTOR_PROFILES" docker compose ps -a --format '{{.Name}}\t{{.State}}\t{{.Status}}' 2>/dev/null)
     if [[ -z "$rows" ]]; then doctor_fail containers "docker compose ps -a returned nothing" "$fix"; return; fi
     local bad=() detail_lines=() total=0 known=0 optional=() name state status why lastlog kind
@@ -659,7 +775,7 @@ check_rabbitmq_plugin() {
     if grep -q delayed_message <<< "$plugins"; then
         doctor_result rabbitmq-plugin pass "delayed_message exchange plugin enabled"
     else
-        doctor_fail rabbitmq-plugin "delayed_message exchange plugin not enabled" "docker compose restart rabbitmq and check docker compose logs rabbitmq for the plugin download failure"
+        doctor_fail rabbitmq-plugin "delayed_message exchange plugin not enabled" "$(compose_hint restart rabbitmq) and check docker compose logs rabbitmq for the plugin download failure"
     fi
 }
 
@@ -695,7 +811,7 @@ check_queue_consumers() {
         issues+=("$name consumers=0")
     done <<< "$out"
     if [[ ${#issues[@]} -gt 0 ]]; then
-        doctor_fail queue-consumers "$(doctor_join '; ' "${issues[@]}")" "docker compose restart asterisk-call-proxy asterisk-conference-proxy asterisk-registrar-proxy"
+        doctor_fail queue-consumers "$(doctor_join '; ' "${issues[@]}")" "$(compose_hint restart asterisk-call-proxy asterisk-conference-proxy asterisk-registrar-proxy)"
     else
         doctor_result queue-consumers pass "all asterisk.*.request queues have consumers"
     fi
@@ -745,9 +861,9 @@ check_proxy_netns() {
 check_database() {
     runtime_gate database || return
     local db_id; db_id=$(cd "$PROJECT_DIR" && COMPOSE_PROFILES="$DOCTOR_PROFILES" docker compose ps -q db 2>/dev/null | head -1)
-    if [[ -z "$db_id" ]]; then doctor_fail database "db container not running" "docker compose up -d db"; return; fi
+    if [[ -z "$db_id" ]]; then doctor_fail database "db container not running" "$(compose_hint up -d db)"; return; fi
     if ! docker exec "$db_id" sh -c "$DOCTOR_MYSQLADMIN_IN_DB" root &> /dev/null; then
-        doctor_fail database "db not responding to mysqladmin ping" "docker compose up -d db"
+        doctor_fail database "db not responding to mysqladmin ping" "$(compose_hint up -d db)"
         return
     fi
     local tables alembic_ast
@@ -798,11 +914,11 @@ check_realm() {
     local running_ext
     running_ext=$(docker inspect --format '{{range .Config.Env}}{{println .}}{{end}}' voipbin-registrar-mgr 2>/dev/null | grep '^DOMAIN_NAME_EXTENSION=' | head -1 | cut -d'=' -f2-)
     if [[ -z "$running_ext" ]]; then
-        doctor_fail realm "registrar-manager not running or not inspectable (docker inspect voipbin-registrar-mgr)" "docker compose up -d registrar-manager"
+        doctor_fail realm "registrar-manager not running or not inspectable (docker inspect voipbin-registrar-mgr)" "$(compose_hint up -d registrar-manager)"
     elif [[ "$running_ext" == "$DOCTOR_DOMAIN_EXT" ]]; then
         doctor_result realm pass "registrar-manager DOMAIN_NAME_EXTENSION=$running_ext matches .env"
     else
-        doctor_fail realm "running=$running_ext .env=$DOCTOR_DOMAIN_EXT" "docker compose rm -fsv registrar-manager && docker compose up -d registrar-manager"
+        doctor_fail realm "running=$running_ext .env=$DOCTOR_DOMAIN_EXT" "$(realm_recreate_hint)"
     fi
 }
 
@@ -848,6 +964,9 @@ main() {
     echo "=============================================="
     echo ""
     load_doctor_env
+    # Point compose at the rendered Komodo copy when there is one. Read-only:
+    # a problem with the copy is reported by check_komodo, never fatal here.
+    compose_env_setup --readonly || true
 
     # Category 1 - prerequisites. The docker check gates every docker-
     # dependent probe; the stage is detected right after it.
@@ -874,6 +993,7 @@ main() {
     check_certs_env_sync
     check_voip_interfaces
     check_compose_network
+    check_komodo
 
     # Category 3 - runtime pathology
     check_containers

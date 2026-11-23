@@ -175,10 +175,13 @@ main() {
     echo "=============================================="
     echo ""
 
+    # Compose reads .env plus the rendered Komodo copy when there is one.
+    compose_env_setup || exit $?
+
     # Check if db container is running
     if ! docker ps --format '{{.Names}}' | grep -q '^voipbin-db$'; then
         log_error "Database container 'voipbin-db' is not running."
-        log_info "Start it with: docker compose up -d db"
+        log_info "Start it with: $(compose_hint up -d db)"
         exit 1
     fi
 
@@ -234,7 +237,7 @@ main() {
     log_info "  - asterisk (Asterisk configuration)"
     echo ""
     log_info "You can now start all services:"
-    log_info "  docker compose up -d"
+    log_info "  $(compose_hint up -d)"
     echo ""
 }
 

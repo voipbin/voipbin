@@ -94,7 +94,7 @@ main() {
     fi
 
     log_step "Stopping all services..."
-    docker compose stop
+    compose_exec stop
 
     echo ""
     echo "=============================================="

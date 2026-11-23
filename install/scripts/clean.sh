@@ -95,6 +95,38 @@ if [ "$CLEAN_VOLUMES" = false ] && [ "$CLEAN_IMAGES" = false ] && [ "$TEARDOWN_N
     exit 1
 fi
 
+# Removing the stack through Komodo (the plain "down" of an adopted install).
+# Only a Komodo that cannot be reached falls back to removing the containers
+# directly; any other failure is reported as it is.
+clean_down_adopted() {
+    local rc=0
+    compose_exec down || rc=$?
+    if [ "$rc" -eq 21 ]; then
+        log_warn "Komodo is not available, removing the containers directly"
+        docker compose down
+    elif [ "$rc" -ne 0 ]; then
+        return "$rc"
+    fi
+}
+
+# Komodo teardown for --purge: the periphery service, its files, the hook and
+# the Komodo containers and data (komodo-setup.sh --teardown does the work).
+clean_komodo_teardown() {
+    local setup="$SCRIPT_DIR/komodo-setup.sh"
+    if [ ! -f "$setup" ]; then
+        log_warn "komodo-setup.sh not found, Komodo was not removed"
+        return 0
+    fi
+    if [ "$EUID" -eq 0 ]; then
+        "$setup" --teardown || log_warn "Komodo teardown failed. Run: sudo ./scripts/komodo-setup.sh --teardown"
+    elif sudo -n true 2>/dev/null; then
+        sudo "$setup" --teardown || log_warn "Komodo teardown failed. Run: sudo ./scripts/komodo-setup.sh --teardown"
+    else
+        log_warn "Requires sudo. Run:"
+        echo "    sudo ./scripts/komodo-setup.sh --teardown"
+    fi
+}
+
 main() {
     echo ""
     echo "=============================================="
@@ -103,11 +135,25 @@ main() {
 
     cd "$PROJECT_DIR"
 
+    # Decided once: --purge removes the files this decision is read from.
+    local clean_mode
+    clean_mode=$(komodo_mode)
+    if [ "$clean_mode" != "none" ]; then
+        # Direct compose calls below must see the same inputs as Komodo does.
+        compose_env_setup --readonly || log_warn "The Komodo environment files cannot be read; the direct compose calls below may report missing variables."
+    fi
+    if [ "$clean_mode" = "adopted" ] && [ "$PURGE" = true ]; then
+        log_warn "--purge also removes .env.komodo and the Komodo variables."
+        log_warn "Without --volumes the database volume stays, but its password and keys are gone."
+    fi
+
     # Step 1: Stop services and optionally remove volumes
     if docker compose ps -q 2>/dev/null | grep -q .; then
         log_step "Stopping running services..."
         if [ "$CLEAN_VOLUMES" = true ]; then
             docker compose down -v
+        elif [ "$clean_mode" = "adopted" ]; then
+            clean_down_adopted
         else
             docker compose down
         fi
@@ -216,6 +262,13 @@ main() {
             rm -f "$PROJECT_DIR/.env"
         fi
 
+        # Komodo leftovers: the rendered copy and the certificate state files
+        if [ "$clean_mode" != "none" ]; then
+            log_info "Removing .env.komodo and certificate state files..."
+            rm -f "$PROJECT_DIR/.env.komodo" "$PROJECT_DIR/.certs-pending" \
+                "$PROJECT_DIR/.certs-sync-pending" "$PROJECT_DIR/.voipbin-hook-token"
+        fi
+
         # Remove live docker-compose.yml (generated from docker-compose.yml.dist
         # by init.sh; re-copied fresh on the next init.sh run), plus any
         # concurrency lock file (VOIP-1334, acquire_file_lock() in
@@ -265,6 +318,12 @@ main() {
         if [ -d "$PROJECT_DIR/tmp" ]; then
             log_info "Removing tmp directory..."
             rm -rf "$PROJECT_DIR/tmp"
+        fi
+
+        # Komodo itself goes last: nothing above needs it any more
+        if [ "$clean_mode" != "none" ]; then
+            log_info "Removing Komodo..."
+            clean_komodo_teardown
         fi
     fi
 

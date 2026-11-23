@@ -30,6 +30,7 @@
 ## Table of Contents
 
 - [Quick Start](#quick-start)
+- [Komodo (deployment control plane)](#komodo-deployment-control-plane)
 - [Migrating from voipbin/sandbox](#migrating-from-voipbinsandbox)
 - [Install Modes](#install-modes)
 - [External Mode (Real Domain)](#external-mode-real-domain)
@@ -472,6 +473,7 @@ optional `profile_id`. The secret is encrypted with `NUMBER_SECRET_ENCRYPTION_KE
 | 18 | Verification: containers are healthy but the api-manager `/ping` failed |
 | 19 | Verification: problem containers and a failed api-manager `/ping` |
 | 20 | Provider keys could not be stored: the master key is missing for a service that has a key in `.env` (`stage=keys-preflight`, before any image changed), or storing failed (`stage=keys`, before `up -d`; running containers untouched). `update keys` also exits 20 when a service runs an old image without stored configs (its keys are skipped), or a key needs your attention |
+| 21 | Komodo is not available (installs set up with Komodo only): the check before the backup (`stage=komodo-preflight`; no backup was taken and no image pulled yet), the pull, `up` or the later convergence could not reach it. The message names the part that failed; see the Komodo section. A certificate value that cannot be synced in that first check ends the run with its own code (2 rejected value, 1 other failure) |
 | 64 | Unknown `update` subcommand |
 | 130 | Interrupted by the user |
 
@@ -610,6 +612,48 @@ voipbin(api)> get /v1.0/extensions
 ```
 
 ---
+
+## Komodo (deployment control plane)
+
+A new install made with `sudo ./voipbin install` deploys through [Komodo](https://komo.do). There is no switch to leave it out. Komodo runs next to the main stack, and every `voipbin` command that starts, stops, restarts, pulls or removes containers goes through it.
+
+**What runs**
+
+- Komodo core and its MongoDB, as the separate compose project `komodo` (`komodo/docker-compose.yml`). Core listens on `127.0.0.1:9120` only, self-registration is disabled and new users are not enabled.
+- The Komodo agent (periphery) as the host systemd service `periphery` (`/usr/local/bin/periphery`), started on boot with `Restart=on-failure`. It connects out to core on the loopback address and its terminals are disabled. In this connection direction it opens no listening socket of its own (check with `sudo ss -ltnp | grep periphery`).
+- Versions are pinned in `komodo/versions.env` (the agent binary by sha256, the images by digest). They are not part of `versions.lock`; to change a pin, edit that one file and run `sudo ./voipbin komodo setup`.
+- Supported hosts: x86_64 with systemd (the agent binary is x86_64 only).
+
+**What it does for you**
+
+- The container variables of the main stack (47 of them, including the keys, passwords and certificates that `init.sh` generates) are stored as Komodo Variables, and the stack reads them from `.env.komodo`. `.env` keeps only the host-side values (for example the ones the host scripts read) and the empty ones.
+- Writes that used to edit `.env` in place (IP changes, certificate renewal with `install-certs.sh`, `setup-dns.sh --regenerate`) now update the Komodo Variable first and then the copy `.env.komodo`. A Variable is limited to 10,000 characters; a longer certificate chain is refused before anything is written.
+- `sudo ./voipbin doctor` fails when Komodo (core, database, authentication, agent, stack) is not healthy, like it does for the database, Redis and RabbitMQ; `sudo ./voipbin status` shows the same parts as a status list, and the check after `update all` counts a failed Komodo as a failed verification. `sudo ./voipbin komodo health` prints a one-line summary of the core, database, authentication, agent and stack state.
+- `sudo ./voipbin env check` compares `.env` (and `.env.komodo`) with `.env.template` and lists the names of keys that are missing, unknown, empty or overridden, then a `VOIPBIN_ENV:` summary line. It only reports: it never prints a value and changes nothing. Exit code 0 means nothing to fix, 30 warnings or errors, 2 a file cannot be read.
+- `sudo ./voipbin backup` also saves the Komodo database (`komodo-mongo.archive.gz`), `.env.komodo` and the API key file; `sudo ./voipbin restore` puts them back before it restores the rest. A backup taken with Komodo can only be restored on an install that runs under Komodo, and the other way round.
+
+**Security notes**
+
+- The Komodo database and `.env.komodo` hold the same secrets as `.env`, in plain text, and the Komodo admin account can run anything on this host as root. Treat the admin password (`komodo/admin-password`), the API key file (`komodo/cli-key`), `komodo/.env`, `.env.komodo` and the backups like `.env`: they are mode 600; the install files belong to the user who owns the install directory and the backups to the user who ran `voipbin backup` (root with `sudo`). The Komodo database also keeps the earlier values of changed Variables in its update history, so a backup holds old secrets too.
+- Open the Komodo UI through an SSH tunnel (`ssh -L 9120:127.0.0.1:9120 <host>`, then `http://127.0.0.1:9120`); do not publish port 9120.
+- The Komodo UI can redeploy the stack. Use it to apply a changed value; a hook installed at `/usr/local/lib/voipbin/komodo-hook.sh` refuses a UI deploy while a `voipbin` command is running, so it cannot overlap one. A value you change in a Komodo Variable is kept; it reaches the containers on the next `sudo ./voipbin start` or restart.
+
+**If Komodo is down**
+
+Every command that needs it stops with exit code 21 and tells you what failed. Repair with `sudo ./voipbin komodo setup` (safe to repeat; it needs the network only when the agent binary or an image is missing). If you cannot wait, run the commands yourself with both environment files, for example:
+
+```bash
+export COMPOSE_ENV_FILES=.env,.env.komodo
+docker compose stop            # or: docker compose up -d
+docker compose -p komodo -f komodo/docker-compose.yml --env-file komodo/versions.env --env-file komodo/.env up -d
+sudo systemctl restart periphery
+```
+
+If the Komodo database was lost, remove `komodo/.adopted` and run `sudo ./voipbin komodo setup`: it rebuilds the Variables from `.env.komodo`.
+
+**Existing installs are not migrated.** An install made before this change, or one set up with `init.sh` and `start.sh` only, keeps running the host `docker compose` directly; `update all` does not add Komodo. `komodo setup` refuses to run (exit code 2) on a host that already has the stack's containers, its database volume or the install marker and no Komodo files, or when docker cannot be queried. `doctor` shows a warning line for an install without Komodo.
+
+**Removing it.** `sudo ./voipbin clean --purge` also removes `.env.komodo`, the Komodo variables (they are in the Komodo database), the periphery service and its files, the hook, and the Komodo containers and data. Without `--volumes` the main database volume stays, but its passwords are gone with the Variables, so keep a backup first.
 
 ## Migrating from voipbin/sandbox
 
