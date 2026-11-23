@@ -265,6 +265,9 @@ restart_cert_consumers() {
         if [ "$restart_rc" -eq 21 ]; then
             [ -n "$restart_err" ] && echo "$restart_err" >&2
             return 21
+        elif [ "$restart_rc" -ne 0 ]; then
+            # the full start below recreates them with the new values anyway
+            log_warn "Restarting the API services failed (exit $restart_rc); the next step recreates them"
         fi
     fi
     return 0

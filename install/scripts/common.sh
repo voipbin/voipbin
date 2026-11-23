@@ -312,8 +312,16 @@ compose_exec() {
             local arg services=()
             for arg in "$@"; do
                 case "$arg" in
-                    # flags without a value: the verb fixes their meaning
-                    -d|-f|-s|-v|-sf|-fs|-sv|-fsv) ;;
+                    # flags without a value: the verb fixes their meaning. -v is
+                    # refused for down: Komodo does not remove volumes, so the
+                    # caller would be told something that did not happen.
+                    -v|-sv|-fsv)
+                        if [[ "$verb" == "down" ]]; then
+                            log_error "compose_exec: down -v is not supported with Komodo" >&2
+                            return 1
+                        fi
+                        ;;
+                    -d|-f|-s|-sf|-fs) ;;
                     -*)
                         log_error "compose_exec: option $arg is not supported with Komodo" >&2
                         return 1

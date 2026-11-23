@@ -1268,6 +1268,7 @@ def group_restore():
     with Fake() as fake:
         cli, out = restore(d, ts, fake)
         check("G9.9 'database is not running' hint is two voipbin start commands (start takes one service)", "  voipbin start db && voipbin start redis" in out and "docker compose" not in out, out)
+        check("G9.9b ... and a refusal before any change is a non-zero exit with Komodo", cli.last_rc == 1, cli.last_rc)
     # --- failure table
     # (2) fails: nothing touches MySQL, core is started, files are put back
     for label, fail_re, expect_stop in (("core cannot be stopped", r"^stop ", True),
@@ -1287,6 +1288,9 @@ def group_restore():
                   "exec -i voipbin-db" not in log and "DOCKER:start voipbin-komodo-core" in log and cli.last_rc == 1
                   and open(os.path.join(d, ".env.komodo")).read() == old_a and open(os.path.join(d, "komodo", "cli-key")).read() == old_b
                   and open(os.path.join(d, ".env")).read() == old_env and fake.calls == [] and "Restore complete" not in out, (log, out[-300:]))
+            if label.startswith("mongorestore"):
+                check("G9.10b a failed mongorestore says the Komodo database may be partly restored and to restore again",
+                      "only partly restored" in out and "run the same restore again" in out, out[-400:])
     # core start fails after a successful restore: reported, MySQL untouched
     d = restore_env("g9_f2b", True)
     ts = make_backup(d, True)

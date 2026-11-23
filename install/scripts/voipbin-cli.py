@@ -6761,6 +6761,7 @@ Type 'registrar <subcommand> help' for more details.
                 print("  No installation found in this directory.")
                 if not self._install_ask(True, "Install now?"):
                     raise InstallAbort(1, 0, "cancelled by the user", "sudo ./voipbin install", quiet=True)
+                print(gray("  (The install also sets up Komodo, which deploys the services: a systemd service and local containers.)"))
                 print(gray("  (Everything is automatic. AI provider keys are optional and can be added later.)"))
 
             owner = resolve_install_owner(project_dir)
@@ -8238,7 +8239,7 @@ Type 'registrar <subcommand> help' for more details.
             self._update_stage = "komodo-preflight"
             rc = self._komodo_preflight(project_dir)
             if rc:
-                print(f"\n{red('Upgrade aborted:')} Komodo is not ready. Nothing was changed.")
+                print(f"\n{red('Upgrade aborted:')} Komodo is not ready. No backup was taken and no image was pulled.")
                 print("  Check it with: voipbin doctor")
                 self._release_op_lock(lock)
                 return rc
@@ -8832,6 +8833,8 @@ Type 'registrar <subcommand> help' for more details.
         if db_container not in running_names:
             print(f"\n{red('Database is not running.')} Restore needs db (and redis) up:")
             print(f"  {up_db}")
+            if km != "none":
+                self.last_rc = 1
             return
         project = run_cmd(
             f"docker inspect {shlex.quote(db_container)} "
@@ -8857,6 +8860,8 @@ Type 'registrar <subcommand> help' for more details.
             for s in extra:
                 print(f"    - {s}")
             print(f"\n  Stop them first:  voipbin stop --all && {up_db}")
+            if km != "none":
+                self.last_rc = 1
             return
 
         # Backup integrity gate: a partial backup (interrupted mid-write)
@@ -8865,11 +8870,15 @@ Type 'registrar <subcommand> help' for more details.
         if not os.path.exists(manifest_path):
             print(f"{red('✗')} manifest.json missing in backups/{ts}/ - backup is incomplete")
             print("  (probably interrupted). Refusing to restore from a partial backup.")
+            if km != "none":
+                self.last_rc = 1
             return
         rc = subprocess.call(["gunzip", "-t", os.path.join(backup_dir, "mysql.sql.gz")]) \
             if os.path.exists(os.path.join(backup_dir, "mysql.sql.gz")) else 1
         if rc != 0:
             print(f"{red('✗')} mysql.sql.gz missing or corrupt in backups/{ts}/ - aborting.")
+            if km != "none":
+                self.last_rc = 1
             return
         if km == "adopted":
             problem = self._restore_komodo_precheck(backup_dir)
@@ -9104,6 +9113,9 @@ Type 'registrar <subcommand> help' for more details.
         if not ok:
             put_back()
             print(f"  {red('✗')} {why}. The previous Komodo files are back in place; MySQL was not touched.")
+            if why == "mongorestore failed":
+                print("    The Komodo database may be only partly restored: run the same restore again, and do")
+                print("    not run 'voipbin start' before it has finished.")
             tail = [l for l in (err or "").strip().splitlines() if l.strip()][-3:]
             for line in tail:
                 print(f"    {line}")

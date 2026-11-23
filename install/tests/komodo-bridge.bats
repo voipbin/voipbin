@@ -413,6 +413,10 @@ HOST_EXTERNAL_IP=203.0.113.5" ]
     [ "$status" -eq 1 ]
     [[ "$output" == *"option -t is not supported"* ]]
     [ ! -s "$T/lib.log" ]
+    run compose_exec down -v
+    [ "$status" -eq 1 ]
+    [[ "$output" == *"down -v is not supported"* ]]
+    [ ! -s "$T/lib.log" ]
 }
 
 @test "realm_recreate_hint: none keeps the two historic steps, Komodo prints one start" {

@@ -634,7 +634,7 @@ main() {
     step_provision
 
     if [[ -n "$ADMIN_PASSWORD_FILE" ]]; then
-        log_info "initial admin password stored in $ADMIN_PASSWORD_FILE (mode 600): change it after the first login and delete the file"
+        log_info "initial admin password stored in $ADMIN_PASSWORD_FILE (mode 600): komodo setup logs in with it when the CLI key is missing or periphery has to be registered again, so keep the file in step if you change the password in the UI"
     fi
     emit_result ok "periphery=$PERIPHERY_STATE hook=$HOOK_STATE core=127.0.0.1:$CORE_PORT${ADMIN_PASSWORD_FILE:+ admin_password_file=$ADMIN_PASSWORD_FILE}"
 }

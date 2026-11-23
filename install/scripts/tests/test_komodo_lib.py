@@ -1323,10 +1323,14 @@ rv, out, err = run(K.provision, p)
 check("G16 docker compose failing on the baseline -> 1, nothing changed", rv == 1 and SRV.count("CreateVariable") == 0 and no_marker(p))
 docker_cfg()
 # preconditions
+p = provision_case(key=False)
+os.unlink(os.path.join(p, "komodo/admin-password"))
+rv, out, err = run(K.provision, p)
+check("G16 missing admin-password and no CLI key -> 2 (precondition)", rv == 2 and SRV.calls == [])
 p = provision_case()
 os.unlink(os.path.join(p, "komodo/admin-password"))
 rv, out, err = run(K.provision, p)
-check("G16 missing admin-password -> 2 (precondition)", rv == 2 and SRV.calls == [])
+check("G16 missing admin-password with a valid CLI key is not a precondition failure (the login is not needed)", rv != 2, (rv, err))
 p = provision_case()
 os.unlink(os.path.join(p, ".env"))
 rv, out, err = run(K.provision, p)
@@ -1500,6 +1504,14 @@ check("G17b login rejected -> False", K.server_registered(p) is False)
 os.unlink(os.path.join(p, "komodo/admin-password"))
 check("G17b admin password file missing -> False", K.server_registered(p) is False)
 wr(p, "komodo/admin-password", FakeKomodo.ADMIN[1] + "\n", 0o600)
+# with a CLI key the admin password is not needed (the file may be gone, the password changed)
+q = adopted_project()
+os.unlink(os.path.join(q, "komodo/admin-password")) if os.path.exists(os.path.join(q, "komodo/admin-password")) else None
+os.environ["VOIPBIN_PROJECT_DIR"] = q
+check("G17b with a valid CLI key and no admin-password file the server check still works", K.server_registered(q) is True)
+SRV.server_state = "NotOk"
+check("G17b ... and a NotOk server is still False (no fallback to the admin login)", K.server_registered(q) is False)
+SRV.server_state = "Ok"
 
 # ==============================================================================
 print("== G18 CLI entry points (subprocess)")

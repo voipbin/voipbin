@@ -887,12 +887,16 @@ def _server_state(client, timeout):
 
 def server_registered(project_dir):
     """True when the server named SERVER_NAME is registered and its state is Ok.
-    Uses the admin login (the CLI key does not exist yet when periphery is set up)."""
+    The CLI key is used when there is one; the admin login only before the key
+    exists (the first run of periphery setup)."""
     try:
-        admin = admin_login(project_dir)
-    except (Unavailable, KomodoError):
-        return False
-    return _server_state(admin, TIMEOUT_READ) == "Ok"
+        client = key_client(project_dir)
+    except Unavailable:
+        try:
+            client = admin_login(project_dir)
+        except (Unavailable, KomodoError):
+            return False
+    return _server_state(client, TIMEOUT_READ) == "Ok"
 
 
 def ping(project_dir, quiet=False):
@@ -1426,8 +1430,11 @@ def _write_marker(project_dir):
 def provision(project_dir):
     """Run the setup steps that need the API. Preconditions: core, mongo and
     periphery are up and komodo/.env and komodo/admin-password exist."""
-    for rel in (".env", "docker-compose.yml", os.path.join("komodo", ".env"),
-                os.path.join("komodo", "admin-password")):
+    needed = [".env", "docker-compose.yml", os.path.join("komodo", ".env")]
+    if not os.path.isfile(_p(project_dir, "komodo", "cli-key")):
+        # the admin login is only needed to create the CLI key
+        needed.append(os.path.join("komodo", "admin-password"))
+    for rel in needed:
         if not os.path.isfile(_p(project_dir, rel)):
             _err("provision: missing %s" % rel)
             return EXIT_INVALID
@@ -1473,6 +1480,10 @@ def provision(project_dir):
         if e.kind in ("unreachable", "timeout") or (e.kind == "http" and e.code in (401, 403)):
             return EXIT_UNAVAILABLE
         return EXIT_FAIL
+    except ValueError as e:
+        # e.g. no usable compose project name for this directory
+        _err("provision: %s" % e)
+        return EXIT_INVALID
 
     copy_path = _p(project_dir, ENV_COPY)
     if not os.path.exists(copy_path):

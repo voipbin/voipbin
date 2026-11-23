@@ -2410,6 +2410,7 @@ def main():
         print("All test_cli_mode.py tests passed")
     finally:
         os.environ["PATH"] = prev_path
+        os.environ.pop("VOIPBIN_KOMODO_SETUP", None)
         if prev_project_dir is None:
             os.environ.pop("VOIPBIN_PROJECT_DIR", None)
         else:

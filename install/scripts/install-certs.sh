@@ -425,6 +425,12 @@ update_env_certs() {
     key_b64=$(base64 -w0 < "$KEY_FILE")
 
     if [[ "$(komodo_mode)" != "none" ]]; then
+        # an unreadable file would otherwise reach Komodo as an empty value
+        # (this runs in a || context, where set -e does not stop the script)
+        if [[ -z "$cert_b64" || -z "$key_b64" ]]; then
+            log_error "could not read the certificate or key file" >&2
+            return 1
+        fi
         host_env_write \
             "API_SSL_CERT_BASE64=$cert_b64" \
             "API_SSL_PRIVKEY_BASE64=$key_b64" \
