@@ -1175,6 +1175,12 @@ guard_case("container by working_dir label (other project name)", 2, cfg={"ps": 
 guard_case("fixed container_name voipbin-db", 2, cfg={"ps": ["voipbin-db||"], "volumes": []})
 guard_case("fixed container_name taken from the compose file", 2, cfg={"ps": ["fixed-name-from-compose||"], "volumes": []},
            compose_extra="    container_name: fixed-name-from-compose\n")
+guard_case("only the CoreDNS container of install step 2 (service label coredns) passes", 0,
+           cfg={"ps": ["voipbin-dns|install|WORKDIR|coredns"], "volumes": []})
+guard_case("CoreDNS plus another stack container refuses", 2,
+           cfg={"ps": ["voipbin-dns|install|WORKDIR|coredns", "voipbin-redis|install|WORKDIR|redis"], "volumes": []})
+guard_case("CoreDNS container plus the database volume refuses", 2,
+           cfg={"ps": ["voipbin-dns|install|WORKDIR|coredns"], "volumes": ["install_db_data"]})
 guard_case("database volume <project>_db_data", 2, cfg={"ps": [], "volumes": ["install_db_data"]})
 guard_case("project name only in the environment: install still refused", 2,
            cfg={"ps": ["voipbin-db|customname|/srv/old"], "volumes": ["customname_db_data"]}, env={})

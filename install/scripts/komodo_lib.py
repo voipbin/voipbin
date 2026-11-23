@@ -716,7 +716,8 @@ def guard(project_dir):
         return EXIT_INVALID
     rc, out, _ = _docker(["ps", "-a", "--format",
                           '{{.Names}}|{{.Label "com.docker.compose.project"}}|'
-                          '{{.Label "com.docker.compose.project.working_dir"}}'])
+                          '{{.Label "com.docker.compose.project.working_dir"}}|'
+                          '{{.Label "com.docker.compose.service"}}'])
     if rc != 0:
         _err("Install guard: cannot list containers; refusing.")
         return EXIT_INVALID
@@ -724,7 +725,12 @@ def guard(project_dir):
     here = os.path.realpath(project_dir)
     for line in out.splitlines():
         cname, _, rest = line.partition("|")
-        label, _, wdir = rest.partition("|")
+        label, _, rest = rest.partition("|")
+        wdir, _, service = rest.partition("|")
+        # init.sh (install step 2) starts CoreDNS in internal mode before this
+        # guard runs; that container alone is not a sign of an earlier install.
+        if service == "coredns":
+            continue
         if (label == project or cname in fixed
                 or (wdir and os.path.realpath(wdir) == here)):
             signals.append("container")
