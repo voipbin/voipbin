@@ -640,9 +640,9 @@ EOF
     grep -qF '"endpoint":"lab"' "$TEST_TEMP_DIR/render.out"
 }
 
-@test "docker-compose.yml.dist raises the open files limit of asterisk-call" {
+@test "docker-compose.yml.dist raises the open files limit of asterisk-call and asterisk-conference" {
     command -v python3 &>/dev/null && python3 -c "import yaml" 2>/dev/null || skip "python3+pyyaml not available"
-    run python3 -c "import yaml; n=yaml.safe_load(open('$PROJECT_ROOT/docker-compose.yml.dist'))['services']['asterisk-call']['ulimits']['nofile']; print(n['soft'], n['hard'])"
+    run python3 -c "import yaml; sv=yaml.safe_load(open('$PROJECT_ROOT/docker-compose.yml.dist'))['services']; print(*[sv[k]['ulimits']['nofile'][b] for k in ('asterisk-call','asterisk-conference') for b in ('soft','hard')])"
     [[ "$status" -eq 0 ]]
-    [[ "$output" == "65536 65536" ]]
+    [[ "$output" == "65536 65536 65536 65536" ]]
 }
