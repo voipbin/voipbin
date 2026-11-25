@@ -375,6 +375,14 @@ services:
       # Kamailio outbound proxy address for routing calls through SIP proxy
       # Use Kamailio's IP on the internal network (setup via scripts/setup-voip-network.sh)
       - KAMAILIO_INTERNAL_LB_ADDRESS=10.100.0.200
+    # Asterisk holds several file descriptors per call (SIP channel, RTP and
+    # RTCP sockets, timers). The Docker default soft limit can be low, so raise it to
+    # keep a server with many concurrent calls from running out of descriptors
+    # ("Too many open files"). Applied when the container is created.
+    ulimits:
+      nofile:
+        soft: 65536
+        hard: 65536
     healthcheck:
       test: ["CMD", "asterisk", "-rx", "core show help"]
       interval: 10s
@@ -451,6 +459,12 @@ services:
     networks:
       default:
         ipv4_address: 10.100.0.212
+    # Same open files limit as asterisk-call: conference bridges hold RTP and
+    # RTCP sockets and timers per participant. Applied when the container is created.
+    ulimits:
+      nofile:
+        soft: 65536
+        hard: 65536
     healthcheck:
       test: ["CMD", "asterisk", "-rx", "core show help"]
       interval: 10s
